@@ -18,3 +18,9 @@ name = "Graph Storage Engine"
 path = "docs/ADR/0001-graph-storage-engine.md"
 kind = "ADR"
 traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+name = "Graph Construction & Weighting Model"
+path = "docs/ADR/0002-graph-construction-weighting-model.md"
+kind = "ADR"
+traceability = "DOCS-ONLY"
