@@ -92,7 +92,9 @@ Until this ADR is decided, DESIGN commits to no weighting placement: the graph
 layer and the construct-logic layer are described neutrally, and downstream
 DECOMPOSITION/FEATURE work on the builder/querier split is blocked on it. The
 choice will materially affect storage sizing, refresh scheduling, and per-query
-latency budgets.
+latency budgets. (DESIGN §3.1/§3.7 show `weight` on nodes/edges/properties to
+illustrate Option 1/hybrid; under Option 2 those weights are query-supplied, not
+stored — DESIGN flags this rather than pre-deciding it.)
 
 ### Confirmation
 

@@ -105,6 +105,11 @@ analytical view (Studio), or an explanatory profile (Construct).
 | Security                            | Every operation authenticated (AuthN Resolver) and authorized (PDP/PEP → `AccessScope`) through the gear authorization model (§3.9). Threat-model pass deferred to the security review gate.  | PEP-per-handler coverage; fail-closed tests.                                      |
 | Reliability                         | Layer-4 workflows resumable from checkpoint; ingestion idempotent per `(connector, provenance, version)` so replays do not duplicate facts (§3.6).                                            | Replay/idempotency tests. Numeric SLOs deferred to DECOMPOSITION.                 |
 
+Performance and observability are not silently omitted: latency/throughput budgets
+and caching are deferred to DECOMPOSITION pending the ADR-0001 spike, and structured
+logging, metrics, tracing and alerting are inherited from the Fabric gear runtime
+(specifics in DECOMPOSITION).
+
 #### Key ADRs
 
 | ADR                                                        | ID                                           | Decision                             | Status                          |
@@ -115,9 +120,12 @@ analytical view (Studio), or an explanatory profile (Construct).
 ### 1.3 Architecture Layers
 
 The engine is four layers. The first three are "dumb but robust" infrastructure;
-the fourth is where product value and differentiation live. Whether layer 3 is one
-graph built by a template or a raw store plus a builder/querier split is the
-subject of [ADR-0002](ADR/0002-graph-construction-weighting-model.md).
+the fourth is where product value and differentiation live. Whether layer 3 is a
+single template-built graph or a raw store written by a separate **construct-builder**
+(with a **construct-querier** as layer 4) is the subject of
+[ADR-0002](ADR/0002-graph-construction-weighting-model.md); note that under a
+builder/querier split the "dumb layer 3" premise itself becomes contingent, because
+weight-baking would move into layer 3.
 
 | #   | Layer                        | Purpose                                                                                           | Sourcing                                                    |
 | --- | ---------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -172,20 +180,22 @@ versioned values.
 
 **ID**: `cpt-cf-construct-principle-weights-first-class`
 
-Nodes, edges and properties carry **weights** (importance) so the logic layer can
-focus on what matters and ignore the rest — the core distinction from Insight.
-Edges additionally carry **confidence** (certainty that the relationship holds):
-we may not know an entity is really related to a fact (the post's author merely
-shares a name), and that uncertainty must be representable separately from
-importance.
+Construct is a **weighted** projection — importance is what lets the logic layer
+prune to what matters, the core distinction from Insight. This principle fixes only
+that importance is *first-class, not incidental*; **where** a weight lives — baked
+into the stored graph or applied at query time — is decided in
+[ADR-0002](ADR/0002-graph-construction-weighting-model.md). Edges additionally carry
+**confidence** (certainty that the relationship holds): we may not know an entity is
+really related to a fact (the post's author merely shares a name), and that
+uncertainty must be representable separately from importance.
 
 #### Reuse the platform
 
 **ID**: `cpt-cf-construct-principle-reuse-platform`
 
 Tenant isolation, authn/authz, governance, audit and the data path come from the
-**Gears Toolkit / ModKit** libraries (`libs/toolkit-*`) and the Fabric system
-gears (AuthN/AuthZ resolvers, Types Registry, …), not bespoke implementations.
+**Gears Toolkit** libraries (`libs/toolkit-*`) and the Fabric system gears
+(AuthN/AuthZ resolvers, Types Registry, …), not bespoke implementations.
 
 #### Reversible storage
 
@@ -274,9 +284,14 @@ and edge types are GTS types registered in a type registry, and a type's JSON
 Schema defines which properties its instances may carry — so a type is not just a
 label, it is the payload contract. Owners register their own node/edge types.
 
+Importance **weights** shown below are intrinsic to the stored graph under ADR-0002's
+Option 1/hybrid; under Option 2 they are supplied by the query rather than stored
+(see [ADR-0002](ADR/0002-graph-construction-weighting-model.md)).
+
 - **Node** — an instance of a registered node type: a person, product,
   organization, email, pull request, social post. The type (not a fixed
-  enumeration) says what a node may be and what properties it must satisfy.
+  enumeration) says what a node may be and what properties it must satisfy; like
+  edges and properties it may carry a **weight** (importance; see the note above).
 - **Edge** — a typed, directed relationship carrying a **weight** (importance) and
   a **confidence** (certainty the relationship holds). Edge types declare their
   admissible source and target types. Edges come in two kinds:
@@ -309,10 +324,13 @@ Connectors ──▶ [GTS validate] ──▶ Graph Store ──▶ Construct-Lo
                         properties/documents ──▶ bronze/silver/gold side store
 ```
 
-Whether L3/L4 is one template-built graph or a **raw store → construct-builder →
-graph → construct-querier** split is deferred to
-[ADR-0002](ADR/0002-graph-construction-weighting-model.md); the component
-descriptions below stay neutral on that axis.
+Whether the graph is one template-built store or a raw store written by a separate
+**construct-builder** (a candidate L3-writing component) that a **construct-querier**
+then reads is deferred to
+[ADR-0002](ADR/0002-graph-construction-weighting-model.md); under that split the
+"dumb layer 3" premise (§1.3) is itself contingent. The component descriptions below
+stay neutral on that axis: the builder, if adopted, writes into L3 and is not part
+of the L4 querier.
 
 #### GTS Contracts (L1)
 
@@ -406,9 +424,9 @@ differentiator and its "art".
 
 Query the graph, fetch details on demand, summarise under a cost/quality budget
 proportional to the owner's goal, emit and store the versioned construct; support
-many construct versions over one graph. Whether this splits into a builder
-(writes the weighted graph) and a querier (extracts the profile) is decided in
-ADR-0002.
+many construct versions over one graph. Under ADR-0002 this L4 workflow is the
+**querier** (it reads and projects); a separate **construct-builder** — an
+L3-writing component, not part of L4 — may write the weighted graph.
 
 ##### Responsibility boundaries
 
@@ -451,8 +469,9 @@ audit (access-log) entry. Inter-gear calls go through the SDK facade + `ClientHu
   (leading: Postgres + pgvector + Apache AGE mirror, per Vasyl's
   `studio-graph-storage`; alternative: the older Insight NebulaGraph
   `graph-storage`).
-- **Vector store** — co-located pgvector in the leading option (vs a separate
-  Qdrant; see ADR-0001).
+- **Vector store** — co-located pgvector in the leading option. (The Qdrant
+  precedent belongs to an unrelated legacy Model-Engine service, not Fabric —
+  context only; see [ADR-0001](ADR/0001-graph-storage-engine.md).)
 - **Fabric serverless durable runtime** — candidate host for layer 4 workflows
   (resumable from checkpoint, orchestrated so only N run per entity).
 
@@ -476,6 +495,8 @@ entity's bounded fact set.
 
 **ID**: `cpt-cf-construct-seq-ingestion`
 
+Actors: **Connector author** (builds the plugin); **System** (ingest pipeline).
+
 1. A connector (plugin) collects facts and maps them to its declared GTS schema
    (attaching vendor/package/type/version + connector provenance).
 1. It pushes them into the graph store; GTS validates the contract; violations are
@@ -487,6 +508,8 @@ entity's bounded fact set.
 #### Construct projection (query → profile)
 
 **ID**: `cpt-cf-construct-seq-projection`
+
+Actors: **Consumer** (requests the profile); **Subject** (the entity profiled).
 
 1. The logic layer issues a depth-bounded query ("everything about entity X to
    depth N") and receives a list of typed IDs.
@@ -505,7 +528,8 @@ Logical schema (provisional — physical form depends on
 implementation. Graph tables stay lean (IDs, edges, weights, confidence); heavy
 values live in the side store. Node/edge **types are rows in a registry**, and a
 type's JSON Schema constrains the payload of its instances — so an instance's type
-and property set are validated, never arbitrary.
+and property set are validated, never arbitrary. The `weight` columns assume
+ADR-0002 Option 1/hybrid; under Option 2 importance is query-supplied, not stored.
 
 ```mermaid
 erDiagram
@@ -520,7 +544,7 @@ erDiagram
         int id PK
         text gts_type_id UK "gts.vendor.package.ns.type.vN~"
         text kind "node or edge"
-        jsonb json_schema "payload contract (draft-07)"
+        jsonb json_schema "payload contract"
     }
     NODE {
         bigint id PK
@@ -530,6 +554,7 @@ erDiagram
         real weight "importance"
         jsonb payload
         vector embedding
+        timestamptz created_at
     }
     EDGE {
         bigint id PK
@@ -539,6 +564,7 @@ erDiagram
         real weight "importance"
         real confidence "certainty of link"
         text edge_class "static or analysis"
+        text tenant_id
         jsonb payload "analysis: who/method/model/harness"
     }
     PROPERTY {
@@ -589,6 +615,15 @@ Node/edge attributes with provenance and contract. Columns (logical): `id`,
 `weight`, `unit`, `gts_type_id`, `vendor`, `package`, `version`, `connector`,
 `tenant_id`.
 
+#### Table: chunks
+
+Document content extracted for search. A node's large text/documents are split into
+chunks, each embedded, so hybrid lexical+vector retrieval (ADR-0001) can match a
+passage and fold it up to its node. Columns (logical): `id`, `node_id`, `chunk_id`,
+`content`, `embedding`. Distinct from `nodes.embedding` (a node-level vector): chunks
+give passage-level provenance, and the heaviest documents are referenced from the
+bronze/silver/gold side store rather than duplicated inline.
+
 ### 3.8 Deployment Topology
 
 Construct deploys as a **Fabric gear**. One codebase runs in the standard Fabric
@@ -615,7 +650,9 @@ bespoke access layer:
   so tenant/resource-group predicates and PDP constraints are applied in SQL; gears
   never touch a raw connection.
 
-Every Construct operation (§3.3) is a PEP entry point with an audit entry.
+Every **defined** Construct operation (§3.3) is a PEP entry point with an audit
+entry; the still-missing `write`/`delete` operations (§3.3) will be too once
+finalised — the erasure path in §3.10 depends on them.
 
 ### 3.10 Data Protection
 
@@ -630,11 +667,16 @@ Construct holds personal data, so data protection is explicit:
   still-missing `write`/`delete` operations (§3.3).
 - **Purpose limitation & retention** — collection is purpose-limited and retained
   per tenant policy.
+- **Encryption & key management** — encryption at rest and in transit and key
+  management are inherited unchanged from the Fabric platform / secure data path
+  (§3.4), not implemented bespoke here.
 
 ## 4. Additional context
 
-**Actors** (interim — the formal home per the gear convention is the PRD, and
-sequences will reference them by `cpt-cf-construct-actor-*` once it exists):
+**Actors** (interim, temporary exception — the formal home per the gear convention
+is the PRD; §3.6 sequences reference these by name and will switch to
+`cpt-cf-construct-actor-*` IDs when the PRD lands, at which point this list is
+removed):
 
 - **Construct owner** — deploys the engine, chooses/authors templates.
 - **Connector author** — writes a connector plugin for a source.
@@ -654,9 +696,10 @@ sequences will reference them by `cpt-cf-construct-actor-*` once it exists):
 
 **Open questions** (agenda for the Insight/Studio session and Friday review):
 
-1. **Graph engine** — Postgres + pgvector + Apache AGE mirror (Vasyl's
-   `studio-graph-storage`, the leading option) vs reuse of the older Insight
-   NebulaGraph `graph-storage` ([ADR-0001](ADR/0001-graph-storage-engine.md)).
+1. **Graph engine (ratification, not re-choice)** — ADR-0001 recommends Option 2
+   (Postgres + pgvector + Apache AGE mirror); the open item is ratifying it via the
+   scale spike and the Insight/Studio session, not re-selecting between it and
+   NebulaGraph ([ADR-0001](ADR/0001-graph-storage-engine.md)).
 1. **Graph construction & weighting** — one template-built weighted graph with
    query-time weight overrides (projections; refresh/duplication cost) vs a single
    raw graph with all weights applied at query time (no projections, slower). See
