@@ -94,6 +94,10 @@ neighbourhoods.
   construction.
 - **Semantic relevance is required anyway.** A vector capability (plus the LLM
   relevance judge above it) must live beside the graph.
+- **Privacy / erasure.** The store holds personal data and must support
+  subject-level anonymization and hard deletion (right-to-erasure) transactionally
+  and auditably; this favours a store with straightforward row-level delete + audit
+  over an append-oriented or eventually-consistent engine.
 - **Operational simplicity and time-to-first-construct.** v1 needs a running
   store this quarter, not a new distributed system to operate.
 - **Reversibility.** Whatever is chosen, the construct logic must address the
@@ -171,9 +175,13 @@ Two internal precedents must be reconciled and are the reason this stays
 1. Confirm Vasyl's actual recommendation and whether the design is layered
    (graph engine + separate vector store).
 1. Resolve the vector store against the `document-storage` Qdrant precedent.
-1. Run a bounded spike: the storage interface plus the two canonical queries
-   ("entity → depth N → IDs" and a weighted summarisation pass) on Postgres, to
-   confirm latency at the low-hundreds-of-millions scale before `accepted`.
+1. Run a bounded spike against a **measurable pass/fail gate** (numbers
+   provisional, to be ratified in the session): on a synthetic graph of ~100M
+   nodes / ~500M edges on a single primary Postgres node, the "entity → depth N →
+   IDs" query (depth ≤ 3, ≤ a few thousand candidate IDs) returns at **p95 ≤
+   200 ms**, and a full weighted-summarisation projection completes at **p95 ≤ 2 s**
+   excluding LLM time. Meeting the gate is a precondition for moving this ADR to
+   `accepted`; missing it reopens Option 1 (NebulaGraph) or Option 3.
 1. Open the follow-up ADR selecting Apache AGE vs recursive CTEs.
 
 ## Pros and Cons of the Options

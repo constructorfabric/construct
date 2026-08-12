@@ -81,12 +81,15 @@ The one open architecture decision is the graph storage engine —
 
 #### NFR Allocation
 
-| NFR                                 | Allocation                                                                                                                                                         |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Alienability / portability          | Storage + engine must allow an owner to export data and run a minimal engine standalone (§2.2, [ADR-0001](ADR/0001-graph-storage-engine.md)).                      |
-| Tenant isolation, governance, audit | Every operation mediated by the access model; reuse existing Rust libraries (§3.3, §3.4).                                                                          |
-| Cost control                        | Construct logic must hit a chosen price point ($5 good-enough vs $5000 perfect) without burning tokens (§3.2 L4).                                                  |
-| Scale                               | ~100s of millions of objects, ~500M edges per construct; billions aspirational — depth-bounded, not deep-traversal ([ADR-0001](ADR/0001-graph-storage-engine.md)). |
+| NFR                                 | Allocation                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Alienability / portability          | Storage + engine must allow an owner to export data and run a minimal engine standalone (§2.2, [ADR-0001](ADR/0001-graph-storage-engine.md)).                                                                                                                                                                      |
+| Tenant isolation, governance, audit | Every operation mediated by the access model; reuse existing Rust libraries (§3.3, §3.4).                                                                                                                                                                                                                          |
+| Cost control                        | Construct logic must hit a chosen price point ($5 good-enough vs $5000 perfect) without burning tokens (§3.2 L4).                                                                                                                                                                                                  |
+| Scale                               | ~100s of millions of objects, ~500M edges per construct; billions aspirational — depth-bounded, not deep-traversal ([ADR-0001](ADR/0001-graph-storage-engine.md)).                                                                                                                                                 |
+| Privacy / PII governance            | Construct ingests personal data (messages, tone, social, HR/AD). Every attribute carries a data-category tag; collection is purpose-limited and retained per tenant policy; the access model must support subject-level `anonymize`, `extract` and erasure (§2.2 `cpt-cf-construct-constraint-privacy-pii`, §3.3). |
+| Security                            | Every operation authenticated and authorized through the platform access model (CModel + JWT middleware); tenant isolation and audit reused from the Rust libraries (§3.3, §3.8). A dedicated threat-model pass is deferred to the security review gate, not to this DESIGN.                                       |
+| Reliability                         | Layer-4 workflows resumable from checkpoint on the durable runtime; ingestion idempotent per `(connector, provenance, version)` so replays do not duplicate facts (§3.6). Numeric availability/latency SLOs are deferred to DECOMPOSITION.                                                                         |
 
 ### 1.3 Architecture Layers
 
@@ -156,7 +159,11 @@ swapped (see [ADR-0001](ADR/0001-graph-storage-engine.md)).
 **ID**: `cpt-cf-construct-constraint-rust-postgres`
 
 Rust; platform-standard async PostgreSQL access (no ORM), per the Model Engine
-`_platform` contracts.
+`_platform` contracts, for **operational/platform data**. This constraint does
+**not** predecide the **graph-store** engine (§3.2 L3), which is open in
+[ADR-0001](ADR/0001-graph-storage-engine.md): if that ADR selects a non-Postgres
+engine (e.g. reusing NebulaGraph `graph-storage`), this constraint continues to
+govern only the platform datastore, not the graph tier.
 
 #### Reused platform libraries
 
@@ -192,6 +199,20 @@ inline in the graph.
 
 A vector capability sits beside the graph; an LLM relevance judge sits above raw
 vector search, because vector search matched semantic similarity but not meaning.
+
+#### Privacy and PII governance
+
+**ID**: `cpt-cf-construct-constraint-privacy-pii`
+
+Construct ingests personal data about identifiable people, so privacy is a
+first-class constraint, not an afterthought. Every attribute carries a
+data-category classification; collection is purpose-limited and retained under a
+per-tenant policy; and the access model must support subject-level `anonymize`,
+`extract` and hard erasure ("right to be forgotten"). This is enforced through the
+reused governance/audit libraries (`cpt-cf-construct-constraint-reuse-rust-libs`),
+not bespoke code. Erasure interacts with the still-open `write`/`delete` operation
+set (§3.3) — deletion propagation to the bronze/silver/gold side store is an open
+item, flagged here so it is not lost.
 
 ## 3. Technical Architecture
 
@@ -349,6 +370,9 @@ operation on *which* data category under *which* permissions, with an audit
   beside the graph.
 - **Insight `graph-storage` (NebulaGraph)** — candidate reuse for layer 3 (see
   [ADR-0001](ADR/0001-graph-storage-engine.md)).
+- **Vector store** (engine undecided — pgvector vs Qdrant, see
+  [ADR-0001](ADR/0001-graph-storage-engine.md)) — semantic similarity beside the
+  graph, sitting under the LLM relevance judge.
 - **Fabric serverless durable runtime** — candidate host for layer 4 workflows
   (resumable from checkpoint, orchestrated so only N run per entity).
 
@@ -453,6 +477,11 @@ runtime decisions.**
 - **[ADR-0001: Graph Storage Engine](ADR/0001-graph-storage-engine.md)**
   (`cpt-cf-construct-adr-graph-storage-engine`) — realises §3.2 (Graph Store) and
   §3.7 / layer 3.
+- Internal chain: the principles (§2.1) and constraints (§2.2) realise the drivers
+  in §1.2; the components (§3.2) and sequences (§3.6) realise the layers in §1.3.
+  The privacy/PII constraint (`cpt-cf-construct-constraint-privacy-pii`) and the
+  Privacy/PII, Security and Reliability NFRs (§1.2) are realised by the access
+  model in §3.3 and the reused governance libraries.
 - Downstream (to author): PRD (PM-owned, in progress), the AGE-vs-CTE follow-up
   ADR, DECOMPOSITION, and per-layer FEATURE docs.
 - Source: graph-reframe design call, 2026-08-11.
