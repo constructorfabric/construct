@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pre-commit:
+    name: formatters (pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pre-commit
+        run: pip install pre-commit
+      - name: Run pre-commit
+        run: pre-commit run --all-files --show-diff-on-failure
+
+  cfs-validate:
+    name: cfs validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # cfs is distributed from the studio repo; pin to the version this project
+      # tracks in .cf-studio/version.toml (v1.5.9).
+      - name: Install cfs (Constructor Studio)
+        run: pip install "git+https://github.com/constructorfabric/studio.git@v1.5.9"
+      # Validation uses the tracked .cf-studio/config + cfs's own bundled core;
+      # the gitignored .core/.gen runtime trees are not required here.
+      - name: Validate artifacts + traceability
+        run: cfs validate --local-only --verbose

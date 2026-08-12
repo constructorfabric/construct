@@ -1,0 +1,26 @@
+# Vendored/generated trees are owned by `cfs`, not this repo — never rewrite them.
+exclude: '^(\.cf-studio/|\.gen/|CLAUDE\.md|AGENTS\.md)'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+        args: ['--maxkb=100']
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+
+  - repo: https://github.com/executablebooks/mdformat
+    rev: 1.0.0
+    hooks:
+      - id: mdformat
+        # frontmatter: preserve YAML frontmatter (else it is mangled into a heading);
+        # gfm: preserve GitHub-flavored tables/task-lists used across docs/.
+        additional_dependencies:
+          - mdformat-frontmatter
+          - mdformat-gfm
