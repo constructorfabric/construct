@@ -4,6 +4,17 @@
 name = "Construct"
 slug = "cf-construct"
 kit = "sdlc"
-artifacts = []
 codebase = []
 children = []
+
+[[systems.artifacts]]
+name = "Construct Technical Design"
+path = "docs/DESIGN.md"
+kind = "DESIGN"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+name = "Graph Storage Engine"
+path = "docs/ADR/0001-graph-storage-engine.md"
+kind = "ADR"
+traceability = "DOCS-ONLY"
