@@ -9,8 +9,10 @@ repos:
       - id: trailing-whitespace
       - id: check-added-large-files
         args: ['--maxkb=100']
+        exclude: '^(app/package-lock\.json|Cargo\.lock)$'
       - id: check-yaml
       - id: check-json
+      - id: check-toml
       - id: check-merge-conflict
       - id: check-executables-have-shebangs
       - id: check-shebang-scripts-are-executable
@@ -24,3 +26,12 @@ repos:
         additional_dependencies:
           - mdformat-frontmatter
           - mdformat-gfm
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
