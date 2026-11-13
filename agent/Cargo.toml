@@ -1,0 +1,17 @@
+[package]
+name = "construct-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Construct agent: a background program that runs next to the Construct Browser app"
+publish = false
+
+[lib]
+name = "construct_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "construct-agent"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1.0.154"
