@@ -1,6 +1,6 @@
 //! macOS: a LaunchAgent in `~/Library/LaunchAgents`. `KeepAlive` makes launchd
-//! restart the agent when it dies. Only the generated file is tested here; the
-//! real-machine behaviour is verified separately.
+//! restart the agent when it dies. The tests check the generated file and the
+//! `launchctl` calls against a recording fake.
 
 use std::fs;
 use std::io;
@@ -72,11 +72,16 @@ impl Autostart for LaunchAgent {
     }
 
     fn uninstall(&self) -> io::Result<()> {
-        // Always stop it, even when the plist is already gone; "not loaded" is
-        // not an error here.
-        let _ = self
+        // Always try to stop it. Without a plist "not loaded" is expected and
+        // ignored; with one, a failure is reported and the file stays, so the
+        // command can be run again.
+        let installed = self.is_installed();
+        let stopped = self
             .runner
             .run("launchctl", &["bootout", &self.gui_domain_target()]);
+        if installed {
+            stopped?;
+        }
         match fs::remove_file(self.plist_path()) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),

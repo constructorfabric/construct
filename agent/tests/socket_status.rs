@@ -115,3 +115,16 @@ fn status_command_exits_0_when_the_agent_runs() {
     assert_eq!(v["status"], "running");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_file_that_is_not_a_socket_is_refused_and_left_alone() {
+    let path = temp_socket("notsock");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "precious").unwrap();
+    let err = Server::bind(&path)
+        .err()
+        .expect("a regular file must be refused");
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "precious");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}

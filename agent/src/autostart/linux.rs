@@ -30,7 +30,8 @@ fn unit_name() -> String {
 }
 
 /// Content of the service file. The path is quoted so spaces are safe, and
-/// `\`, `"`, `%` and line breaks are escaped.
+/// `\`, `"`, `%`, `$` and line breaks are escaped; systemd expands `%` and `$`
+/// in `ExecStart`.
 pub fn unit_file(exe: &Path) -> String {
     let exe = escape(
         &exe.display().to_string(),
@@ -38,6 +39,7 @@ pub fn unit_file(exe: &Path) -> String {
             ('\\', "\\\\"),
             ('"', "\\\""),
             ('%', "%%"),
+            ('$', "$$"),
             ('\n', "\\n"),
             ('\r', "\\r"),
         ],
@@ -59,10 +61,16 @@ impl Autostart for SystemdUser {
 
     fn uninstall(&self) -> io::Result<()> {
         let unit = unit_name();
-        // Always stop it, even when the unit file is already gone; "not loaded"
-        // is not an error here.
-        let _ = self.runner.run("systemctl", &["--user", "stop", &unit]);
-        let _ = self.runner.run("systemctl", &["--user", "disable", &unit]);
+        // Always try to stop it. Without a unit file "not loaded" is expected and
+        // ignored; with one, a failure is reported and the file stays, so the
+        // command can be run again.
+        let installed = self.is_installed();
+        let stopped = self.runner.run("systemctl", &["--user", "stop", &unit]);
+        let disabled = self.runner.run("systemctl", &["--user", "disable", &unit]);
+        if installed {
+            stopped?;
+            disabled?;
+        }
         match fs::remove_file(self.unit_path()) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}

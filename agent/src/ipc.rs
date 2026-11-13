@@ -47,9 +47,10 @@ pub use unix::{query_status, serve, Server};
 mod unix {
     use std::fs;
     use std::io::{self, BufRead, BufReader, Write};
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
@@ -62,6 +63,8 @@ mod unix {
     /// Pause after a failed `accept`, so a persistent error (no free file
     /// descriptors) does not spin the CPU.
     const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+    /// How long one `status` call may take in total, connect included.
+    const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
     pub struct Server {
         listener: UnixListener,
@@ -80,15 +83,7 @@ mod unix {
                     .create(dir)?;
             }
             fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))?;
-            if path.exists() {
-                if UnixStream::connect(path).is_ok() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AddrInUse,
-                        format!("another agent is already listening on {}", path.display()),
-                    ));
-                }
-                fs::remove_file(path)?;
-            }
+            remove_stale_socket(path)?;
             let listener = UnixListener::bind(path)?;
             if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(SOCKET_MODE)) {
                 let _ = fs::remove_file(path);
@@ -125,6 +120,31 @@ mod unix {
         }
     }
 
+    /// Remove a socket file left by a dead agent. A live agent is refused, and
+    /// so is anything that is not a socket: the path is never unlinked blindly.
+    fn remove_stale_socket(path: &Path) -> io::Result<()> {
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if !meta.file_type().is_socket() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} exists and is not a socket", path.display()),
+            ));
+        }
+        match UnixStream::connect(path) {
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("another agent is already listening on {}", path.display()),
+            )),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Bind and serve on `path`.
     pub fn serve(path: &Path) -> io::Result<()> {
         let server = Server::bind(path)?;
@@ -148,10 +168,26 @@ mod unix {
         writeln!(stream, "{reply}")
     }
 
-    /// Ask the agent on `path` for its status; returns the JSON line.
+    /// Ask the agent on `path` for its status; returns the JSON line. The whole
+    /// call, connect included, gives up after `QUERY_TIMEOUT`.
     pub fn query_status(path: &Path) -> io::Result<String> {
+        let (tx, rx) = mpsc::channel();
+        let path = path.to_path_buf();
+        thread::spawn(move || {
+            let _ = tx.send(ask_status(&path));
+        });
+        rx.recv_timeout(QUERY_TIMEOUT).unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the agent did not answer in time",
+            ))
+        })
+    }
+
+    fn ask_status(path: &Path) -> io::Result<String> {
         let mut stream = UnixStream::connect(path)?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(QUERY_TIMEOUT))?;
+        stream.set_write_timeout(Some(QUERY_TIMEOUT))?;
         stream.write_all(b"status\n")?;
         let mut reply = String::new();
         if BufReader::new(stream).read_line(&mut reply)? == 0 {

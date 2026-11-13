@@ -1,15 +1,16 @@
-//! Autostart: the only platform-specific part of the agent. Each platform
-//! implements [`Autostart`]; everything else is shared.
+//! Autostart: start the agent at login. Each supported platform implements
+//! [`Autostart`]; Windows has none until the agent socket exists there.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::PathBuf;
 use std::process::Command;
 
 pub mod linux;
 pub mod macos;
-pub mod windows;
 
-/// Service name on every platform.
+/// Service name of the systemd unit. The macOS label is `macos::LABEL`.
 pub const SERVICE_NAME: &str = "construct-agent";
 
 /// Register, start and remove the agent as a per-user login service.
@@ -22,7 +23,7 @@ pub trait Autostart {
     fn is_installed(&self) -> bool;
 }
 
-/// Runs external tools (`systemctl`, `launchctl`, `reg`); replaced in tests.
+/// Runs external tools (`systemctl`, `launchctl`); replaced in tests.
 pub trait CommandRunner {
     fn run(&self, program: &str, args: &[&str]) -> io::Result<()>;
 }
@@ -101,15 +102,11 @@ pub fn current() -> io::Result<Box<dyn Autostart>> {
             Box::new(SystemRunner),
         )))
     }
-    #[cfg(windows)]
-    {
-        Ok(Box::new(windows::RunKey::new(Box::new(SystemRunner))))
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "no autostart module for this platform",
+            "start at login is not available on this platform yet",
         ))
     }
 }

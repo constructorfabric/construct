@@ -6,7 +6,7 @@ use std::io;
 use std::path::Path;
 use std::rc::Rc;
 
-use construct_agent::autostart::{self, linux, macos, windows, Autostart, CommandRunner};
+use construct_agent::autostart::{self, linux, macos, Autostart, CommandRunner};
 
 #[derive(Clone, Default)]
 struct Recorder(Rc<RefCell<Vec<String>>>);
@@ -36,6 +36,15 @@ fn linux_unit_file_keeps_a_line_break_in_the_path_inside_the_line() {
     assert!(unit.contains(r#"ExecStart="/opt/a\nExecStart=/bin/evil\r/construct-agent" run"#));
     assert_eq!(unit.matches("ExecStart=").count(), 2, "{unit}"); // only the injected text, inside the quotes
     assert!(!unit.lines().any(|l| l.starts_with("ExecStart=/bin/evil")));
+}
+
+#[test]
+fn linux_unit_file_escapes_dollar_so_systemd_does_not_expand_it() {
+    let unit = linux::unit_file(Path::new("/opt/a$b/construct-agent"));
+    assert!(
+        unit.contains(r#"ExecStart="/opt/a$$b/construct-agent" run"#),
+        "{unit}"
+    );
 }
 
 #[test]
@@ -113,6 +122,41 @@ fn linux_uninstall_stops_the_service_even_when_the_unit_file_is_gone() {
         .contains(&"systemctl --user stop construct-agent.service".to_string()));
 }
 
+/// Fails every command, like a tool that is missing or refuses.
+struct Failing;
+
+impl CommandRunner for Failing {
+    fn run(&self, program: &str, _args: &[&str]) -> io::Result<()> {
+        Err(io::Error::other(format!("{program} failed")))
+    }
+}
+
+#[test]
+fn linux_uninstall_reports_a_failed_stop_of_an_installed_unit_and_keeps_the_file() {
+    let dir = std::env::temp_dir().join(format!("construct-agent-stopfail-{}", std::process::id()));
+    let sd = linux::SystemdUser::new(dir.join("systemd/user"), Box::new(Recorder::default()));
+    sd.install(Path::new("/usr/bin/construct-agent")).unwrap();
+    let sd = linux::SystemdUser::new(dir.join("systemd/user"), Box::new(Failing));
+    assert!(sd.uninstall().is_err());
+    assert!(
+        sd.is_installed(),
+        "the unit stays so uninstall can be retried"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn macos_uninstall_reports_a_failed_bootout_of_an_installed_agent_and_keeps_the_file() {
+    let home =
+        std::env::temp_dir().join(format!("construct-agent-bootfail-{}", std::process::id()));
+    let ok = macos::LaunchAgent::new(home.clone(), "1234".into(), Box::new(Recorder::default()));
+    ok.install(Path::new("/usr/bin/construct-agent")).unwrap();
+    let agent = macos::LaunchAgent::new(home.clone(), "1234".into(), Box::new(Failing));
+    assert!(agent.uninstall().is_err());
+    assert!(agent.is_installed());
+    let _ = std::fs::remove_dir_all(home);
+}
+
 #[test]
 fn macos_uninstall_boots_the_job_out_even_when_the_plist_is_gone() {
     let home = std::env::temp_dir().join(format!("construct-agent-macgone-{}", std::process::id()));
@@ -126,48 +170,11 @@ fn macos_uninstall_boots_the_job_out_even_when_the_plist_is_gone() {
 }
 
 #[test]
-fn windows_run_key_command() {
-    let exe = Path::new(r"C:\Program Files\Construct\construct-agent.exe");
-    assert_eq!(
-        windows::run_command(exe),
-        r#""C:\Program Files\Construct\construct-agent.exe" run"#
-    );
-    assert_eq!(
-        windows::reg_add_args(exe),
-        [
-            "add",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-            "/v",
-            "construct-agent",
-            "/t",
-            "REG_SZ",
-            "/d",
-            r#""C:\Program Files\Construct\construct-agent.exe" run"#,
-            "/f"
-        ]
-    );
-}
-
-#[test]
 fn uid_comes_only_from_a_successful_numeric_id_output() {
     assert_eq!(autostart::parse_uid(true, "501\n").unwrap(), "501");
     assert!(autostart::parse_uid(true, "").is_err());
     assert!(autostart::parse_uid(true, "root").is_err());
     assert!(autostart::parse_uid(false, "501").is_err());
-}
-
-#[test]
-fn windows_install_is_refused_until_the_socket_exists() {
-    let rec = Recorder::default();
-    let key = windows::RunKey::new(Box::new(rec.clone()));
-    let err = key
-        .install(Path::new(r"C:\\construct-agent.exe"))
-        .unwrap_err();
-    assert_eq!(err.kind(), io::ErrorKind::Unsupported);
-    assert!(
-        rec.0.borrow().is_empty(),
-        "nothing is written to the Run key"
-    );
 }
 
 #[test]
