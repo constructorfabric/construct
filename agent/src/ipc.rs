@@ -36,6 +36,34 @@ pub fn absolute_env_path(var: &str) -> Option<PathBuf> {
         .filter(|p| p.is_absolute())
 }
 
+/// `$XDG_DATA_HOME/construct` (default `~/.local/share/construct`): the root of everything the
+/// agent keeps on disk.
+///
+/// # Errors
+/// Fails when `XDG_DATA_HOME` is not an absolute path and `HOME` is not set to one either.
+pub fn data_root() -> io::Result<PathBuf> {
+    data_root_from(
+        absolute_env_path("XDG_DATA_HOME"),
+        absolute_env_path("HOME"),
+    )
+}
+
+fn data_root_from(xdg_data_home: Option<PathBuf>, home: Option<PathBuf>) -> io::Result<PathBuf> {
+    let data_home = match xdg_data_home {
+        Some(dir) => dir,
+        None => home
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "HOME is not set to an absolute path",
+                )
+            })?
+            .join(".local")
+            .join("share"),
+    };
+    Ok(data_home.join("construct"))
+}
+
 /// The user's home directory, from `HOME`, when it is set to an absolute path.
 ///
 /// # Errors
@@ -250,5 +278,32 @@ mod unix {
             ));
         }
         Ok(reply.trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn data_root_prefers_xdg_data_home_then_home() {
+        let xdg = Some(PathBuf::from("/data"));
+        let home = Some(PathBuf::from("/home/u"));
+        assert_eq!(
+            data_root_from(xdg, home.clone()).unwrap(),
+            Path::new("/data/construct")
+        );
+        assert_eq!(
+            data_root_from(None, home).unwrap(),
+            Path::new("/home/u/.local/share/construct")
+        );
+    }
+
+    #[test]
+    fn data_root_needs_a_home_when_xdg_data_home_is_missing() {
+        let err = data_root_from(None, None).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 }

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
 
-use crate::ipc::{absolute_env_path, create_private_dir, home_dir};
+use crate::ipc::create_private_dir;
 
 /// The PostgreSQL release bundled into the binary (set in `.cargo/config.toml`).
 const POSTGRESQL_VERSION: &str = env!("POSTGRESQL_VERSION");
@@ -104,11 +104,7 @@ impl Paths {
     /// # Errors
     /// Fails when `HOME` or the runtime directory is not set.
     pub fn from_env() -> io::Result<Self> {
-        let data_home = match absolute_env_path("XDG_DATA_HOME") {
-            Some(dir) => dir,
-            None => home_dir()?.join(".local").join("share"),
-        };
-        let root = data_home.join("construct");
+        let root = crate::ipc::data_root()?;
         let runtime = crate::ipc::runtime_dir()?;
         Ok(Self {
             data_dir: root.join("postgres"),
