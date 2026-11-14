@@ -3,8 +3,8 @@
 //! `SOCKET_MODE`), so only the user can connect. The agent opens no TCP port.
 //!
 //! Protocol: the client sends one line, the agent answers one JSON line. Commands:
-//! `status`, `settings-get`, and `settings-set <JSON object>` (the fields to change; see
-//! `settings`). A request line is at most `MAX_REQUEST` bytes.
+//! `status`, `settings-get`, `settings-set <JSON object>` (the fields to change; see
+//! `settings`), and `settings-test [JSON object]` (one ping to the model; see `model_test`). A request line is at most `MAX_REQUEST` bytes.
 
 use std::io;
 use std::path::PathBuf;
@@ -212,7 +212,8 @@ mod unix {
             self
         }
 
-        /// Serve `settings-get` and `settings-set` from these settings, and report their
+        /// Serve `settings-get`, `settings-set` and `settings-test` from these settings, and
+        /// report their
         /// model in `status`. Without them the settings commands answer an error.
         #[must_use]
         pub fn with_settings(mut self, settings: Settings) -> Self {
@@ -361,7 +362,12 @@ mod unix {
                     Err(e) => error_response(e.as_str()),
                 }
             }
-            ("settings-get" | "settings-set", None) => error_response("settings are not available"),
+            ("settings-test", Some(s)) => {
+                crate::model_test::run(argument, &s.model(), crate::model_test::DEADLINE)
+            }
+            ("settings-get" | "settings-set" | "settings-test", None) => {
+                error_response("settings are not available")
+            }
             _ => unknown_command_response(line),
         }
     }
