@@ -5,7 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use construct_agent::model::{ANSWER_LIMIT, ModelConfig, ModelGateway, ModelHealth, ModelState};
+use construct_agent::model::{ANSWER_LIMIT, ModelGateway, ModelHealth, ModelState};
+use construct_agent::settings::{Settings, Update};
 use http::{Method, Request, StatusCode};
 use oagw_sdk::{Body, ServiceGatewayClientV1};
 use serde_json::{Value, json};
@@ -89,16 +90,31 @@ async fn fake_server(answer: Answer) -> (String, Arc<Mutex<Vec<Seen>>>) {
     (url, seen)
 }
 
-fn gateway(base_url: &str, key: &str) -> ModelGateway {
-    gateway_with(base_url, key, ModelState::default())
+static SCRATCH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Settings in a directory of their own, with a model saved in them.
+fn settings_with(base_url: &str, key: &str) -> Settings {
+    let n = SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cb-gateway-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let settings = Settings::open(&dir).unwrap();
+    save(&settings, base_url, "gpt-4.1", key);
+    settings
 }
 
-fn gateway_with(base_url: &str, key: &str, state: ModelState) -> ModelGateway {
-    ModelGateway::new(
-        ModelConfig::new(base_url, "gpt-4.1", key, Some(5)).unwrap(),
-        state,
-    )
-    .unwrap()
+fn save(settings: &Settings, base_url: &str, model: &str, key: &str) {
+    let body = json!({ "model": { "base_url": base_url, "model": model, "api_key": key } });
+    settings
+        .apply(Update::parse(&body.to_string()).unwrap())
+        .unwrap();
+}
+
+fn gateway(base_url: &str, key: &str) -> ModelGateway {
+    gateway_with(settings_with(base_url, key), ModelState::default())
+}
+
+fn gateway_with(settings: Settings, state: ModelState) -> ModelGateway {
+    ModelGateway::new(settings, state).unwrap()
 }
 
 fn context() -> SecurityContext {
@@ -193,27 +209,34 @@ async fn a_rejected_key_is_shown_once_and_not_retried_and_the_state_recovers() {
     .await;
 
     let state = ModelState::default();
-    let gateway = gateway_with(&url, "sk-wrong", state.clone());
+    let settings = settings_with(&url, "sk-wrong");
+    let gateway = gateway_with(settings.clone(), state.clone());
     let response = gateway
         .proxy_request(context(), planner_request())
         .await
         .unwrap();
     // The user is told: `status` shows the key is rejected. Construct reads a 401 as a refusal.
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(state.get(), ModelHealth::KeyRejected);
+    assert_eq!(state.health(&settings.model()), ModelHealth::KeyRejected);
     assert_eq!(
         seen.lock().unwrap().len(),
         1,
         "a refused key is not sent again"
     );
 
-    // The same gateway, the next call is accepted: the state recovers.
+    // A new key clears the state at once, and the next call with it is accepted.
+    save(&settings, &url, "gpt-4.1", "sk-right");
+    assert_eq!(state.health(&settings.model()), ModelHealth::Configured);
     let again = gateway
         .proxy_request(context(), planner_request())
         .await
         .unwrap();
     assert_eq!(again.status(), StatusCode::OK);
-    assert_eq!(state.get(), ModelHealth::Configured);
+    assert_eq!(state.health(&settings.model()), ModelHealth::Configured);
+    assert_eq!(
+        seen.lock().unwrap()[1].authorization.as_deref(),
+        Some("Bearer sk-right")
+    );
 }
 
 #[tokio::test]
@@ -301,9 +324,11 @@ async fn a_server_that_never_answers_is_tried_three_times_and_is_unavailable() {
     });
 
     let state = ModelState::default();
-    let gateway = ModelGateway::new(
-        ModelConfig::new(&url, "gpt-4.1", KEY, Some(1)).unwrap(),
+    let settings = settings_with(&url, KEY);
+    let gateway = ModelGateway::with_attempt_timeout(
+        settings.clone(),
         state.clone(),
+        std::time::Duration::from_secs(1),
     )
     .unwrap();
     let started = std::time::Instant::now();
@@ -319,7 +344,7 @@ async fn a_server_that_never_answers_is_tried_three_times_and_is_unavailable() {
     // Three calls of one second each, and the pauses between them: bounded, not hung.
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
     // A hung API is not a rejected key.
-    assert_eq!(state.get(), ModelHealth::Configured);
+    assert_eq!(state.health(&settings.model()), ModelHealth::Configured);
 }
 
 #[tokio::test]
@@ -348,4 +373,155 @@ async fn a_redirect_is_returned_as_it_is_and_the_key_is_not_sent_again() {
         1,
         "the redirect is not followed"
     );
+}
+
+#[tokio::test]
+async fn a_change_in_the_settings_reaches_the_next_call_without_a_restart() {
+    let (url, seen) = fake_server(Box::new(|_, _| (200, "{}".to_string()))).await;
+    let settings = settings_with(&url, "sk-first");
+    let gateway = gateway_with(settings.clone(), ModelState::default());
+    gateway
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap();
+
+    save(&settings, &url, "gpt-next", "sk-second");
+    gateway
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap();
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].authorization.as_deref(), Some("Bearer sk-first"));
+    assert_eq!(seen[1].authorization.as_deref(), Some("Bearer sk-second"));
+    // The planner's request names the model it was started with; the saved name is sent.
+    assert_eq!(seen[0].body["model"], "gpt-4.1");
+    assert_eq!(seen[1].body["model"], "gpt-next");
+    assert_eq!(seen[1].body["tools"][0]["function"]["name"], "read_profile");
+}
+
+#[tokio::test]
+async fn without_a_complete_model_no_request_is_made() {
+    let (url, seen) = fake_server(Box::new(|_, _| (200, "{}".to_string()))).await;
+    let settings = settings_with(&url, KEY);
+    let state = ModelState::default();
+    let gateway = gateway_with(settings.clone(), state.clone());
+    settings
+        .apply(Update::parse(r#"{"model":{"remove_key":true}}"#).unwrap())
+        .unwrap();
+    let err = gateway
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap_err();
+    assert!(!format!("{err:?}").contains(KEY));
+    assert!(matches!(
+        oagw_sdk::ServiceGatewayError::from(err),
+        oagw_sdk::ServiceGatewayError::Unavailable { .. }
+    ));
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(state.health(&settings.model()), ModelHealth::NotConfigured);
+}
+
+#[tokio::test]
+async fn status_shows_key_rejected_after_a_refusal_and_configured_after_a_new_key() {
+    use construct_agent::ipc::Server;
+
+    let (url, _) = fake_server(Box::new(|_, index| {
+        if index == 0 {
+            (401, "{}".to_string())
+        } else {
+            (200, "{}".to_string())
+        }
+    }))
+    .await;
+    let settings = settings_with(&url, "sk-wrong");
+    let state = ModelState::default();
+    let gateway = gateway_with(settings.clone(), state.clone());
+    let path = std::env::temp_dir()
+        .join(format!("cb-gateway-status-{}", std::process::id()))
+        .join("construct")
+        .join("agent.sock");
+    let server = Server::bind(&path)
+        .unwrap()
+        .with_settings(settings.clone())
+        .with_model(state);
+    std::thread::spawn(move || server.serve());
+    let status = |path: std::path::PathBuf| async move {
+        let reply =
+            tokio::task::spawn_blocking(move || construct_agent::ipc::query_status(&path).unwrap())
+                .await
+                .unwrap();
+        serde_json::from_str::<Value>(&reply).unwrap()
+    };
+
+    assert_eq!(status(path.clone()).await["model_state"], "configured");
+    gateway
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap();
+    let refused = status(path.clone()).await;
+    assert_eq!(refused["model_state"], "key_rejected");
+    // `model` stays the name.
+    assert_eq!(refused["model"], "gpt-4.1");
+    assert!(!refused.to_string().contains("sk-wrong"));
+
+    save(&settings, &url, "gpt-4.1", "sk-right");
+    assert_eq!(status(path.clone()).await["model_state"], "configured");
+    gateway
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap();
+    assert_eq!(status(path.clone()).await["model_state"], "configured");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
+#[tokio::test]
+async fn the_same_key_refused_and_then_accepted_is_configured_again() {
+    let (url, _) = fake_server(Box::new(|_, index| {
+        if index == 0 {
+            (401, "{}".to_string())
+        } else {
+            (200, "{}".to_string())
+        }
+    }))
+    .await;
+    let settings = settings_with(&url, KEY);
+    let state = ModelState::default();
+    let gateway = gateway_with(settings.clone(), state.clone());
+    gateway
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap();
+    assert_eq!(state.health(&settings.model()), ModelHealth::KeyRejected);
+    // Nothing is saved in between: the API accepts the same key now.
+    gateway
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap();
+    assert_eq!(state.health(&settings.model()), ModelHealth::Configured);
+}
+
+#[tokio::test]
+async fn an_address_in_a_hand_edited_file_that_would_send_the_key_in_the_clear_is_not_used() {
+    let n = SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cb-gateway-edited-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = json!({
+        "version": 1,
+        "model": { "base_url": "http://example.com/v1", "model": "m", "api_key": KEY },
+    });
+    std::fs::write(dir.join("settings.json"), file.to_string()).unwrap();
+    let settings = Settings::open(&dir).unwrap();
+    let state = ModelState::default();
+    let gateway = gateway_with(settings.clone(), state.clone());
+    let err = gateway
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        oagw_sdk::ServiceGatewayError::from(err),
+        oagw_sdk::ServiceGatewayError::Unavailable { .. }
+    ));
+    assert_eq!(state.health(&settings.model()), ModelHealth::NotConfigured);
 }

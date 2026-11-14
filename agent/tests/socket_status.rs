@@ -211,7 +211,8 @@ fn settings_set_and_get_over_the_socket_never_answer_the_key() {
     assert_eq!(before["model"]["api_key_set"], false);
     assert_eq!(before["collection"]["enabled"], true);
     let status: serde_json::Value = serde_json::from_str(&ask(&path, b"status")).unwrap();
-    assert_eq!(status["model_name"], "not set");
+    assert_eq!(status["model"], "not set");
+    assert_eq!(status["model_state"], "not_configured");
 
     let set = format!(
         r#"settings-set {{"model":{{"base_url":"https://api.example.com/v1","model":"m1","api_key":"{KEY}"}},"collection":{{"codex":false}}}}"#
@@ -231,7 +232,8 @@ fn settings_set_and_get_over_the_socket_never_answer_the_key() {
     assert_eq!(v["model"]["api_key_set"], true);
     assert_eq!(v["collection"]["codex"], false);
     let status: serde_json::Value = serde_json::from_str(&status_reply).unwrap();
-    assert_eq!(status["model_name"], "m1");
+    assert_eq!(status["model"], "m1");
+    assert_eq!(status["model_state"], "configured");
     // The readers inside the agent see the change at once.
     assert_eq!(settings.model().api_key.as_deref(), Some(KEY));
     assert!(!settings.collection().codex);
@@ -295,27 +297,48 @@ fn settings_commands_without_settings_answer_an_error() {
     let reply = ask(&path, b"settings-get");
     assert!(reply.contains("not available"), "{reply}");
     let status: serde_json::Value = serde_json::from_str(&ask(&path, b"status")).unwrap();
-    assert_eq!(status["model_name"], "not set");
+    assert_eq!(status["model"], "not set");
+    assert_eq!(status["model_state"], "not_configured");
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 }
 
 #[test]
-fn status_reports_the_model_state_and_never_a_key() {
-    use construct_agent::model::{ModelHealth, ModelState};
+fn status_shows_the_saved_model_name_and_whether_the_settings_hold_a_complete_model() {
+    use construct_agent::model::ModelState;
+    use construct_agent::settings::Settings;
 
     let path = temp_socket("model");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    let settings = Settings::open(&root.join("config")).unwrap();
     let model = ModelState::default();
-    let server = Server::bind(&path).unwrap().with_model(model.clone());
+    let server = Server::bind(&path)
+        .unwrap()
+        .with_settings(settings.clone())
+        .with_model(model.clone());
     thread::spawn(move || server.serve());
 
-    let state = |path: &std::path::Path| {
-        let v: serde_json::Value = serde_json::from_str(&query_status(path).unwrap()).unwrap();
-        v["model"].as_str().unwrap().to_string()
+    let status = |path: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&query_status(path).unwrap()).unwrap()
     };
-    assert_eq!(state(&path), "not_configured");
-    model.set(ModelHealth::Configured);
-    assert_eq!(state(&path), "configured");
-    model.set(ModelHealth::KeyRejected);
-    assert_eq!(state(&path), "key_rejected");
-    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    let v = status(&path);
+    assert_eq!(
+        (v["model"].as_str(), v["model_state"].as_str()),
+        (Some("not set"), Some("not_configured"))
+    );
+    // A name alone is not a model: the address and the key are missing.
+    ask(&path, br#"settings-set {"model":{"model":"m1"}}"#);
+    assert_eq!(status(&path)["model_state"], "not_configured");
+    let set = format!(
+        r#"settings-set {{"model":{{"base_url":"https://api.example.com/v1","api_key":"{KEY}"}}}}"#
+    );
+    ask(&path, set.as_bytes());
+    let v = status(&path);
+    assert_eq!(
+        (v["model"].as_str(), v["model_state"].as_str()),
+        (Some("m1"), Some("configured"))
+    );
+    assert!(!v.to_string().contains(KEY));
+    ask(&path, br#"settings-set {"model":{"remove_key":true}}"#);
+    assert_eq!(status(&path)["model_state"], "not_configured");
+    let _ = std::fs::remove_dir_all(root);
 }

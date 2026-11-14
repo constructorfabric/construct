@@ -20,7 +20,7 @@ pub fn status_response(
     construct: &str,
     connectors: &serde_json::Value,
     model: &str,
-    model_name: &str,
+    model_state: &str,
 ) -> String {
     serde_json::json!({
         "status": "running",
@@ -30,7 +30,7 @@ pub fn status_response(
         "construct": construct,
         "connectors": connectors,
         "model": model,
-        "model_name": model_name,
+        "model_state": model_state,
     })
     .to_string()
 }
@@ -115,7 +115,7 @@ mod unix {
     use super::{MAX_REQUEST, error_response, status_response, unknown_command_response};
     use crate::database::Health;
     use crate::follow::Stats;
-    use crate::model::ModelState;
+    use crate::model::{ModelHealth, ModelState};
     use crate::settings::{Settings, Update};
 
     /// Mode of the `construct` runtime directory: the user only.
@@ -205,7 +205,7 @@ mod unix {
             self
         }
 
-        /// Report this model state in `status`: `not_configured`, `configured` or `key_rejected`.
+        /// Report the outcome of the model calls in `status` as `model_state`: `not_configured`, `configured` or `key_rejected`.
         #[must_use]
         pub fn with_model(mut self, model: ModelState) -> Self {
             self.model = model;
@@ -340,20 +340,24 @@ mod unix {
             Some((command, rest)) => (command, rest.trim()),
             None => (line, ""),
         };
-        let model_name = || {
-            settings.map_or_else(
-                || "not set".to_string(),
-                |s| s.model().display_name().to_string(),
-            )
-        };
+        let (model_name, model_state) = settings.map_or_else(
+            || ("not set".to_string(), ModelHealth::NotConfigured),
+            |s| {
+                let model = s.model();
+                (
+                    model.display_name().to_string(),
+                    shared.model.health(&model),
+                )
+            },
+        );
         match (command, settings) {
             ("status", _) if argument.is_empty() => status_response(
                 std::process::id(),
                 shared.database.get().as_str(),
                 shared.construct.get().as_str(),
                 &shared.connectors.to_json(),
-                shared.model.get().as_str(),
-                &model_name(),
+                &model_name,
+                model_state.as_str(),
             ),
             ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
             ("settings-set", Some(s)) => {
