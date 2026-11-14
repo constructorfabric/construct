@@ -32,18 +32,13 @@ pub fn read_new_lines(path: &Path, offset: u64) -> io::Result<(Vec<String>, u64)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::Scratch;
     use std::fs;
-
-    fn temp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("connectors-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir.join("log.jsonl")
-    }
 
     #[test]
     fn torn_last_line_is_left_for_later() {
-        let path = temp("torn");
+        let dir = Scratch::new("torn");
+        let path = dir.path().join("log.jsonl");
         fs::write(&path, "one\ntwo\nthr").unwrap();
         let (lines, offset) = read_new_lines(&path, 0).unwrap();
         assert_eq!(lines, ["one", "two"]);
@@ -56,7 +51,8 @@ mod tests {
 
     #[test]
     fn replaced_file_is_read_from_start() {
-        let path = temp("replaced");
+        let dir = Scratch::new("replaced");
+        let path = dir.path().join("log.jsonl");
         fs::write(&path, "a\n").unwrap();
         let (lines, _) = read_new_lines(&path, 100).unwrap();
         assert_eq!(lines, ["a"]);
@@ -64,7 +60,8 @@ mod tests {
 
     #[test]
     fn carriage_returns_are_trimmed() {
-        let path = temp("crlf");
+        let dir = Scratch::new("crlf");
+        let path = dir.path().join("log.jsonl");
         fs::write(&path, "a\r\nb\r\n").unwrap();
         let (lines, offset) = read_new_lines(&path, 0).unwrap();
         assert_eq!(lines, ["a", "b"]);
@@ -73,7 +70,8 @@ mod tests {
 
     #[test]
     fn bytes_that_are_not_utf8_are_replaced() {
-        let path = temp("lossy");
+        let dir = Scratch::new("lossy");
+        let path = dir.path().join("log.jsonl");
         fs::write(&path, b"a\xffb\n").unwrap();
         let (lines, _) = read_new_lines(&path, 0).unwrap();
         assert_eq!(lines, ["a\u{fffd}b"]);
@@ -81,21 +79,24 @@ mod tests {
 
     #[test]
     fn a_file_without_a_newline_gives_nothing_yet() {
-        let path = temp("nonl");
+        let dir = Scratch::new("nonl");
+        let path = dir.path().join("log.jsonl");
         fs::write(&path, "only").unwrap();
         assert_eq!(read_new_lines(&path, 0).unwrap(), (Vec::new(), 0));
     }
 
     #[test]
     fn an_offset_at_the_end_gives_nothing_and_stays() {
-        let path = temp("end");
+        let dir = Scratch::new("end");
+        let path = dir.path().join("log.jsonl");
         fs::write(&path, "a\nb\n").unwrap();
         assert_eq!(read_new_lines(&path, 4).unwrap(), (Vec::new(), 4));
     }
 
     #[test]
     fn a_replaced_shorter_file_is_read_from_the_start() {
-        let path = temp("shorter");
+        let dir = Scratch::new("shorter");
+        let path = dir.path().join("log.jsonl");
         fs::write(&path, "one\ntwo\n").unwrap();
         let (_, offset) = read_new_lines(&path, 0).unwrap();
         fs::write(&path, "x\n").unwrap();

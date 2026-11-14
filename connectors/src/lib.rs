@@ -4,8 +4,11 @@
 //! file into a [`Record`]. The crate does no I/O of its own besides [`read_new_lines`]
 //! and depends on neither the agent nor an async runtime.
 
+mod claude_code;
+mod codex;
 mod lines;
 mod record;
+mod text;
 mod tool;
 
 pub use lines::read_new_lines;

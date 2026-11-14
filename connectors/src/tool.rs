@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::Record;
+use crate::claude_code::ClaudeCode;
+use crate::codex::Codex;
+use crate::{Mark, Record, Role, Turn};
 
 /// What a reader remembers about one file between lines. It can be saved and restored,
 /// so reading continues after a restart in the middle of a file.
@@ -13,6 +15,34 @@ pub struct FileState {
     pub folder: String,
     /// Empty when unknown.
     pub branch: String,
+}
+
+impl FileState {
+    /// A sign of activity at `time`, with the folder and branch known so far.
+    #[must_use]
+    pub fn mark(&self, tool: &str, time: String) -> Record {
+        Record::Mark(Mark {
+            tool: tool.into(),
+            session: self.session.clone(),
+            time,
+            folder: self.folder.clone(),
+            branch: self.branch.clone(),
+        })
+    }
+
+    /// A message at `time`, with the folder and branch known so far.
+    #[must_use]
+    pub fn turn(&self, tool: &str, time: String, role: Role, text: String) -> Record {
+        Record::Turn(Turn {
+            tool: tool.into(),
+            session: self.session.clone(),
+            time,
+            folder: self.folder.clone(),
+            branch: self.branch.clone(),
+            role,
+            text,
+        })
+    }
 }
 
 /// A coding tool whose session files are read.
@@ -30,7 +60,8 @@ pub trait Tool: Send + Sync {
     fn find_files(&self, root: &Path) -> io::Result<Vec<PathBuf>>;
 
     /// Reads one line of a file. `state` carries the session id, folder and branch learned
-    /// from earlier lines of the same file. Lines of no interest give `None`.
+    /// from earlier lines of the same file. Lines of no interest, and lines that are not
+    /// valid JSON of the expected shape, give `None`.
     fn read_line(&self, state: &mut FileState, line: &str) -> Option<Record>;
 }
 
@@ -62,7 +93,7 @@ impl Registry {
 /// The tools of this crate. A new tool is one module and one line here.
 #[must_use]
 pub fn tools() -> Vec<Box<dyn Tool>> {
-    vec![]
+    vec![Box::new(ClaudeCode), Box::new(Codex)]
 }
 
 #[cfg(test)]
@@ -116,5 +147,7 @@ mod tests {
         let record = tool.read_line(&mut restored, "hello").unwrap();
         assert_eq!(record.session(), "abc");
         assert!(registry.get("other").is_none());
+        assert!(Registry::builtin().get("claude-code").is_some());
+        assert!(Registry::builtin().get("codex").is_some());
     }
 }
