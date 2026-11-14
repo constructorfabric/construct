@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 
 use crate::text::{join_texts, root_under};
-use crate::{FileState, Mark, Parsed, Record, Role, Tool, Turn};
+use crate::{FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
 
 /// What the harness puts into user lines that the user did not type.
 const HARNESS_TAGS: [&str; 8] = [
@@ -31,9 +31,94 @@ impl ClaudeCode {
     fn root_in(home: &Path, config_dir: Option<OsString>) -> PathBuf {
         root_under(home, config_dir, ".claude", "projects")
     }
+}
 
-    /// Reads one line; [`Tool::read_line`] without the loss of the skipped lines.
-    pub fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed {
+fn has_harness_tag(text: &str) -> bool {
+    let text = text.trim_start();
+    HARNESS_TAGS.iter().any(|tag| text.starts_with(tag))
+}
+
+/// The `text` blocks of a message, one after the other; in a user message the harness's
+/// own blocks are left out. `None` when no text is left.
+fn join_text(role: Role, blocks: &[Block]) -> Option<String> {
+    join_texts(
+        blocks
+            .iter()
+            .filter(|b| b.kind == "text")
+            .filter_map(|b| b.text.as_deref())
+            .filter(|t| role == Role::Assistant || !has_harness_tag(t)),
+    )
+}
+
+impl Tool for ClaudeCode {
+    fn name(&self) -> &'static str {
+        "claude-code"
+    }
+
+    fn root(&self, home: &Path) -> PathBuf {
+        Self::root_in(home, env::var_os("CLAUDE_CONFIG_DIR"))
+    }
+
+    fn find_files(&self, root: &Path) -> io::Result<Listing> {
+        let mut listing = Listing::default();
+        let projects = match fs::read_dir(root) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(listing),
+            Err(e) => return Err(e),
+        };
+        for project in projects {
+            let project = match project {
+                Ok(p) => p.path(),
+                Err(e) => {
+                    listing
+                        .problems
+                        .push(format!("cannot list {}: {e}", root.display()));
+                    continue;
+                }
+            };
+            if !project.is_dir() {
+                continue;
+            }
+            let entries = match fs::read_dir(&project) {
+                Ok(entries) => entries,
+                // A project directory that went away since the listing is not a problem.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    listing
+                        .problems
+                        .push(format!("cannot list {}: {e}", project.display()));
+                    continue;
+                }
+            };
+            for file in entries {
+                match file {
+                    Ok(file) => {
+                        let file = file.path();
+                        if file.extension().is_some_and(|e| e == "jsonl") && file.is_file() {
+                            listing.files.push(file);
+                        }
+                    }
+                    Err(e) => listing
+                        .problems
+                        .push(format!("cannot list {}: {e}", project.display())),
+                }
+            }
+        }
+        listing.files.sort();
+        Ok(listing)
+    }
+
+    fn open_file(&self, path: &Path) -> FileState {
+        FileState {
+            session: path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            ..FileState::default()
+        }
+    }
+
+    fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed {
         let Ok(line) = serde_json::from_str::<Line>(line) else {
             return Parsed::Skipped;
         };
@@ -94,70 +179,6 @@ impl ClaudeCode {
             role,
             text,
         }))
-    }
-}
-
-fn has_harness_tag(text: &str) -> bool {
-    let text = text.trim_start();
-    HARNESS_TAGS.iter().any(|tag| text.starts_with(tag))
-}
-
-/// The `text` blocks of a message, one after the other; in a user message the harness's
-/// own blocks are left out. `None` when no text is left.
-fn join_text(role: Role, blocks: &[Block]) -> Option<String> {
-    join_texts(
-        blocks
-            .iter()
-            .filter(|b| b.kind == "text")
-            .filter_map(|b| b.text.as_deref())
-            .filter(|t| role == Role::Assistant || !has_harness_tag(t)),
-    )
-}
-
-impl Tool for ClaudeCode {
-    fn name(&self) -> &'static str {
-        "claude-code"
-    }
-
-    fn root(&self, home: &Path) -> PathBuf {
-        Self::root_in(home, env::var_os("CLAUDE_CONFIG_DIR"))
-    }
-
-    fn find_files(&self, root: &Path) -> io::Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        let projects = match fs::read_dir(root) {
-            Ok(dir) => dir,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(files),
-            Err(e) => return Err(e),
-        };
-        for project in projects {
-            let project = project?.path();
-            if !project.is_dir() {
-                continue;
-            }
-            for file in fs::read_dir(&project)? {
-                let file = file?.path();
-                if file.extension().is_some_and(|e| e == "jsonl") && file.is_file() {
-                    files.push(file);
-                }
-            }
-        }
-        files.sort();
-        Ok(files)
-    }
-
-    fn open_file(&self, path: &Path) -> FileState {
-        FileState {
-            session: path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            ..FileState::default()
-        }
-    }
-
-    fn read_line(&self, state: &mut FileState, line: &str) -> Option<Record> {
-        self.parse_line(state, line).into_record()
     }
 }
 
@@ -381,7 +402,10 @@ mod tests {
             Parsed::Skipped
         );
         assert_eq!(parse("not json"), Parsed::Skipped);
-        assert!(ClaudeCode.read_line(&mut state(), "not json").is_none());
+        assert_eq!(
+            ClaudeCode.parse_line(&mut state(), "not json"),
+            Parsed::Skipped
+        );
     }
 
     #[test]
@@ -404,12 +428,13 @@ mod tests {
         fs::write(dir.join("projects/-w-app/a.jsonl"), "").unwrap();
         fs::write(dir.join("projects/-w-app/notes.txt"), "").unwrap();
         fs::write(dir.join("projects/stray.jsonl"), "").unwrap();
-        let files = ClaudeCode.find_files(&dir.join("projects")).unwrap();
+        let files = ClaudeCode.find_files(&dir.join("projects")).unwrap().files;
         assert_eq!(files, [dir.join("projects/-w-app/a.jsonl")]);
         assert!(
             ClaudeCode
                 .find_files(&dir.join("missing"))
                 .unwrap()
+                .files
                 .is_empty()
         );
         let home = Path::new("/h");
@@ -424,6 +449,40 @@ mod tests {
         assert_eq!(
             ClaudeCode::root_in(home, Some("/cfg".into())),
             Path::new("/cfg/projects")
+        );
+    }
+
+    /// Makes `dir` unreadable; false when that does nothing (root reads everything).
+    #[cfg(unix)]
+    fn lock(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o000)).unwrap();
+        fs::read_dir(dir).is_err()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_project_that_cannot_be_listed_is_named_and_the_others_are_still_listed() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("claude-listing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for project in ["bad", "good"] {
+            fs::create_dir_all(root.join(project)).unwrap();
+        }
+        fs::write(root.join("good/a.jsonl"), "").unwrap();
+        let locked = lock(&root.join("bad"));
+        let listing = ClaudeCode.find_files(&root).unwrap();
+        fs::set_permissions(root.join("bad"), fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        if !locked {
+            return;
+        }
+        assert_eq!(listing.files, [root.join("good/a.jsonl")]);
+        assert_eq!(listing.problems.len(), 1);
+        assert!(
+            listing.problems[0].starts_with(&format!("cannot list {}", root.join("bad").display())),
+            "{:?}",
+            listing.problems
         );
     }
 }

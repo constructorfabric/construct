@@ -73,6 +73,7 @@ fn uninstall() -> std::io::Result<()> {
 #[cfg(unix)]
 fn run() -> std::io::Result<()> {
     use construct_agent::database::{self, Database, Health, State};
+    use construct_agent::follow::Stats;
     use construct_agent::host;
     use tokio::signal::unix::{SignalKind, signal};
 
@@ -82,9 +83,11 @@ fn run() -> std::io::Result<()> {
     let health = Health::default();
 
     let construct_health = Health::default();
+    let connectors = Stats::default();
     let server = construct_agent::ipc::Server::bind(&socket)?
         .with_database(health.clone())
-        .with_construct(construct_health.clone());
+        .with_construct(construct_health.clone())
+        .with_connectors(connectors.clone());
     eprintln!(
         "construct-agent {} listening on {}",
         env!("CARGO_PKG_VERSION"),
@@ -94,6 +97,11 @@ fn run() -> std::io::Result<()> {
     std::thread::spawn(move || {
         let _ = served_tx.send(server.serve());
     });
+
+    // The log readers need no database: they scan on a thread of their own, so neither the
+    // first scan nor a slow disk holds up `status`. The thread stops when `follow_alive` is
+    // dropped, so it is kept until the agent stops (see the end of this function).
+    let follow_alive = spawn_follower(&connectors);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -105,7 +113,7 @@ fn run() -> std::io::Result<()> {
         ))
     })?;
 
-    rt.block_on(async {
+    let result = rt.block_on(async {
         let stop_signal = async {
             tokio::select! {
                 _ = term.recv() => "SIGTERM",
@@ -171,7 +179,19 @@ fn run() -> std::io::Result<()> {
         };
         stop_all(host, database.as_ref()).await;
         result
-    })
+    });
+    // Only now may the follower stop: it is the last thing running besides the exit.
+    drop(follow_alive);
+    result
+}
+
+/// Starts the follower of the session files of every known tool, on the agent's data directory.
+#[cfg(unix)]
+fn spawn_follower(stats: &construct_agent::follow::Stats) -> std::sync::mpsc::Sender<()> {
+    let paths = construct_agent::ipc::absolute_env_path("HOME")
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"))
+        .and_then(|home| Ok((home, construct_agent::records::data_dir()?)));
+    construct_agent::follow::spawn(connectors::Registry::builtin(), paths, stats)
 }
 
 /// [`start_construct`] (no host without a database) until it ends, or until `stop_signal` fires (`Err` with the signal's

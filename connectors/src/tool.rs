@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ClaudeCode, Codex, Record};
+use crate::{ClaudeCode, Codex, Parsed};
 
 /// What a reader remembers about one file between lines. It can be saved and restored,
 /// so reading continues after a restart in the middle of a file.
@@ -15,6 +15,14 @@ pub struct FileState {
     pub branch: String,
 }
 
+/// The session files of a tool, and what could not be listed on the way.
+#[derive(Debug, Default)]
+pub struct Listing {
+    pub files: Vec<PathBuf>,
+    /// One line for each directory or entry that could not be read.
+    pub problems: Vec<String>,
+}
+
 /// A coding tool whose session files are read.
 pub trait Tool: Send + Sync {
     /// Short stable name; it is the `tool` of every record and a directory name on disk.
@@ -23,11 +31,13 @@ pub trait Tool: Send + Sync {
     /// Where the tool keeps its session files, for a user's home directory.
     fn root(&self, home: &Path) -> PathBuf;
 
-    /// The session files under `root`.
+    /// The session files under `root`. A directory below `root` that cannot be read is left
+    /// out of the files and named in [`Listing::problems`], so one bad directory does not
+    /// hide the other files.
     ///
     /// # Errors
-    /// Fails when the directory cannot be read; a missing `root` is not an error.
-    fn find_files(&self, root: &Path) -> io::Result<Vec<PathBuf>>;
+    /// Fails when `root` itself cannot be read; a missing `root` is not an error.
+    fn find_files(&self, root: &Path) -> io::Result<Listing>;
 
     /// The state of a file that was never read: what its path tells, such as the session id.
     fn open_file(&self, _path: &Path) -> FileState {
@@ -35,8 +45,9 @@ pub trait Tool: Send + Sync {
     }
 
     /// Reads one line of a file. `state` carries the session id, folder and branch learned
-    /// from earlier lines of the same file. Lines of no interest give `None`.
-    fn read_line(&self, state: &mut FileState, line: &str) -> Option<Record>;
+    /// from earlier lines of the same file. A line of no interest is [`Parsed::Ignored`]; one
+    /// that does not parse is [`Parsed::Skipped`], which the caller counts.
+    fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed;
 }
 
 /// A list of tools.
@@ -73,7 +84,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Role, Turn};
+    use crate::{Record, Role, Turn};
 
     /// A tool defined outside the crate's modules: its own type and one line in a list.
     struct Dummy;
@@ -87,16 +98,19 @@ mod tests {
             home.join(".dummy")
         }
 
-        fn find_files(&self, root: &Path) -> io::Result<Vec<PathBuf>> {
-            Ok(vec![root.join("s.log")])
+        fn find_files(&self, root: &Path) -> io::Result<Listing> {
+            Ok(Listing {
+                files: vec![root.join("s.log")],
+                problems: Vec::new(),
+            })
         }
 
-        fn read_line(&self, state: &mut FileState, line: &str) -> Option<Record> {
+        fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed {
             if let Some(id) = line.strip_prefix("session ") {
                 state.session = id.to_owned();
-                return None;
+                return Parsed::Ignored;
             }
-            Some(Record::Turn(Turn {
+            Parsed::Record(Record::Turn(Turn {
                 tool: self.name().into(),
                 session: state.session.clone(),
                 time: "2026-11-11T10:00:00Z".into(),
@@ -113,12 +127,14 @@ mod tests {
         let registry = Registry::new(vec![Box::new(Dummy)]);
         let tool = registry.get("dummy").unwrap();
         assert_eq!(tool.root(Path::new("/h")), Path::new("/h/.dummy"));
-        assert_eq!(tool.find_files(Path::new("/r")).unwrap().len(), 1);
+        assert_eq!(tool.find_files(Path::new("/r")).unwrap().files.len(), 1);
         let mut state = FileState::default();
-        assert!(tool.read_line(&mut state, "session abc").is_none());
+        assert_eq!(tool.parse_line(&mut state, "session abc"), Parsed::Ignored);
         let saved = serde_json::to_string(&state).unwrap();
         let mut restored: FileState = serde_json::from_str(&saved).unwrap();
-        let record = tool.read_line(&mut restored, "hello").unwrap();
+        let Parsed::Record(record) = tool.parse_line(&mut restored, "hello") else {
+            panic!("not a record");
+        };
         assert_eq!(record.session(), "abc");
         assert!(registry.get("other").is_none());
         assert!(Registry::builtin().get("dummy").is_none());

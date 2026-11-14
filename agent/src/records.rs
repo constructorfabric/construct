@@ -50,10 +50,11 @@ pub trait Sink {
     /// Adds a record. A mark is dropped when its session already has one in the same minute,
     /// and a turn when the same turn (time, role, text) is stored already, so a replay after
     /// a crash adds nothing. The record is on the disk once `save_progress` returned.
+    /// Returns whether the record was stored, `false` for a dropped one.
     ///
     /// # Errors
     /// Fails when the file cannot be written.
-    fn append(&mut self, record: &Record) -> io::Result<()>;
+    fn append(&mut self, record: &Record) -> io::Result<bool>;
 
     /// The last `limit` turns of a session before `before` (UTC RFC 3339), oldest first.
     ///
@@ -202,6 +203,36 @@ fn ends_cleanly(file: &mut File) -> io::Result<bool> {
     Ok(last[0] == b'\n')
 }
 
+/// Options for a file only the user can read: what the tools said is copied here. The mode
+/// only counts for a file that is created.
+fn private_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+}
+
+/// Creates `dir` and every directory from `data_dir` down to it as user-only.
+fn private_dirs(data_dir: &Path, dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut chain: Vec<&Path> = dir
+            .ancestors()
+            .take_while(|d| d.starts_with(data_dir))
+            .collect();
+        chain.reverse();
+        for d in chain {
+            crate::ipc::create_private_dir(d)?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = data_dir;
+        fs::create_dir_all(dir)
+    }
+}
+
 /// Makes a created or renamed entry of a directory durable. Windows cannot open a directory
 /// for this and keeps such entries durable on its own.
 fn sync_dir(dir: &Path) -> io::Result<()> {
@@ -213,7 +244,7 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 impl Sink for FileSink {
-    fn append(&mut self, record: &Record) -> io::Result<()> {
+    fn append(&mut self, record: &Record) -> io::Result<bool> {
         let path = self.session_path(record.tool(), record.session());
         if !self.sessions.contains_key(&path) {
             let mut known = SessionFile {
@@ -228,12 +259,12 @@ impl Sink for FileSink {
         // A replay after a crash (the offset was saved before the last records) re-sends
         // what is stored already: drop it, so nothing is stored twice.
         if self.sessions.get(&path).is_some_and(|k| k.has(record)) {
-            return Ok(());
+            return Ok(false);
         }
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            private_dirs(&self.dir, parent)?;
         }
-        let mut file = OpenOptions::new()
+        let mut file = private_options()
             .create(true)
             .append(true)
             .read(true)
@@ -251,7 +282,7 @@ impl Sink for FileSink {
         if let Some(known) = self.sessions.get_mut(&path) {
             known.note(record);
         }
-        Ok(())
+        Ok(true)
     }
 
     fn turns_before(
@@ -287,9 +318,13 @@ impl Sink for FileSink {
             }
         }
         self.unsynced.clear();
-        fs::create_dir_all(&self.dir)?;
+        private_dirs(&self.dir, &self.dir)?;
         let tmp = self.dir.join(format!("{PROGRESS_FILE}.tmp"));
-        let mut file = File::create(&tmp)?;
+        let mut file = private_options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
         file.write_all(&serde_json::to_vec(progress).map_err(io::Error::other)?)?;
         file.sync_all()?;
         fs::rename(&tmp, self.dir.join(PROGRESS_FILE))?;

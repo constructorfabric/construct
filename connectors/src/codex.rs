@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::text::{join_texts, root_under};
-use crate::{FileState, Mark, Parsed, Record, Role, Tool, Turn};
+use crate::{FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
 
 /// The tool's own context that Codex writes as user messages. A text block that starts
 /// with one of these is not something the user typed.
@@ -37,9 +37,104 @@ impl Codex {
     fn root_in(home: &Path, codex_home: Option<OsString>) -> PathBuf {
         root_under(home, codex_home, ".codex", "sessions")
     }
+}
 
-    /// Reads one line; [`Tool::read_line`] without the loss of the skipped lines.
-    pub fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed {
+/// The text blocks of a message of `role`, one after the other, without the tool's own
+/// context in user messages; `None` when nothing is left.
+fn join_text(role: Role, blocks: &[Block]) -> Option<String> {
+    let wanted = match role {
+        Role::User => "input_text",
+        Role::Assistant => "output_text",
+    };
+    join_texts(
+        blocks
+            .iter()
+            .filter(|b| b.kind == wanted)
+            .filter_map(|b| b.text.as_deref())
+            .filter(|t| role == Role::Assistant || !is_context(t)),
+    )
+}
+
+fn is_context(text: &str) -> bool {
+    let text = text.trim_start();
+    CONTEXT_MARKERS.iter().any(|m| text.starts_with(m))
+}
+
+/// The id of a session from a file name `rollout-<time>-<uuid>.jsonl`.
+fn session_of(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?.strip_prefix("rollout-")?;
+    let id = stem.get(stem.len().checked_sub(36)?..)?;
+    let shaped = id.bytes().enumerate().all(|(i, b)| {
+        if matches!(i, 8 | 13 | 18 | 23) {
+            b == b'-'
+        } else {
+            b.is_ascii_hexdigit()
+        }
+    });
+    shaped.then(|| id.to_owned())
+}
+
+fn collect_files(dir: &Path, depth: u8, listing: &mut Listing) -> io::Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                listing
+                    .problems
+                    .push(format!("cannot list {}: {e}", dir.display()));
+                continue;
+            }
+        };
+        if path.is_dir() {
+            if depth < 3 {
+                // A day directory that cannot be read is named; the other days are still read.
+                if let Err(e) = collect_files(&path, depth + 1, listing) {
+                    listing
+                        .problems
+                        .push(format!("cannot list {}: {e}", path.display()));
+                }
+            }
+        } else if path.is_file()
+            && path.extension().is_some_and(|e| e == "jsonl")
+            && path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
+        {
+            listing.files.push(path);
+        }
+    }
+    Ok(())
+}
+
+impl Tool for Codex {
+    fn name(&self) -> &'static str {
+        "codex"
+    }
+
+    fn root(&self, home: &Path) -> PathBuf {
+        Self::root_in(home, env::var_os("CODEX_HOME"))
+    }
+
+    fn find_files(&self, root: &Path) -> io::Result<Listing> {
+        let mut listing = Listing::default();
+        collect_files(root, 0, &mut listing)?;
+        listing.files.sort();
+        Ok(listing)
+    }
+
+    fn open_file(&self, path: &Path) -> FileState {
+        FileState {
+            session: session_of(path).unwrap_or_default(),
+            ..FileState::default()
+        }
+    }
+
+    fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed {
         let Ok(line) = serde_json::from_str::<Line>(line) else {
             return Parsed::Skipped;
         };
@@ -98,93 +193,6 @@ impl Codex {
                 branch: state.branch.clone(),
             })),
         }
-    }
-}
-
-/// The text blocks of a message of `role`, one after the other, without the tool's own
-/// context in user messages; `None` when nothing is left.
-fn join_text(role: Role, blocks: &[Block]) -> Option<String> {
-    let wanted = match role {
-        Role::User => "input_text",
-        Role::Assistant => "output_text",
-    };
-    join_texts(
-        blocks
-            .iter()
-            .filter(|b| b.kind == wanted)
-            .filter_map(|b| b.text.as_deref())
-            .filter(|t| role == Role::Assistant || !is_context(t)),
-    )
-}
-
-fn is_context(text: &str) -> bool {
-    let text = text.trim_start();
-    CONTEXT_MARKERS.iter().any(|m| text.starts_with(m))
-}
-
-/// The id of a session from a file name `rollout-<time>-<uuid>.jsonl`.
-fn session_of(path: &Path) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?.strip_prefix("rollout-")?;
-    let id = stem.get(stem.len().checked_sub(36)?..)?;
-    let shaped = id.bytes().enumerate().all(|(i, b)| {
-        if matches!(i, 8 | 13 | 18 | 23) {
-            b == b'-'
-        } else {
-            b.is_ascii_hexdigit()
-        }
-    });
-    shaped.then(|| id.to_owned())
-}
-
-fn collect_files(dir: &Path, depth: u8, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
-    };
-    for entry in entries {
-        let path = entry?.path();
-        if path.is_dir() {
-            if depth < 3 {
-                collect_files(&path, depth + 1, files)?;
-            }
-        } else if path.is_file()
-            && path.extension().is_some_and(|e| e == "jsonl")
-            && path
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
-        {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-impl Tool for Codex {
-    fn name(&self) -> &'static str {
-        "codex"
-    }
-
-    fn root(&self, home: &Path) -> PathBuf {
-        Self::root_in(home, env::var_os("CODEX_HOME"))
-    }
-
-    fn find_files(&self, root: &Path) -> io::Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        collect_files(root, 0, &mut files)?;
-        files.sort();
-        Ok(files)
-    }
-
-    fn open_file(&self, path: &Path) -> FileState {
-        FileState {
-            session: session_of(path).unwrap_or_default(),
-            ..FileState::default()
-        }
-    }
-
-    fn read_line(&self, state: &mut FileState, line: &str) -> Option<Record> {
-        self.parse_line(state, line).into_record()
     }
 }
 
@@ -395,19 +403,17 @@ mod tests {
             Codex.parse_line(&mut st, r#"{"timestamp":"2026-11-11T10:1"#),
             Parsed::Skipped
         );
-        assert!(Codex.read_line(&mut st, "not json").is_none());
+        assert_eq!(Codex.parse_line(&mut st, "not json"), Parsed::Skipped);
     }
 
     #[test]
     fn a_read_from_the_middle_uses_the_saved_state() {
         let mut first = started(&meta(r#","git":{"branch":"feat"}"#));
         let saved = serde_json::to_string(&first).unwrap();
-        assert!(
-            Codex
-                .parse_line(&mut first, &message("user", "input_text", "one"))
-                .into_record()
-                .is_some()
-        );
+        assert!(matches!(
+            Codex.parse_line(&mut first, &message("user", "input_text", "one")),
+            Parsed::Record(_)
+        ));
         // The agent restarts and reads on from its saved offset: no session_meta in sight.
         let mut restored: FileState = serde_json::from_str(&saved).unwrap();
         let t = turn(Codex.parse_line(&mut restored, &message("assistant", "output_text", "two")));
@@ -442,14 +448,48 @@ mod tests {
         )
         .unwrap();
         fs::write(day.join("other.jsonl"), "").unwrap();
-        let files = Codex.find_files(&dir.join("sessions")).unwrap();
+        let files = Codex.find_files(&dir.join("sessions")).unwrap().files;
         assert_eq!(files.len(), 1);
-        assert!(Codex.find_files(&dir.join("missing")).unwrap().is_empty());
+        assert!(
+            Codex
+                .find_files(&dir.join("missing"))
+                .unwrap()
+                .files
+                .is_empty()
+        );
         let home = Path::new("/h");
         assert_eq!(Codex::root_in(home, None), Path::new("/h/.codex/sessions"));
         assert_eq!(
             Codex::root_in(home, Some("/cx".into())),
             Path::new("/cx/sessions")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_day_directory_that_cannot_be_listed_is_named_and_the_other_days_are_still_listed() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("codex-listing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (bad, good) = (root.join("2026/11/10"), root.join("2026/11/11"));
+        fs::create_dir_all(&bad).unwrap();
+        fs::create_dir_all(&good).unwrap();
+        let log = good.join(format!("rollout-2026-11-11T10-15-00-{ID}.jsonl"));
+        fs::write(&log, "").unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o000)).unwrap();
+        let locked = fs::read_dir(&bad).is_err();
+        let listing = Codex.find_files(&root).unwrap();
+        fs::set_permissions(&bad, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        if !locked {
+            return;
+        }
+        assert_eq!(listing.files, [log]);
+        assert_eq!(listing.problems.len(), 1);
+        assert!(
+            listing.problems[0].starts_with(&format!("cannot list {}", bad.display())),
+            "{:?}",
+            listing.problems
         );
     }
 }
