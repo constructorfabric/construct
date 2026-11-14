@@ -1,0 +1,1 @@
+default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:*

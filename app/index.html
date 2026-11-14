@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'"
+    />
+    <title>Construct Browser</title>
+  </head>
+  <body>
+    <h1>Construct agent</h1>
+    <p id="agent-status" data-state="unknown">checking</p>
+    <p id="agent-detail"></p>
+    <script type="module" src="/src/renderer.ts"></script>
+  </body>
+</html>
