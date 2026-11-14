@@ -5,7 +5,7 @@ mod common;
 
 use std::path::Path;
 
-use construct_agent::autostart::{self, Autostart, linux, macos};
+use construct_agent::autostart::{self, Autostart, linux, macos, windows};
 
 use common::{LINUX_INSTALL, Scenario};
 
@@ -148,6 +148,57 @@ fn uid_comes_only_from_a_successful_numeric_id_output() {
     assert!(autostart::parse_uid(true, "").is_err());
     assert!(autostart::parse_uid(true, "root").is_err());
     assert!(autostart::parse_uid(false, "501").is_err());
+}
+
+#[test]
+fn windows_run_key_command() {
+    let exe = Path::new(r"C:\Program Files\Construct\construct-agent.exe");
+    assert_eq!(
+        windows::run_command(exe),
+        r#""C:\Program Files\Construct\construct-agent.exe" run"#
+    );
+    assert_eq!(
+        windows::reg_add_args(exe),
+        [
+            "add",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "construct-agent",
+            "/t",
+            "REG_SZ",
+            "/d",
+            r#""C:\Program Files\Construct\construct-agent.exe" run"#,
+            "/f"
+        ]
+    );
+}
+
+#[test]
+fn windows_install_is_refused_until_the_socket_exists() {
+    let s = Scenario::new();
+    let key = windows::RunKey::new(Box::new(s.rec.clone()));
+    let err = key
+        .install(Path::new(r"C:\\construct-agent.exe"))
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    assert!(
+        s.take_calls().is_empty(),
+        "nothing is written to the Run key"
+    );
+}
+
+#[test]
+fn windows_ensure_is_refused_until_the_socket_exists() {
+    let s = Scenario::new();
+    let key = windows::RunKey::new(Box::new(s.rec.clone()));
+    let err = key
+        .ensure(Path::new(r"C:\\construct-agent.exe"))
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    assert!(
+        s.take_calls().is_empty(),
+        "nothing is written to the Run key"
+    );
 }
 
 #[test]
