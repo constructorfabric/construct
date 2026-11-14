@@ -62,7 +62,17 @@ fn second_agent_refuses_a_live_socket_but_replaces_a_stale_one() {
 
     drop(first); // listener closed, socket file stays: a stale file
     assert!(path.exists());
-    Server::bind(&path).expect("stale socket is replaced");
+    // Another test in this process may be spawning a child at this moment, and the child holds a
+    // copy of the closed listener until it execs: the socket still answers for a few milliseconds.
+    let mut bound = Server::bind(&path);
+    for _ in 0..100 {
+        if bound.is_ok() {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+        bound = Server::bind(&path);
+    }
+    bound.expect("stale socket is replaced");
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 }
 
@@ -166,5 +176,26 @@ fn status_reports_the_database_and_construct_states_each_on_its_own() {
     database.set(State::Failed);
     construct.set(State::Ready);
     assert_eq!(states(&path), pair("failed", "ready"));
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn status_reports_the_model_state_and_never_a_key() {
+    use construct_agent::model::{ModelHealth, ModelState};
+
+    let path = temp_socket("model");
+    let model = ModelState::default();
+    let server = Server::bind(&path).unwrap().with_model(model.clone());
+    thread::spawn(move || server.serve());
+
+    let state = |path: &std::path::Path| {
+        let v: serde_json::Value = serde_json::from_str(&query_status(path).unwrap()).unwrap();
+        v["model"].as_str().unwrap().to_string()
+    };
+    assert_eq!(state(&path), "not_configured");
+    model.set(ModelHealth::Configured);
+    assert_eq!(state(&path), "configured");
+    model.set(ModelHealth::KeyRejected);
+    assert_eq!(state(&path), "key_rejected");
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 }
