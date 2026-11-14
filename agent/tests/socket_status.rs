@@ -128,3 +128,9 @@ fn a_file_that_is_not_a_socket_is_refused_and_left_alone() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "precious");
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 }
+
+#[test]
+fn a_socket_path_without_a_parent_directory_is_refused() {
+    let err = Server::bind(std::path::Path::new("/")).err().unwrap();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+}

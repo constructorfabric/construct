@@ -1,3 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["agent"]
+
+# Deny the unwrap and expect shortcuts, forbid unsafe code, and keep clippy's pedantic group clean.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+expect_used = "deny"
+unwrap_used = "deny"
