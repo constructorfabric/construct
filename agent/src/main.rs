@@ -71,6 +71,7 @@ fn uninstall() -> std::io::Result<()> {
 /// database), serve it on a thread, start the database in the background so `status` never
 /// waits for it, and stop the database on SIGTERM or SIGINT.
 #[cfg(unix)]
+#[allow(clippy::too_many_lines)] // one linear start-up sequence
 fn run() -> std::io::Result<()> {
     use construct_agent::database::{self, Database, Health, State};
     use construct_agent::host;
@@ -85,9 +86,11 @@ fn run() -> std::io::Result<()> {
     let health = Health::default();
 
     let construct_health = Health::default();
+    let connectors = construct_agent::follow::Stats::default();
     let server = construct_agent::ipc::Server::bind(&socket)?
         .with_database(health.clone())
-        .with_construct(construct_health.clone());
+        .with_construct(construct_health.clone())
+        .with_connectors(connectors.clone());
     eprintln!(
         "construct-agent {} listening on {}",
         env!("CARGO_PKG_VERSION"),
@@ -98,6 +101,9 @@ fn run() -> std::io::Result<()> {
         server.serve();
         let _ = served_tx.send(());
     });
+
+    // Kept until the function returns, after the runtime: the follower ends when it is dropped.
+    let _follow_alive = spawn_follower(&connectors);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -182,6 +188,18 @@ fn run() -> std::io::Result<()> {
         stop_all(host, database.as_ref()).await;
         result
     })
+}
+
+/// Starts the follower of the session files of every known tool, on the agent's data directory.
+/// The log readers need no database: they scan on a thread of their own, so neither the first
+/// scan nor a slow disk holds up `status`. The bound socket makes this the only agent of the
+/// user, so it is the one writer of the records.
+#[cfg(unix)]
+fn spawn_follower(stats: &construct_agent::follow::Stats) -> std::sync::mpsc::Sender<()> {
+    use construct_agent::ipc;
+
+    let paths = ipc::home_dir().and_then(|home| Ok((home, ipc::data_root()?)));
+    construct_agent::follow::spawn(connectors::Registry::builtin(), paths, stats)
 }
 
 /// Start the Construct host on `db` ([`start_construct`]) and wait for it, unless `stop_signal`

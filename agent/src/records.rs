@@ -30,6 +30,45 @@ pub struct Progress {
     pub files: BTreeMap<String, FileProgress>,
 }
 
+/// What the readers write to and the rest of the agent reads from.
+pub trait Sink {
+    /// Adds a record. A mark is dropped when its session already has one in the same minute,
+    /// and a turn when the same turn (time, role, text) is stored already, so a replay after
+    /// a crash adds nothing. The record is on the disk once `save_progress` returned.
+    /// Returns whether the record was stored, `false` for a dropped one.
+    ///
+    /// # Errors
+    /// Fails when the time of the record is not a UTC RFC 3339 time (`2026-11-11T10:15:30Z`,
+    /// optionally with a fraction of a second), when a stored line is damaged, or when the
+    /// file cannot be written.
+    fn append(&mut self, record: &Record) -> io::Result<bool>;
+
+    /// The last `limit` turns of a session before `before` (UTC RFC 3339), oldest first.
+    ///
+    /// # Errors
+    /// Fails when the file cannot be read or a stored line is damaged.
+    fn turns_before(
+        &self,
+        tool: &str,
+        session: &str,
+        before: &str,
+        limit: usize,
+    ) -> io::Result<Vec<Turn>>;
+
+    /// Makes the appended records durable, then saves the progress of every log file
+    /// atomically (temporary file, rename, directory sync).
+    ///
+    /// # Errors
+    /// Fails when the file cannot be written.
+    fn save_progress(&mut self, progress: &Progress) -> io::Result<()>;
+
+    /// The saved progress; empty when nothing was saved yet.
+    ///
+    /// # Errors
+    /// Fails when the file is there but cannot be read or parsed.
+    fn load_progress(&self) -> io::Result<Progress>;
+}
+
 /// What is known about one session file after it was first touched in this run.
 struct SessionFile {
     /// The minutes that have a mark.
@@ -58,8 +97,7 @@ impl SessionFile {
     }
 }
 
-/// What the readers write to and the rest of the agent reads from: records on plain files
-/// under a data directory.
+/// [`Sink`] on plain files under a data directory.
 ///
 /// The sink keeps what it knows about each session file in memory, so it is correct only while
 /// it is the one writer of its directory. The agent holds the lock of its data directory for
@@ -91,16 +129,10 @@ impl FileSink {
         self.tool_dir(tool)
             .join(format!("{}.jsonl", file_name(session)))
     }
+}
 
-    /// Adds a record. A mark is dropped when its session already has one in the same minute,
-    /// and a turn when the same turn (time, role, text) is stored already, so a replay after
-    /// a crash adds nothing. The record is on the disk once `save_progress` returned.
-    ///
-    /// # Errors
-    /// Fails when the time of the record is not a UTC RFC 3339 time (`2026-11-11T10:15:30Z`,
-    /// optionally with a fraction of a second), when a stored line is damaged, or when the
-    /// file cannot be written.
-    pub fn append(&mut self, record: &Record) -> io::Result<()> {
+impl Sink for FileSink {
+    fn append(&mut self, record: &Record) -> io::Result<bool> {
         if !is_utc_time(record.time()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -116,13 +148,13 @@ impl FileSink {
         // A replay after a crash (the offset was saved before the last records) re-sends
         // what is stored already: drop it, so nothing is stored twice.
         if known.has(record) {
-            return Ok(());
+            return Ok(false);
         }
         let mut line = serde_json::to_string(record).map_err(io::Error::other)?;
         line.push('\n');
         // One write for the line and its newline, so lines of one file never interleave.
-        let written = fs::create_dir_all(&tool_dir).and_then(|()| {
-            OpenOptions::new()
+        let written = private_dirs(&self.dir, &tool_dir).and_then(|()| {
+            private_options()
                 .create(true)
                 .append(true)
                 .open(&path)?
@@ -136,14 +168,10 @@ impl FileSink {
         }
         known.note(record);
         self.unsynced.insert(path);
-        Ok(())
+        Ok(true)
     }
 
-    /// The last `limit` turns of a session before `before` (UTC RFC 3339), oldest first.
-    ///
-    /// # Errors
-    /// Fails when the file cannot be read or a stored line is damaged.
-    pub fn turns_before(
+    fn turns_before(
         &self,
         tool: &str,
         session: &str,
@@ -163,12 +191,7 @@ impl FileSink {
         Ok(turns)
     }
 
-    /// Makes the appended records durable, then saves the progress of every log file
-    /// atomically (temporary file, rename, directory sync).
-    ///
-    /// # Errors
-    /// Fails when the file cannot be written.
-    pub fn save_progress(&mut self, progress: &Progress) -> io::Result<()> {
+    fn save_progress(&mut self, progress: &Progress) -> io::Result<()> {
         // The offset may only move past records that are on the disk.
         for path in &self.unsynced {
             OpenOptions::new().append(true).open(path)?.sync_data()?;
@@ -182,20 +205,20 @@ impl FileSink {
             }
         }
         self.unsynced.clear();
-        fs::create_dir_all(&self.dir)?;
+        private_dirs(&self.dir, &self.dir)?;
         let tmp = self.dir.join(format!("{PROGRESS_FILE}.tmp"));
-        let mut file = File::create(&tmp)?;
+        let mut file = private_options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
         file.write_all(&serde_json::to_vec(progress).map_err(io::Error::other)?)?;
         file.sync_all()?;
         fs::rename(&tmp, self.dir.join(PROGRESS_FILE))?;
         sync_dir(&self.dir)
     }
 
-    /// The saved progress; empty when nothing was saved yet.
-    ///
-    /// # Errors
-    /// Fails when the file is there but cannot be read or parsed.
-    pub fn load_progress(&self) -> io::Result<Progress> {
+    fn load_progress(&self) -> io::Result<Progress> {
         match fs::read(self.dir.join(PROGRESS_FILE)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Progress::default()),
@@ -285,6 +308,36 @@ fn load_session(path: &Path) -> io::Result<SessionFile> {
         known.note(r);
     }
     Ok(known)
+}
+
+/// Options for a file only the user can read: what the tools said is copied here. The mode
+/// only counts for a file that is created.
+fn private_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+}
+
+/// Creates `dir` and every directory from `data_dir` down to it as user-only.
+fn private_dirs(data_dir: &Path, dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut chain: Vec<&Path> = dir
+            .ancestors()
+            .take_while(|d| d.starts_with(data_dir))
+            .collect();
+        chain.reverse();
+        for d in chain {
+            crate::ipc::create_private_dir(d)?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = data_dir;
+        fs::create_dir_all(dir)
+    }
 }
 
 /// Makes a created or renamed entry of a directory durable. Windows cannot open a directory

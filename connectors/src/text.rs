@@ -44,6 +44,33 @@ pub fn is_jsonl_file(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "jsonl") && path.is_file()
 }
 
+/// The record a tool makes of one line; `None` when the line gives none.
+#[cfg(test)]
+pub fn read_line(
+    tool: &dyn crate::Tool,
+    state: &mut crate::FileState,
+    line: &str,
+) -> Option<crate::Record> {
+    match tool.parse_line(state, line) {
+        crate::Parsed::Record(record) => Some(record),
+        crate::Parsed::Ignored | crate::Parsed::Skipped => None,
+    }
+}
+
+/// The complete lines of a file from `offset` on, and the offset after them.
+#[cfg(test)]
+pub fn read_texts(path: &Path, offset: u64) -> (Vec<String>, u64) {
+    let mut lines = Vec::new();
+    let end = crate::for_each_line(path, offset, |line, _| {
+        if let crate::Line::Text(text) = line {
+            lines.push(text);
+        }
+        true
+    })
+    .unwrap();
+    (lines, end)
+}
+
 /// A directory for a test, removed when it goes out of scope.
 #[cfg(test)]
 pub struct Scratch(PathBuf);

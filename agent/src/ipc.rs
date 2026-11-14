@@ -12,13 +12,19 @@ pub const SOCKET_NAME: &str = "agent.sock";
 
 /// The JSON line the agent answers to `status`.
 #[must_use]
-pub fn status_response(pid: u32, database: &str, construct: &str) -> String {
+pub fn status_response(
+    pid: u32,
+    database: &str,
+    construct: &str,
+    connectors: &serde_json::Value,
+) -> String {
     serde_json::json!({
         "status": "running",
         "version": env!("CARGO_PKG_VERSION"),
         "pid": pid,
         "database": database,
         "construct": construct,
+        "connectors": connectors,
     })
     .to_string()
 }
@@ -118,6 +124,7 @@ mod unix {
 
     use super::{status_response, unknown_command_response};
     use crate::database::Health;
+    use crate::follow::Stats;
 
     /// Mode of the `construct` runtime directory: the user only.
     const DIR_MODE: u32 = 0o700;
@@ -146,6 +153,7 @@ mod unix {
         path: PathBuf,
         database: Health,
         construct: Health,
+        connectors: Stats,
     }
 
     impl Server {
@@ -174,6 +182,7 @@ mod unix {
                 path: path.to_path_buf(),
                 database: Health::default(),
                 construct: Health::default(),
+                connectors: Stats::default(),
             })
         }
 
@@ -191,6 +200,13 @@ mod unix {
             self
         }
 
+        /// Report these log readers in `status`.
+        #[must_use]
+        pub fn with_connectors(mut self, connectors: Stats) -> Self {
+            self.connectors = connectors;
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -204,8 +220,9 @@ mod unix {
                     Ok(stream) => {
                         let database = self.database.clone();
                         let construct = self.construct.clone();
+                        let connectors = self.connectors.clone();
                         thread::spawn(move || {
-                            if let Err(e) = handle(stream, &database, &construct) {
+                            if let Err(e) = handle(stream, &database, &construct, &connectors) {
                                 eprintln!("connection error: {e}");
                             }
                         });
@@ -244,7 +261,12 @@ mod unix {
         }
     }
 
-    fn handle(stream: UnixStream, database: &Health, construct: &Health) -> io::Result<()> {
+    fn handle(
+        stream: UnixStream,
+        database: &Health,
+        construct: &Health,
+        connectors: &Stats,
+    ) -> io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         let mut line = String::new();
         BufReader::new(io::Read::take(&stream, 1024)).read_line(&mut line)?;
@@ -254,6 +276,7 @@ mod unix {
                 std::process::id(),
                 database.get().as_str(),
                 construct.get().as_str(),
+                &connectors.to_json(),
             ),
             other => unknown_command_response(other),
         };

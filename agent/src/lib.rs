@@ -5,6 +5,7 @@
 pub mod autostart;
 #[cfg(unix)]
 pub mod database;
+pub mod follow;
 #[cfg(unix)]
 pub mod host;
 pub mod ipc;

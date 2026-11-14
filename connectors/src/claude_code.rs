@@ -8,7 +8,8 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 
 use crate::text::{entries_of, is_jsonl_file, join_texts, root_under, starts_with_marker};
-use crate::{FileState, Record, Role, Tool};
+use crate::tool::Listing;
+use crate::{FileState, Parsed, Record, Role, Tool};
 
 /// What the harness puts into user lines that the user did not type.
 const HARNESS_TAGS: [&str; 8] = [
@@ -69,23 +70,46 @@ impl Tool for ClaudeCode {
         Self::root_in(home, env::var_os("CLAUDE_CONFIG_DIR"))
     }
 
-    fn find_files(&self, root: &Path) -> io::Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
+    fn find_files(&self, root: &Path) -> io::Result<Listing> {
+        let mut listing = Listing::default();
         for project in entries_of(root)? {
             if project.is_dir() {
-                files.extend(
-                    entries_of(&project)?
-                        .into_iter()
-                        .filter(|f| is_jsonl_file(f)),
-                );
+                match entries_of(&project) {
+                    Ok(entries) => listing
+                        .files
+                        .extend(entries.into_iter().filter(|f| is_jsonl_file(f))),
+                    Err(e) => listing
+                        .problems
+                        .push(format!("cannot list {}: {e}", project.display())),
+                }
             }
         }
-        files.sort();
-        Ok(files)
+        listing.files.sort();
+        Ok(listing)
     }
 
-    fn read_line(&self, state: &mut FileState, line: &str) -> Option<Record> {
-        let line = serde_json::from_str::<Line>(line).ok()?;
+    fn open_file(&self, path: &Path) -> FileState {
+        FileState {
+            session: path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            ..FileState::default()
+        }
+    }
+
+    fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed {
+        let Ok(line) = serde_json::from_str::<Line>(line) else {
+            return Parsed::Skipped;
+        };
+        self.record(state, line)
+            .map_or(Parsed::Ignored, Parsed::Record)
+    }
+}
+
+impl ClaudeCode {
+    /// The record of a parsed line; `None` for a line of no interest.
+    fn record(&self, state: &mut FileState, line: Line) -> Option<Record> {
         if !matches!(line.kind.as_str(), "user" | "assistant" | "attachment") {
             return None;
         }
@@ -216,8 +240,7 @@ impl<'de> Deserialize<'de> for Content {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::read_new_lines;
-    use crate::text::Scratch;
+    use crate::text::{Scratch, read_line, read_texts};
     use crate::{Mark, Turn};
 
     const T: &str = "2026-11-11T10:15:30.123Z";
@@ -235,7 +258,7 @@ mod tests {
     }
 
     fn parse(l: &str) -> Option<Record> {
-        ClaudeCode.read_line(&mut FileState::default(), l)
+        read_line(&ClaudeCode, &mut FileState::default(), l)
     }
 
     fn turn(r: Option<Record>) -> Turn {
@@ -422,17 +445,17 @@ mod tests {
     fn session_folder_and_branch_carry_over_to_later_lines() {
         let mut st = FileState::default();
         let first = line("user", "", r#""one""#);
-        assert_eq!(turn(ClaudeCode.read_line(&mut st, &first)).session, "s-1");
+        assert_eq!(turn(read_line(&ClaudeCode, &mut st, &first)).session, "s-1");
         let bare = format!(
             r#"{{"type":"assistant","timestamp":"{T}","message":{{"content":[{{"type":"tool_use"}}]}}}}"#
         );
-        let m = mark(ClaudeCode.read_line(&mut st, &bare));
+        let m = mark(read_line(&ClaudeCode, &mut st, &bare));
         assert_eq!(
             (m.session.as_str(), m.folder.as_str(), m.branch.as_str()),
             ("s-1", "/w/app", "feat")
         );
         let moved = r#"{"type":"user","timestamp":"2026-11-11T10:00:00Z","cwd":"/other","sessionId":"s-2","message":{"content":"hi"}}"#;
-        let t = turn(ClaudeCode.read_line(&mut st, moved));
+        let t = turn(read_line(&ClaudeCode, &mut st, moved));
         assert_eq!(
             (t.session.as_str(), t.folder.as_str(), t.branch.as_str()),
             ("s-2", "/other", "feat")
@@ -448,7 +471,7 @@ mod tests {
         dir.write("projects/-w-lib/c.jsonl", "");
         dir.write("projects/stray.jsonl", "");
         let projects = dir.path().join("projects");
-        let files = ClaudeCode.find_files(&projects).unwrap();
+        let files = ClaudeCode.find_files(&projects).unwrap().files;
         assert_eq!(
             files,
             [
@@ -461,6 +484,7 @@ mod tests {
             ClaudeCode
                 .find_files(&dir.path().join("none"))
                 .unwrap()
+                .files
                 .is_empty()
         );
         let home = Path::new("/h");
@@ -483,14 +507,17 @@ mod tests {
             queued(""),
         ];
         let path = dir.write("projects/-w-app/s-1.jsonl", &(first.join("\n") + "\n"));
-        let files = ClaudeCode.find_files(&dir.path().join("projects")).unwrap();
+        let files = ClaudeCode
+            .find_files(&dir.path().join("projects"))
+            .unwrap()
+            .files;
         assert_eq!(files, std::slice::from_ref(&path));
 
         let mut state = FileState::default();
-        let (lines, offset) = read_new_lines(&path, 0).unwrap();
+        let (lines, offset) = read_texts(&path, 0);
         let records: Vec<Record> = lines
             .iter()
-            .filter_map(|l| ClaudeCode.read_line(&mut state, l))
+            .filter_map(|l| read_line(&ClaudeCode, &mut state, l))
             .collect();
         let texts: Vec<&str> = records
             .iter()
@@ -503,9 +530,9 @@ mod tests {
 
         let more = line("user", "", r#""and the docs""#);
         std::fs::write(&path, first.join("\n") + "\n" + &more + "\n").unwrap();
-        let (lines, _) = read_new_lines(&path, offset).unwrap();
+        let (lines, _) = read_texts(&path, offset);
         assert_eq!(lines.len(), 1);
-        let t = turn(ClaudeCode.read_line(&mut state, &lines[0]));
+        let t = turn(read_line(&ClaudeCode, &mut state, &lines[0]));
         assert_eq!(
             (t.text.as_str(), t.session.as_str()),
             ("and the docs", "s-1")
