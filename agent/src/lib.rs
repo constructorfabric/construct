@@ -14,3 +14,5 @@ pub mod model;
 #[cfg(unix)]
 pub mod pgvector;
 pub mod records;
+#[cfg(unix)]
+pub mod settings;

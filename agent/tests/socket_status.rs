@@ -179,6 +179,126 @@ fn status_reports_the_database_and_construct_states_each_on_its_own() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 }
 
+const KEY: &str = "sk-test-key-0123456789";
+
+#[allow(clippy::unwrap_used)] // test helper, outside a `#[test]` fn
+fn settings_server(name: &str) -> (std::path::PathBuf, construct_agent::settings::Settings) {
+    let path = temp_socket(name);
+    let settings = construct_agent::settings::Settings::open(
+        &path.parent().unwrap().parent().unwrap().join("config"),
+    )
+    .unwrap();
+    let server = Server::bind(&path).unwrap().with_settings(settings.clone());
+    thread::spawn(move || server.serve());
+    (path, settings)
+}
+
+/// Send `request` as one line and return the reply text.
+#[allow(clippy::unwrap_used)] // test helper, outside a `#[test]` fn
+fn ask(path: &std::path::Path, request: &[u8]) -> String {
+    let mut s = UnixStream::connect(path).unwrap();
+    s.write_all(request).unwrap();
+    s.write_all(b"\n").unwrap();
+    let mut reply = String::new();
+    s.read_to_string(&mut reply).unwrap();
+    reply
+}
+
+#[test]
+fn settings_set_and_get_over_the_socket_never_answer_the_key() {
+    let (path, settings) = settings_server("settings");
+    let before: serde_json::Value = serde_json::from_str(&ask(&path, b"settings-get")).unwrap();
+    assert_eq!(before["model"]["api_key_set"], false);
+    assert_eq!(before["collection"]["enabled"], true);
+    let status: serde_json::Value = serde_json::from_str(&ask(&path, b"status")).unwrap();
+    assert_eq!(status["model_name"], "not set");
+
+    let set = format!(
+        r#"settings-set {{"model":{{"base_url":"https://api.example.com/v1","model":"m1","api_key":"{KEY}"}},"collection":{{"codex":false}}}}"#
+    );
+    let set_reply = ask(&path, set.as_bytes());
+    let get_reply = ask(&path, b"settings-get");
+    let status_reply = ask(&path, b"status");
+    for reply in [&set_reply, &get_reply, &status_reply] {
+        assert!(!reply.contains(KEY), "{reply}");
+        assert!(
+            !reply.contains("api_key\":\"") && !reply.contains("sk-"),
+            "{reply}"
+        );
+    }
+    let v: serde_json::Value = serde_json::from_str(&get_reply).unwrap();
+    assert_eq!(v["model"]["model"], "m1");
+    assert_eq!(v["model"]["api_key_set"], true);
+    assert_eq!(v["collection"]["codex"], false);
+    let status: serde_json::Value = serde_json::from_str(&status_reply).unwrap();
+    assert_eq!(status["model_name"], "m1");
+    // The readers inside the agent see the change at once.
+    assert_eq!(settings.model().api_key.as_deref(), Some(KEY));
+    assert!(!settings.collection().codex);
+
+    let remove = ask(&path, br#"settings-set {"model":{"remove_key":true}}"#);
+    assert!(remove.contains("\"api_key_set\":false"), "{remove}");
+    assert_eq!(settings.model().api_key, None);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn a_refused_settings_set_does_not_repeat_the_request() {
+    let (path, settings) = settings_server("refused");
+    for request in [
+        format!(r#"settings-set {{"model":{{"api_key":"{KEY}","extra":1}}}}"#),
+        format!(r#"settings-set {{"model":{{"api_key":"{KEY}"#),
+        format!(
+            r#"settings-set {{"model":{{"base_url":"http://example.com","api_key":"{KEY}"}}}}"#
+        ),
+        format!("settings-set{KEY}"),
+        format!("settings-sett {KEY}"),
+        format!("{KEY} settings-set"),
+        format!("status {KEY}"),
+    ] {
+        let reply = ask(&path, request.as_bytes());
+        assert!(reply.contains("\"error\""), "{reply}");
+        assert!(!reply.contains("sk-"), "{reply}");
+        assert!(!reply.contains(KEY), "{reply}");
+    }
+    assert_eq!(settings.model().api_key, None);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn a_request_line_over_the_cap_is_refused() {
+    let (path, settings) = settings_server("long");
+    let padding = "a".repeat(construct_agent::ipc::MAX_REQUEST);
+    let request = format!(r#"settings-set {{"model":{{"model":"{padding}","api_key":"{KEY}"}}}}"#);
+    let reply = ask(&path, request.as_bytes());
+    assert!(reply.contains("request too long"), "{reply}");
+    assert!(!reply.contains(KEY));
+    assert_eq!(settings.model().model, "");
+
+    // A line just under the cap is served.
+    let padding = "a".repeat(construct_agent::ipc::MAX_REQUEST - 64);
+    let request = format!(r#"settings-set {{"model":{{"model":"{padding}"}}}}"#);
+    let reply = ask(&path, request.as_bytes());
+    assert!(
+        reply.contains("api_key_set"),
+        "{}",
+        &reply[..80.min(reply.len())]
+    );
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn settings_commands_without_settings_answer_an_error() {
+    let path = temp_socket("nosettings");
+    let server = Server::bind(&path).unwrap();
+    thread::spawn(move || server.serve());
+    let reply = ask(&path, b"settings-get");
+    assert!(reply.contains("not available"), "{reply}");
+    let status: serde_json::Value = serde_json::from_str(&ask(&path, b"status")).unwrap();
+    assert_eq!(status["model_name"], "not set");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
 #[test]
 fn status_reports_the_model_state_and_never_a_key() {
     use construct_agent::model::{ModelHealth, ModelState};

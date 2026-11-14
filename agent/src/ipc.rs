@@ -2,7 +2,9 @@
 //! user's runtime directory. The directory and the socket are user-only (`DIR_MODE`,
 //! `SOCKET_MODE`), so only the user can connect. The agent opens no TCP port.
 //!
-//! Protocol: the client sends a line (`status`), the agent answers one JSON line.
+//! Protocol: the client sends one line, the agent answers one JSON line. Commands:
+//! `status`, `settings-get`, and `settings-set <JSON object>` (the fields to change; see
+//! `settings`). A request line is at most `MAX_REQUEST` bytes.
 
 use std::io;
 use std::path::PathBuf;
@@ -18,6 +20,7 @@ pub fn status_response(
     construct: &str,
     connectors: &serde_json::Value,
     model: &str,
+    model_name: &str,
 ) -> String {
     serde_json::json!({
         "status": "running",
@@ -27,14 +30,40 @@ pub fn status_response(
         "construct": construct,
         "connectors": connectors,
         "model": model,
+        "model_name": model_name,
     })
     .to_string()
 }
 
+/// Longest request line the agent reads, in bytes. A longer one is refused.
+pub const MAX_REQUEST: usize = 16 * 1024;
+/// Longest command word the agent repeats in an error.
+const MAX_ECHO: usize = 24;
+
 /// The JSON line the agent answers to anything else.
+///
+/// The line may be a `settings-set` with a key in it, so no argument is ever repeated: the
+/// command is named only when the whole line is one short word of lowercase letters, digits
+/// and dashes.
 #[must_use]
-pub fn unknown_command_response(command: &str) -> String {
-    serde_json::json!({ "error": "unknown command", "command": command }).to_string()
+pub fn unknown_command_response(line: &str) -> String {
+    let line = line.trim();
+    let plain = !line.is_empty()
+        && line.len() <= MAX_ECHO
+        && line
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if plain {
+        serde_json::json!({ "error": "unknown command", "command": line }).to_string()
+    } else {
+        serde_json::json!({ "error": "unknown command" }).to_string()
+    }
+}
+
+/// The JSON line for a refused request; `message` is a fixed text.
+#[must_use]
+pub fn error_response(message: &str) -> String {
+    serde_json::json!({ "error": message }).to_string()
 }
 
 /// The path in the environment variable `var`, when it is set to an absolute path.
@@ -124,15 +153,18 @@ mod unix {
     use std::thread;
     use std::time::Duration;
 
-    use super::{status_response, unknown_command_response};
+    use super::{error_response, status_response, unknown_command_response, MAX_REQUEST};
     use crate::database::Health;
     use crate::follow::Stats;
     use crate::model::ModelState;
+    use crate::settings::{Settings, Update};
 
     /// Mode of the `construct` runtime directory: the user only.
     const DIR_MODE: u32 = 0o700;
     /// Mode of the socket file: the user only.
     const SOCKET_MODE: u32 = 0o600;
+    /// How much of an over-long request line is read and dropped after refusing it.
+    const DRAIN_LIMIT: usize = 1024 * 1024;
     /// Pause after a failed `accept`, so a persistent error (no free file
     /// descriptors) does not spin the CPU.
     const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
@@ -158,6 +190,7 @@ mod unix {
         construct: Health,
         connectors: Stats,
         model: ModelState,
+        settings: Option<Settings>,
     }
 
     impl Server {
@@ -188,6 +221,7 @@ mod unix {
                 construct: Health::default(),
                 connectors: Stats::default(),
                 model: ModelState::default(),
+                settings: None,
             })
         }
 
@@ -219,6 +253,14 @@ mod unix {
             self
         }
 
+        /// Serve `settings-get` and `settings-set` from these settings, and report their
+        /// model in `status`. Without them the settings commands answer an error.
+        #[must_use]
+        pub fn with_settings(mut self, settings: Settings) -> Self {
+            self.settings = Some(settings);
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -234,10 +276,16 @@ mod unix {
                         let construct = self.construct.clone();
                         let connectors = self.connectors.clone();
                         let model = self.model.clone();
+                        let settings = self.settings.clone();
                         thread::spawn(move || {
-                            if let Err(e) =
-                                handle(stream, &database, &construct, &connectors, &model)
-                            {
+                            let shared = Shared {
+                                database: &database,
+                                construct: &construct,
+                                connectors: &connectors,
+                                model: &model,
+                                settings: settings.as_ref(),
+                            };
+                            if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
                             }
                         });
@@ -276,27 +324,93 @@ mod unix {
         }
     }
 
-    fn handle(
-        stream: UnixStream,
-        database: &Health,
-        construct: &Health,
-        connectors: &Stats,
-        model: &ModelState,
-    ) -> io::Result<()> {
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        let mut line = String::new();
-        BufReader::new(io::Read::take(&stream, 1024)).read_line(&mut line)?;
-        let mut stream = stream;
-        let reply = match line.trim() {
-            "status" => status_response(
-                std::process::id(),
-                database.get().as_str(),
-                construct.get().as_str(),
-                &connectors.to_json(),
-                model.get().as_str(),
-            ),
-            other => unknown_command_response(other),
+    /// Read one request line of at most `MAX_REQUEST` bytes, without its line end.
+    /// `Ok(None)` when the line is longer.
+    fn read_request(stream: &UnixStream) -> io::Result<Option<Vec<u8>>> {
+        let mut line = Vec::new();
+        let limit = u64::try_from(MAX_REQUEST + 1).unwrap_or(u64::MAX);
+        let mut reader = BufReader::new(io::Read::take(stream, limit));
+        reader.read_until(b'\n', &mut line)?;
+        if line.len() > MAX_REQUEST {
+            discard_rest(stream);
+            return Ok(None);
+        }
+        Ok(Some(line))
+    }
+
+    /// Read and drop the rest of an over-long line, up to `DRAIN_LIMIT` bytes, so that closing
+    /// the connection does not reset it before the client has read the refusal.
+    fn discard_rest(stream: &UnixStream) {
+        let limit = u64::try_from(DRAIN_LIMIT).unwrap_or(u64::MAX);
+        let mut reader = BufReader::new(io::Read::take(stream, limit));
+        loop {
+            let Ok(buf) = reader.fill_buf() else { return };
+            if buf.is_empty() {
+                return;
+            }
+            let newline = buf.contains(&b'\n');
+            let n = buf.len();
+            reader.consume(n);
+            if newline {
+                return;
+            }
+        }
+    }
+
+    /// What the connection threads answer from.
+    struct Shared<'a> {
+        database: &'a Health,
+        construct: &'a Health,
+        connectors: &'a Stats,
+        model: &'a ModelState,
+        settings: Option<&'a Settings>,
+    }
+
+    /// Never log, or return in an error, any part of `line`: it can hold a key.
+    fn reply(line: &[u8], shared: &Shared) -> String {
+        let settings = shared.settings;
+        let Ok(line) = std::str::from_utf8(line) else {
+            return error_response("invalid request");
         };
+        let line = line.trim();
+        let (command, argument) = match line.split_once(char::is_whitespace) {
+            Some((command, rest)) => (command, rest.trim()),
+            None => (line, ""),
+        };
+        let model_name = || {
+            settings.map_or_else(
+                || "not set".to_string(),
+                |s| s.model().display_name().to_string(),
+            )
+        };
+        match (command, settings) {
+            ("status", _) if argument.is_empty() => status_response(
+                std::process::id(),
+                shared.database.get().as_str(),
+                shared.construct.get().as_str(),
+                &shared.connectors.to_json(),
+                shared.model.get().as_str(),
+                &model_name(),
+            ),
+            ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
+            ("settings-set", Some(s)) => {
+                match Update::parse(argument).and_then(|update| s.apply(update)) {
+                    Ok(()) => s.get_response(),
+                    Err(e) => error_response(e.as_str()),
+                }
+            }
+            ("settings-get" | "settings-set", None) => error_response("settings are not available"),
+            _ => unknown_command_response(line),
+        }
+    }
+
+    fn handle(stream: UnixStream, shared: &Shared) -> io::Result<()> {
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let reply = match read_request(&stream)? {
+            Some(line) => reply(&line, shared),
+            None => error_response("request too long"),
+        };
+        let mut stream = stream;
         writeln!(stream, "{reply}")
     }
 
