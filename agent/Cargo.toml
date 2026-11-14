@@ -36,7 +36,15 @@ static-authz-plugin = { package = "cf-gears-static-authz-plugin", version = "=0.
 api-gateway = { package = "cf-gears-api-gateway", version = "=0.7.4" }
 toolkit-security = { package = "cf-gears-toolkit-security", version = "=0.13.0" }
 toolkit-db = { package = "cf-gears-toolkit-db", version = "=0.17.4" }
+oagw-sdk = { package = "cf-gears-oagw-sdk", version = "=0.5.18" }
+toolkit-canonical-errors = { package = "cf-gears-toolkit-canonical-errors", version = "=0.10.1" }
 anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+http = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
 figment = "0.10"
 tokio-util = "0.7"
 uuid = { version = "1", features = ["v4"] }

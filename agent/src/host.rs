@@ -27,15 +27,17 @@ use std::time::{Duration, Instant};
 
 use figment::Figment;
 use figment::providers::Serialized;
+use oagw_sdk::ServiceGatewayClientV1;
 use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use toolkit::bootstrap::AppConfig;
-use toolkit::runtime::{DbOptions, RunOptions, ShutdownOptions};
+use toolkit::runtime::{ClientRegistration, DbOptions, RunOptions, ShutdownOptions};
 use toolkit_security::constants::DEFAULT_SUBJECT_ID;
 
 use crate::database::{Paths as DatabasePaths, SOCKET_PORT};
 use crate::ipc::{absolute_env_path, create_private_dir, runtime_dir};
+use crate::model::{ModelConfig, ModelGateway, ModelState};
 
 /// Name of the file with the token, in the host's data directory.
 const TOKEN_FILE: &str = "token";
@@ -125,8 +127,9 @@ pub struct Host {
 }
 
 impl Host {
-    /// Start the host and wait until it answers an authenticated profile read. `abort`
-    /// cancels the start: the host that was begun is stopped (and awaited) before this
+    /// Start the host and wait until it answers an authenticated profile read. With a `model`
+    /// the host calls that API for the planner; without one it takes records and drops them.
+    /// `abort` cancels the start: the host that was begun is stopped (and awaited) before this
     /// returns, so the caller may stop the database right after.
     ///
     /// # Errors
@@ -135,6 +138,7 @@ impl Host {
     pub async fn start(
         paths: &Paths,
         database: &DatabasePaths,
+        model: Option<(&ModelConfig, &ModelState)>,
         abort: &CancellationToken,
     ) -> anyhow::Result<Self> {
         let connection_file = paths.connection_file();
@@ -144,17 +148,29 @@ impl Host {
         create_private_dir(&paths.home_dir)?;
         let token = read_or_create_token(&paths.token_file())?;
         let port = free_loopback_port()?;
-        let config = build_config(&paths.home_dir, &database.socket_dir, port, &token)?;
+        let config = build_config(
+            &paths.home_dir,
+            &database.socket_dir,
+            port,
+            &token,
+            model.map(|(config, _)| config),
+        )?;
         let figment = Figment::new().merge(Serialized::defaults(&config));
         let db = toolkit_db::DbManager::from_figment(figment, config.server.home_dir.clone())?;
 
         let cancel = CancellationToken::new();
-        let options = RunOptions::new(
+        let mut options = RunOptions::new(
             Arc::new(config),
             DbOptions::Manager(Arc::new(db)),
             ShutdownOptions::Token(cancel.clone()),
             uuid::Uuid::new_v4(),
         );
+        if let Some((model, state)) = model {
+            // The planner finds its model client in the client hub on every call.
+            let gateway: Arc<dyn ServiceGatewayClientV1> =
+                Arc::new(ModelGateway::new(model.clone(), state.clone())?);
+            options = options.with_clients(vec![ClientRegistration::new(gateway)]);
+        }
         let mut task = tokio::spawn(toolkit::runtime::run(options));
         // Any other way out of this function (a panic, an early return) still stops the host.
         let guard = cancel.clone().drop_guard();
@@ -252,8 +268,9 @@ pub fn build_config(
     socket_dir: &Path,
     port: u16,
     token: &str,
+    model: Option<&ModelConfig>,
 ) -> anyhow::Result<AppConfig> {
-    let value = json!({
+    let mut value = json!({
         "server": { "name": "construct-agent", "home_dir": home_dir },
         "database": {
             "auto_provision": true,
@@ -306,6 +323,13 @@ pub fn build_config(
             },
         },
     });
+    if let Some(model) = model {
+        // Records are processed only with a model and with this switch: no sensitive-data
+        // check exists yet, and the user's own device holds the user's own data.
+        let config = &mut value["gears"]["construct"]["config"];
+        config["model"] = model.construct_section();
+        config["processing"] = json!({ "run_without_sensitive_data_checks": true });
+    }
     Ok(serde_json::from_value(value)?)
 }
 
@@ -460,6 +484,7 @@ mod tests {
             Path::new("/run/construct/pg"),
             4321,
             &"ab".repeat(32),
+            None,
         )
         .unwrap();
         let gateway = &config.gears["api-gateway"]["config"];
@@ -495,6 +520,42 @@ mod tests {
         host.stopped().await.unwrap();
         assert!(!file.exists(), "the file of a dead host is left behind");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_model_turns_processing_on_and_names_the_route_but_not_the_key() {
+        let model = ModelConfig::new("https://x.example/v1", "gpt-4.1", "sk-secret", None).unwrap();
+        let config = build_config(
+            Path::new("/data/host"),
+            Path::new("/run/construct/pg"),
+            4321,
+            &"ab".repeat(32),
+            Some(&model),
+        )
+        .unwrap();
+        let construct = &config.gears["construct"]["config"];
+        assert_eq!(construct["model"]["upstream_alias"], "model");
+        assert_eq!(construct["model"]["model"], "gpt-4.1");
+        // Construct limits the whole call, which makes three attempts of 60 s (the default).
+        assert_eq!(
+            construct["model"]["timeout"],
+            format!("{}s", model.call_budget_secs())
+        );
+        assert!(model.call_budget_secs() > 3 * 60);
+        assert_eq!(
+            construct["processing"]["run_without_sensitive_data_checks"],
+            true
+        );
+        assert_eq!(construct["processing_identity"], PROCESSING_IDENTITY);
+        assert!(!format!("{config:?}").contains("sk-secret"));
+    }
+
+    #[test]
+    fn without_a_model_the_config_has_no_model_and_no_switch() {
+        let config = build_config(Path::new("/d"), Path::new("/s"), 1, "t", None).unwrap();
+        let construct = &config.gears["construct"]["config"];
+        assert!(construct.get("model").is_none());
+        assert!(construct.get("processing").is_none());
     }
 
     #[test]

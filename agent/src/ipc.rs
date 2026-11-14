@@ -17,6 +17,7 @@ pub fn status_response(
     database: &str,
     construct: &str,
     connectors: &serde_json::Value,
+    model: &str,
 ) -> String {
     serde_json::json!({
         "status": "running",
@@ -25,6 +26,7 @@ pub fn status_response(
         "database": database,
         "construct": construct,
         "connectors": connectors,
+        "model": model,
     })
     .to_string()
 }
@@ -84,6 +86,7 @@ mod unix {
     use super::{status_response, unknown_command_response};
     use crate::database::Health;
     use crate::follow::Stats;
+    use crate::model::ModelState;
 
     /// Mode of the `construct` runtime directory: the user only.
     const DIR_MODE: u32 = 0o700;
@@ -113,6 +116,7 @@ mod unix {
         database: Health,
         construct: Health,
         connectors: Stats,
+        model: ModelState,
     }
 
     impl Server {
@@ -142,6 +146,7 @@ mod unix {
                 database: Health::default(),
                 construct: Health::default(),
                 connectors: Stats::default(),
+                model: ModelState::default(),
             })
         }
 
@@ -166,6 +171,13 @@ mod unix {
             self
         }
 
+        /// Report this model state in `status`: `not_configured`, `configured` or `key_rejected`.
+        #[must_use]
+        pub fn with_model(mut self, model: ModelState) -> Self {
+            self.model = model;
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -182,8 +194,11 @@ mod unix {
                         let database = self.database.clone();
                         let construct = self.construct.clone();
                         let connectors = self.connectors.clone();
+                        let model = self.model.clone();
                         thread::spawn(move || {
-                            if let Err(e) = handle(stream, &database, &construct, &connectors) {
+                            if let Err(e) =
+                                handle(stream, &database, &construct, &connectors, &model)
+                            {
                                 eprintln!("connection error: {e}");
                             }
                         });
@@ -228,6 +243,7 @@ mod unix {
         database: &Health,
         construct: &Health,
         connectors: &Stats,
+        model: &ModelState,
     ) -> io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         let mut line = String::new();
@@ -239,6 +255,7 @@ mod unix {
                 database.get().as_str(),
                 construct.get().as_str(),
                 &connectors.to_json(),
+                model.get().as_str(),
             ),
             other => unknown_command_response(other),
         };
