@@ -139,9 +139,7 @@ pub(crate) fn with_lock<T>(lock: &Path, f: impl FnOnce() -> io::Result<T>) -> io
 pub fn current() -> io::Result<Box<dyn Autostart>> {
     #[cfg(target_os = "linux")]
     {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
+        let config = crate::ipc::absolute_env_path("XDG_CONFIG_HOME")
             .map_or_else(|| home_dir().map(|h| h.join(".config")), Ok)?;
         Ok(Box::new(linux::SystemdUser::new(
             config.join("systemd/user"),

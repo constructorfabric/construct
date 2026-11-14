@@ -12,11 +12,12 @@ pub const SOCKET_NAME: &str = "agent.sock";
 
 /// The JSON line the agent answers to `status`.
 #[must_use]
-pub fn status_response(pid: u32) -> String {
+pub fn status_response(pid: u32, database: &str) -> String {
     serde_json::json!({
         "status": "running",
         "version": env!("CARGO_PKG_VERSION"),
         "pid": pid,
+        "database": database,
     })
     .to_string()
 }
@@ -27,26 +28,40 @@ pub fn unknown_command_response(command: &str) -> String {
     serde_json::json!({ "error": "unknown command", "command": command }).to_string()
 }
 
-/// Socket path from the runtime directory (`$XDG_RUNTIME_DIR` on Linux, the
-/// per-user `$TMPDIR` on macOS).
+/// The path in the environment variable `var`, when it is set to an absolute path.
+#[must_use]
+pub fn absolute_env_path(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
+/// The `construct` directory inside the runtime directory (`$XDG_RUNTIME_DIR` on
+/// Linux, the per-user `$TMPDIR` on macOS).
 ///
 /// # Errors
 /// Fails when that variable is not set to an absolute path.
-pub fn socket_path() -> io::Result<PathBuf> {
+pub fn runtime_dir() -> io::Result<PathBuf> {
     let var = if cfg!(target_os = "macos") {
         "TMPDIR"
     } else {
         "XDG_RUNTIME_DIR"
     };
-    let dir = std::env::var_os(var)
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
+    let dir = absolute_env_path(var)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{var} is not set")))?;
-    Ok(dir.join("construct").join(SOCKET_NAME))
+    Ok(dir.join("construct"))
+}
+
+/// Socket path of the agent.
+///
+/// # Errors
+/// Fails when the runtime directory is not set, see [`runtime_dir`].
+pub fn socket_path() -> io::Result<PathBuf> {
+    Ok(runtime_dir()?.join(SOCKET_NAME))
 }
 
 #[cfg(unix)]
-pub use unix::{Server, query_status, serve};
+pub use unix::{Server, create_private_dir, query_status};
 
 #[cfg(unix)]
 mod unix {
@@ -60,6 +75,7 @@ mod unix {
     use std::time::Duration;
 
     use super::{status_response, unknown_command_response};
+    use crate::database::Health;
 
     /// Mode of the `construct` runtime directory: the user only.
     const DIR_MODE: u32 = 0o700;
@@ -71,9 +87,22 @@ mod unix {
     /// How long one `status` call may take in total, connect included.
     const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
+    /// Create `dir` (and its parents) and make it user-only.
+    ///
+    /// # Errors
+    /// Fails when the directory cannot be created or its mode cannot be set.
+    pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(DIR_MODE)
+            .create(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))
+    }
+
     pub struct Server {
         listener: UnixListener,
         path: PathBuf,
+        database: Health,
     }
 
     impl Server {
@@ -90,13 +119,7 @@ mod unix {
                     "socket path has no parent directory",
                 ));
             };
-            if !dir.exists() {
-                fs::DirBuilder::new()
-                    .recursive(true)
-                    .mode(DIR_MODE)
-                    .create(dir)?;
-            }
-            fs::set_permissions(dir, fs::Permissions::from_mode(DIR_MODE))?;
+            create_private_dir(dir)?;
             remove_stale_socket(path)?;
             let listener = UnixListener::bind(path)?;
             if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(SOCKET_MODE)) {
@@ -106,7 +129,15 @@ mod unix {
             Ok(Self {
                 listener,
                 path: path.to_path_buf(),
+                database: Health::default(),
             })
+        }
+
+        /// Report this database state in `status`.
+        #[must_use]
+        pub fn with_database(mut self, database: Health) -> Self {
+            self.database = database;
+            self
         }
 
         #[must_use]
@@ -122,8 +153,9 @@ mod unix {
             for conn in self.listener.incoming() {
                 match conn {
                     Ok(stream) => {
+                        let database = self.database.clone();
                         thread::spawn(move || {
-                            if let Err(e) = handle(stream) {
+                            if let Err(e) = handle(stream, &database) {
                                 eprintln!("connection error: {e}");
                             }
                         });
@@ -163,27 +195,13 @@ mod unix {
         }
     }
 
-    /// Bind and serve on `path`.
-    ///
-    /// # Errors
-    /// Fails when the socket cannot be bound.
-    pub fn serve(path: &Path) -> io::Result<()> {
-        let server = Server::bind(path)?;
-        eprintln!(
-            "construct-agent {} listening on {}",
-            env!("CARGO_PKG_VERSION"),
-            server.path().display()
-        );
-        server.serve()
-    }
-
-    fn handle(stream: UnixStream) -> io::Result<()> {
+    fn handle(stream: UnixStream, database: &Health) -> io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         let mut line = String::new();
         BufReader::new(io::Read::take(&stream, 1024)).read_line(&mut line)?;
         let mut stream = stream;
         let reply = match line.trim() {
-            "status" => status_response(std::process::id()),
+            "status" => status_response(std::process::id(), database.get().as_str()),
             other => unknown_command_response(other),
         };
         writeln!(stream, "{reply}")
