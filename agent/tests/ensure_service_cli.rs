@@ -76,9 +76,11 @@ fn ensure_service_registers_once_and_restarts_after_the_binary_is_replaced() {
     assert!(ensure_service(&dir.0, &agent).contains("construct-agent is registered"));
     assert_eq!(systemctl_calls(&log), install);
     let unit = dir.0.join("config/systemd/user/construct-agent.service");
-    assert!(std::fs::read_to_string(&unit)
-        .unwrap()
-        .contains(&agent.display().to_string()));
+    assert!(
+        std::fs::read_to_string(&unit)
+            .unwrap()
+            .contains(&agent.display().to_string())
+    );
 
     ensure_service(&dir.0, &agent);
     assert_eq!(

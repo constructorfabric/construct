@@ -4,7 +4,7 @@ mod common;
 
 use construct_agent::autostart::Autostart;
 
-use common::{Scenario, LINUX_ENABLE, LINUX_INSTALL, MACOS_INSTALL, MACOS_PRINT};
+use common::{LINUX_ENABLE, LINUX_INSTALL, MACOS_INSTALL, MACOS_PRINT, Scenario};
 
 #[test]
 fn linux_first_start_installs_and_restarts() {

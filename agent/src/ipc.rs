@@ -46,7 +46,7 @@ pub fn socket_path() -> io::Result<PathBuf> {
 }
 
 #[cfg(unix)]
-pub use unix::{query_status, serve, Server};
+pub use unix::{Server, query_status, serve};
 
 #[cfg(unix)]
 mod unix {
@@ -114,9 +114,11 @@ mod unix {
             &self.path
         }
 
-        /// Accept connections forever, one thread each. An accept error is logged and
-        /// retried.
-        pub fn serve(&self) {
+        /// Accept connections forever, one thread each.
+        ///
+        /// # Errors
+        /// Never fails today; the signature leaves room for a fatal accept error.
+        pub fn serve(&self) -> io::Result<()> {
             for conn in self.listener.incoming() {
                 match conn {
                     Ok(stream) => {
@@ -132,6 +134,7 @@ mod unix {
                     }
                 }
             }
+            Ok(())
         }
     }
 
@@ -171,8 +174,7 @@ mod unix {
             env!("CARGO_PKG_VERSION"),
             server.path().display()
         );
-        server.serve();
-        Ok(())
+        server.serve()
     }
 
     fn handle(stream: UnixStream) -> io::Result<()> {
