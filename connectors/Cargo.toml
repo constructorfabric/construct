@@ -1,0 +1,16 @@
+[package]
+name = "connectors"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Readers of the session logs of coding tools: record types and the tool trait"
+publish = false
+
+# Plain std, serde and serde_json only: no agent, no async runtime, nothing specific to one
+# operating system, so the crate can move to its own repository.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.154"
+
+[lints]
+workspace = true
