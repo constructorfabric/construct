@@ -7,3 +7,4 @@ pub mod database;
 pub mod ipc;
 #[cfg(unix)]
 pub mod pgvector;
+pub mod records;

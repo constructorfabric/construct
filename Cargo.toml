@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["agent"]
+members = ["agent", "connectors"]
 
 # Deny the unwrap and expect shortcuts, forbid unsafe code, and keep clippy's pedantic group clean.
 [workspace.lints.rust]
