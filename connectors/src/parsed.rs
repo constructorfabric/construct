@@ -9,14 +9,3 @@ pub enum Parsed {
     Skipped,
     Record(Record),
 }
-
-impl Parsed {
-    /// The record, if the line gave one.
-    #[must_use]
-    pub fn into_record(self) -> Option<Record> {
-        match self {
-            Parsed::Record(r) => Some(r),
-            Parsed::Ignored | Parsed::Skipped => None,
-        }
-    }
-}
