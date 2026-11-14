@@ -238,7 +238,7 @@ pub fn config_dir() -> io::Result<PathBuf> {
 /// Check the model address: `https`, or `http` only for the host `localhost` or `127.0.0.1`,
 /// and no user name or password. The host is compared after parsing. An empty address means
 /// no model.
-fn check_base_url(raw: &str) -> Result<(), Error> {
+pub(crate) fn check_base_url(raw: &str) -> Result<(), Error> {
     if raw.is_empty() {
         return Ok(());
     }
@@ -256,6 +256,14 @@ fn check_base_url(raw: &str) -> Result<(), Error> {
         "http" if local => Ok(()),
         _ => Err(Error::InvalidBaseUrl),
     }
+}
+
+/// Check a key: no control character. Shared by `settings-set` and `settings-test`.
+pub(crate) fn check_key(key: &str) -> Result<(), Error> {
+    if key.chars().any(char::is_control) {
+        return Err(Error::InvalidKey);
+    }
+    Ok(())
 }
 
 /// Apply `update` to `data`; `data` is untouched on an error.
@@ -276,9 +284,7 @@ fn merged(data: &Data, update: Update) -> Result<Data, Error> {
             }
             next.model.api_key = None;
         } else if let Some(key) = new_key {
-            if key.chars().any(char::is_control) {
-                return Err(Error::InvalidKey);
-            }
+            check_key(&key)?;
             next.model.api_key = Some(key);
         }
     }

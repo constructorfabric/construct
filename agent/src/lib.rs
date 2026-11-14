@@ -12,6 +12,8 @@ pub mod ipc;
 #[cfg(unix)]
 pub mod model;
 #[cfg(unix)]
+pub mod model_test;
+#[cfg(unix)]
 pub mod pgvector;
 pub mod records;
 #[cfg(unix)]
