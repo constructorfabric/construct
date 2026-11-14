@@ -136,22 +136,35 @@ fn a_socket_path_without_a_parent_directory_is_refused() {
 }
 
 #[test]
-fn status_reports_the_database_state_it_is_given() {
+fn status_reports_the_database_and_construct_states_each_on_its_own() {
     use construct_agent::database::{Health, State};
 
     let path = temp_socket("database");
-    let health = Health::default();
-    let server = Server::bind(&path).unwrap().with_database(health.clone());
+    let database = Health::default();
+    let construct = Health::default();
+    let server = Server::bind(&path)
+        .unwrap()
+        .with_database(database.clone())
+        .with_construct(construct.clone());
     thread::spawn(move || server.serve());
 
-    let state = |path: &std::path::Path| {
+    let states = |path: &std::path::Path| {
         let v: serde_json::Value = serde_json::from_str(&query_status(path).unwrap()).unwrap();
-        v["database"].as_str().unwrap().to_string()
+        (
+            v["database"].as_str().unwrap().to_string(),
+            v["construct"].as_str().unwrap().to_string(),
+        )
     };
-    assert_eq!(state(&path), "starting");
-    health.set(State::Ready);
-    assert_eq!(state(&path), "ready");
-    health.set(State::Failed);
-    assert_eq!(state(&path), "failed");
+    let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+    assert_eq!(states(&path), pair("starting", "starting"));
+    database.set(State::Ready);
+    assert_eq!(states(&path), pair("ready", "starting"));
+    construct.set(State::Ready);
+    assert_eq!(states(&path), pair("ready", "ready"));
+    construct.set(State::Failed);
+    assert_eq!(states(&path), pair("ready", "failed"));
+    database.set(State::Failed);
+    construct.set(State::Ready);
+    assert_eq!(states(&path), pair("failed", "ready"));
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 }
