@@ -781,3 +781,68 @@ fn a_follower_that_panics_says_so_in_status_of_every_tool() {
     }
     panic!("the panic never showed in status");
 }
+
+#[test]
+fn a_tool_that_is_switched_off_is_read_but_nothing_is_stored_and_nothing_comes_back_later() {
+    let s = Setup::new("switch");
+    let log = s.log("a.log");
+    append(&log, "one\ntwo\n");
+    let on = Arc::new(AtomicBool::new(false));
+    let switch: follow::Switch = {
+        let on = on.clone();
+        Arc::new(move |tool| tool == "fake" && on.load(Ordering::SeqCst))
+    };
+    let stats = Stats::default();
+    let mut follower = s.follower(&stats).with_switch(switch);
+
+    // Off from the start: the file is read, nothing is stored or counted.
+    follower.pass().unwrap();
+    append(&log, "three\n");
+    follower.pass().unwrap();
+    assert!(s.texts("a").is_empty());
+    assert_eq!(tool_status(&stats)["turns"], 0);
+    assert_eq!(tool_status(&stats)["scanning"], false);
+
+    // A file that appears while it is off is not kept for later either.
+    append(&s.log("b.log"), "other\n");
+    follower.pass().unwrap();
+    assert!(s.texts("b").is_empty());
+
+    // Switched on: only what is written from now on is stored.
+    on.store(true, Ordering::SeqCst);
+    append(&log, "four\n");
+    append(&s.log("b.log"), "five\n");
+    follower.pass().unwrap();
+    assert_eq!(s.texts("a"), ["four"]);
+    assert_eq!(s.texts("b"), ["five"]);
+
+    // Off again, also after a restart: what is written meanwhile does not come back.
+    on.store(false, Ordering::SeqCst);
+    append(&log, "six\n");
+    follower.pass().unwrap();
+    on.store(true, Ordering::SeqCst);
+    let restarted = Stats::default();
+    s.follower(&restarted)
+        .with_switch(Arc::new(|_| true))
+        .pass()
+        .unwrap();
+    assert_eq!(s.texts("a"), ["four"]);
+}
+
+#[test]
+fn the_switch_is_asked_for_every_file_so_a_long_scan_stops_when_it_is_turned_off() {
+    let s = Setup::new("switch-per-file");
+    append(&s.log("a.log"), "one\n");
+    append(&s.log("b.log"), "two\n");
+    // On for the first file of the pass only: the user turns collection off during the scan.
+    let asked = Arc::new(AtomicUsize::new(0));
+    let switch: follow::Switch = {
+        let asked = asked.clone();
+        Arc::new(move |_| asked.fetch_add(1, Ordering::SeqCst) == 0)
+    };
+    let stats = Stats::default();
+    s.follower(&stats).with_switch(switch).pass().unwrap();
+    assert_eq!(s.texts("a"), ["one"]);
+    assert!(s.texts("b").is_empty());
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+}
