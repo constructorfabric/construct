@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::Record;
+use crate::{ClaudeCode, Codex, Record};
 
 /// What a reader remembers about one file between lines. It can be saved and restored,
 /// so reading continues after a restart in the middle of a file.
@@ -28,6 +28,11 @@ pub trait Tool: Send + Sync {
     /// # Errors
     /// Fails when the directory cannot be read; a missing `root` is not an error.
     fn find_files(&self, root: &Path) -> io::Result<Vec<PathBuf>>;
+
+    /// The state of a file that was never read: what its path tells, such as the session id.
+    fn open_file(&self, _path: &Path) -> FileState {
+        FileState::default()
+    }
 
     /// Reads one line of a file. `state` carries the session id, folder and branch learned
     /// from earlier lines of the same file. Lines of no interest give `None`.
@@ -62,7 +67,7 @@ impl Registry {
 /// The tools of this crate. A new tool is one module and one line here.
 #[must_use]
 pub fn tools() -> Vec<Box<dyn Tool>> {
-    vec![]
+    vec![Box::new(ClaudeCode), Box::new(Codex)]
 }
 
 #[cfg(test)]
@@ -117,5 +122,7 @@ mod tests {
         assert_eq!(record.session(), "abc");
         assert!(registry.get("other").is_none());
         assert!(Registry::builtin().get("dummy").is_none());
+        assert!(Registry::builtin().get("claude-code").is_some());
+        assert!(Registry::builtin().get("codex").is_some());
     }
 }
