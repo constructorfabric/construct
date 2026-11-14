@@ -147,15 +147,36 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "unknown panic".to_owned())
 }
 
+/// Tells, by tool name, whether the user lets that tool's sessions be collected. It is asked at
+/// before each file is read, so a change of the switch applies from the next file on, not
+/// only from the next pass.
+pub type Switch = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Starts a follower of `tools` on a thread of its own, so that neither the first scan nor a
 /// slow disk holds up `status`. `paths` is the home directory and the data directory; the
 /// follower stops when the returned sender is dropped. When it cannot start (no home, an
 /// unreadable progress file), the reason is in the status of every tool.
+#[must_use]
 pub fn spawn(tools: Registry, paths: io::Result<(PathBuf, PathBuf)>, stats: &Stats) -> Sender<()> {
+    spawn_switched(tools, paths, stats, None)
+}
+
+/// Like [`spawn`], with a [`Switch`] that decides per tool whether its sessions are stored.
+#[must_use]
+pub fn spawn_switched(
+    tools: Registry,
+    paths: io::Result<(PathBuf, PathBuf)>,
+    stats: &Stats,
+    switch: Option<Switch>,
+) -> Sender<()> {
     let (alive, stop) = mpsc::channel::<()>();
     let names: Vec<&'static str> = tools.iter().map(Tool::name).collect();
     let follower = paths
-        .and_then(|(home, data)| Follower::new(tools, &home, FileSink::new(&data), stats.clone()));
+        .and_then(|(home, data)| Follower::new(tools, &home, FileSink::new(&data), stats.clone()))
+        .map(|follower| match switch {
+            Some(switch) => follower.with_switch(switch),
+            None => follower,
+        });
     match follower {
         Ok(follower) => {
             let stats = stats.clone();
@@ -195,6 +216,8 @@ pub struct Follower<S: Sink> {
     checked: HashMap<String, Checked>,
     /// The last read error of each file that has one.
     read_errors: HashMap<String, String>,
+    /// Which tools may be stored; all of them when there is none.
+    switch: Option<Switch>,
 }
 
 type Checked = (u64, Option<SystemTime>);
@@ -219,7 +242,17 @@ impl<S: Sink> Follower<S> {
             saver: Saver::new(),
             checked: HashMap::new(),
             read_errors: HashMap::new(),
+            switch: None,
         })
+    }
+
+    /// Store a tool's sessions only while `switch` says so. A tool that is off is still read,
+    /// so its saved position moves on and nothing from the time it was off is stored when it
+    /// is switched on again; the records of that time are dropped, not kept for later.
+    #[must_use]
+    pub fn with_switch(mut self, switch: Switch) -> Self {
+        self.switch = Some(switch);
+        self
     }
 
     /// Looks at every file once. A tool whose files cannot be listed, or a file that cannot
@@ -238,6 +271,7 @@ impl<S: Sink> Follower<S> {
             saver,
             checked,
             read_errors,
+            switch,
         } = self;
         let mut failure = None;
         for tool in tools.iter() {
@@ -276,6 +310,7 @@ impl<S: Sink> Follower<S> {
                     stats,
                     saver: &mut *saver,
                     checked: &mut *checked,
+                    switch: switch.as_ref(),
                 };
                 let key = path.to_string_lossy().into_owned();
                 match ctx.follow(&path) {
@@ -381,6 +416,9 @@ struct Ctx<'a, S: Sink> {
     stats: &'a Stats,
     saver: &'a mut Saver,
     checked: &'a mut HashMap<String, Checked>,
+    /// Asked before each file is read: while the user has the tool switched off, lines are
+    /// read and nothing is stored.
+    switch: Option<&'a Switch>,
 }
 
 impl<S: Sink> Ctx<'_, S> {
@@ -415,6 +453,7 @@ impl<S: Sink> Ctx<'_, S> {
             }
             None => (0, self.tool.open_file(path)),
         };
+        let collect = self.switch.is_none_or(|on| on(self.tool.name()));
         let start = offset;
         let mut sink_error = None;
         let read = for_each_line(path, offset, |line, end| {
@@ -432,7 +471,7 @@ impl<S: Sink> Ctx<'_, S> {
                     None
                 }
             };
-            if let Some(record) = record {
+            if let Some(record) = record.filter(|_| collect) {
                 match self.sink.append(&record) {
                     // A record the sink had stored already is a replay, not a turn read now.
                     Ok(true) if matches!(record, Record::Turn(_)) => {

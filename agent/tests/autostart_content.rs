@@ -218,5 +218,6 @@ fn macos_uses_the_given_uid_for_launchctl() {
 fn replies_are_valid_json_even_with_control_characters() {
     let reply = construct_agent::ipc::unknown_command_response("a\u{1b}b\"c");
     let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
-    assert_eq!(v["command"], "a\u{1b}b\"c");
+    assert_eq!(v["error"], "unknown command");
+    assert!(v.get("command").is_none());
 }

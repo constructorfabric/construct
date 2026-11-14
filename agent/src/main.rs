@@ -82,16 +82,18 @@ fn run() -> std::io::Result<()> {
     let socket = construct_agent::ipc::socket_path()?;
     let paths = database::Paths::from_env()?;
     let host_paths = host::Paths::from_env()?;
-    let health = Health::default();
-
-    let construct_health = Health::default();
+    let (health, construct_health) = (Health::default(), Health::default());
     let connectors = Stats::default();
     let model_state = construct_agent::model::ModelState::default();
-    let server = construct_agent::ipc::Server::bind(&socket)?
-        .with_database(health.clone())
-        .with_construct(construct_health.clone())
-        .with_connectors(connectors.clone())
-        .with_model(model_state.clone());
+    let settings = open_settings();
+    let server = with_settings(
+        construct_agent::ipc::Server::bind(&socket)?
+            .with_database(health.clone())
+            .with_construct(construct_health.clone())
+            .with_connectors(connectors.clone())
+            .with_model(model_state.clone()),
+        settings.as_ref(),
+    );
     eprintln!(
         "construct-agent {} listening on {}",
         env!("CARGO_PKG_VERSION"),
@@ -105,7 +107,7 @@ fn run() -> std::io::Result<()> {
     // The log readers need no database: they scan on a thread of their own, so neither the
     // first scan nor a slow disk holds up `status`. The thread stops when `follow_alive` is
     // dropped, so it is kept until the agent stops (see the end of this function).
-    let follow_alive = spawn_follower(&connectors);
+    let follow_alive = spawn_follower(&connectors, settings.as_ref());
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -190,13 +192,54 @@ fn run() -> std::io::Result<()> {
     result
 }
 
+/// The settings file. A file that cannot be read must not stop the agent: then `settings-*`
+/// answer an error and no log reader starts.
+#[cfg(unix)]
+fn open_settings() -> Option<construct_agent::settings::Settings> {
+    use construct_agent::settings;
+
+    match settings::config_dir().and_then(|dir| settings::Settings::open(&dir)) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("settings unavailable: {e}");
+            None
+        }
+    }
+}
+
+/// Serve the settings commands from `settings`; without them they answer an error.
+#[cfg(unix)]
+fn with_settings(
+    server: construct_agent::ipc::Server,
+    settings: Option<&construct_agent::settings::Settings>,
+) -> construct_agent::ipc::Server {
+    match settings {
+        Some(s) => server.with_settings(s.clone()),
+        None => server,
+    }
+}
+
 /// Starts the follower of the session files of every known tool, on the agent's data directory.
 #[cfg(unix)]
-fn spawn_follower(stats: &construct_agent::follow::Stats) -> std::sync::mpsc::Sender<()> {
+fn spawn_follower(
+    stats: &construct_agent::follow::Stats,
+    settings: Option<&construct_agent::settings::Settings>,
+) -> std::sync::mpsc::Sender<()> {
+    let tools = connectors::Registry::builtin();
+    let Some(settings) = settings else {
+        // Without the user's switches nothing is collected: no reader starts.
+        for tool in tools.iter() {
+            stats.not_started(tool.name(), "not started: settings unavailable");
+        }
+        return std::sync::mpsc::channel().0;
+    };
     let paths = construct_agent::ipc::absolute_env_path("HOME")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"))
         .and_then(|home| Ok((home, construct_agent::records::data_dir()?)));
-    construct_agent::follow::spawn(connectors::Registry::builtin(), paths, stats)
+    let settings = settings.clone();
+    let switch: construct_agent::follow::Switch =
+        std::sync::Arc::new(move |tool| settings.collects(tool));
+    construct_agent::follow::spawn_switched(tools, paths, stats, Some(switch))
 }
 
 /// [`start_construct`] (no host without a database) until it ends, or until `stop_signal` fires (`Err` with the signal's
