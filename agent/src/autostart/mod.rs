@@ -1,5 +1,5 @@
 //! Autostart: start the agent at login. Each supported platform implements
-//! [`Autostart`]; Windows has none until the agent socket exists there.
+//! [`Autostart`]; on Windows `install` is refused until the agent socket exists there.
 
 use std::io;
 use std::path::Path;
@@ -9,6 +9,7 @@ use std::process::Command;
 
 pub mod linux;
 pub mod macos;
+pub mod windows;
 
 /// Service name of the systemd unit. The macOS label is `macos::LABEL`.
 pub const SERVICE_NAME: &str = "construct-agent";
@@ -39,7 +40,7 @@ pub trait Autostart {
     fn is_installed(&self) -> bool;
 }
 
-/// Runs external tools (`systemctl`, `launchctl`); replaced in tests.
+/// Runs external tools (`systemctl`, `launchctl`, `reg`); replaced in tests.
 pub trait CommandRunner {
     /// # Errors
     /// Fails when the program cannot start or exits with an error.
@@ -156,7 +157,11 @@ pub fn current() -> io::Result<Box<dyn Autostart>> {
             Box::new(SystemRunner),
         )))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        Ok(Box::new(windows::RunKey::new(Box::new(SystemRunner))))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
