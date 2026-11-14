@@ -134,3 +134,24 @@ fn a_socket_path_without_a_parent_directory_is_refused() {
     let err = Server::bind(std::path::Path::new("/")).err().unwrap();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
+
+#[test]
+fn status_reports_the_database_state_it_is_given() {
+    use construct_agent::database::{Health, State};
+
+    let path = temp_socket("database");
+    let health = Health::default();
+    let server = Server::bind(&path).unwrap().with_database(health.clone());
+    thread::spawn(move || server.serve());
+
+    let state = |path: &std::path::Path| {
+        let v: serde_json::Value = serde_json::from_str(&query_status(path).unwrap()).unwrap();
+        v["database"].as_str().unwrap().to_string()
+    };
+    assert_eq!(state(&path), "starting");
+    health.set(State::Ready);
+    assert_eq!(state(&path), "ready");
+    health.set(State::Failed);
+    assert_eq!(state(&path), "failed");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}

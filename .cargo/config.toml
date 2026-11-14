@@ -1,0 +1,6 @@
+# The PostgreSQL release the agent bundles. `postgresql_embedded` reads it at build time to pick
+# the archive, `agent/src/database.rs` pins `Settings.version` to it, and
+# `scripts/build-pgvector.sh` builds pgvector against the same release.
+# Moving to another release: change it here and add the release's sha256 to the script.
+[env]
+POSTGRESQL_VERSION = "=16.15.1"
