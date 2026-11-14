@@ -37,7 +37,8 @@ use toolkit_security::constants::DEFAULT_SUBJECT_ID;
 
 use crate::database::{Paths as DatabasePaths, SOCKET_PORT};
 use crate::ipc::{create_private_dir, data_root, runtime_dir};
-use crate::model::{ModelConfig, ModelGateway, ModelState};
+use crate::model::{construct_section, ModelGateway, ModelState};
+use crate::settings::Settings;
 
 /// Name of the file with the token, in the host's data directory.
 const TOKEN_FILE: &str = "token";
@@ -119,8 +120,9 @@ pub struct Host {
 }
 
 impl Host {
-    /// Start the host and wait until it answers an authenticated profile read. With a `model`
-    /// the host calls that API for the planner; without one it takes records and drops them.
+    /// Start the host and wait until it answers an authenticated profile read. The host calls
+    /// the model of `settings`, read on every call, for the planner. Without settings (the file
+    /// could not be opened) the host has no model and takes records and drops them.
     /// `abort` cancels the start: the host that was begun is stopped (and awaited) before this
     /// returns, so the caller may stop the database right after.
     ///
@@ -130,7 +132,7 @@ impl Host {
     pub async fn start(
         paths: &Paths,
         database: &DatabasePaths,
-        model: Option<(&ModelConfig, &ModelState)>,
+        model: Option<(&Settings, &ModelState)>,
         abort: &CancellationToken,
     ) -> anyhow::Result<Self> {
         let connection_file = paths.connection_file();
@@ -145,7 +147,7 @@ impl Host {
             &database.socket_dir,
             port,
             &token,
-            model.map(|(config, _)| config),
+            model.is_some(),
         )?;
         let figment = Figment::new().merge(Serialized::defaults(&config));
         let db = toolkit_db::DbManager::from_figment(figment, config.server.home_dir.clone())?;
@@ -157,10 +159,10 @@ impl Host {
             ShutdownOptions::Token(cancel.clone()),
             uuid::Uuid::new_v4(),
         );
-        if let Some((model, state)) = model {
-            // The planner finds its model client in the client hub on every call.
+        // The planner finds its model client in the client hub on every call.
+        if let Some((settings, state)) = model {
             let gateway: Arc<dyn ServiceGatewayClientV1> =
-                Arc::new(ModelGateway::new(model.clone(), state.clone())?);
+                Arc::new(ModelGateway::new(settings.clone(), state.clone())?);
             options = options.with_clients(vec![ClientRegistration::new(gateway)]);
         }
         let mut task = tokio::spawn(toolkit::runtime::run(options));
@@ -262,7 +264,7 @@ pub fn build_config(
     socket_dir: &Path,
     port: u16,
     token: &str,
-    model: Option<&ModelConfig>,
+    with_model: bool,
 ) -> anyhow::Result<AppConfig> {
     let mut value = json!({
         "server": { "name": "construct-agent", "home_dir": home_dir },
@@ -317,11 +319,12 @@ pub fn build_config(
             },
         },
     });
-    if let Some(model) = model {
-        // Records are processed only with a model and with this switch: no sensitive-data
-        // check exists yet, and the user's own device holds the user's own data.
+    if with_model {
+        // The model is read from the settings on every call, so the host is set up for one
+        // even before the user has saved it. Records are processed with this switch: no
+        // sensitive-data check exists yet, and the user's own device holds the user's own data.
         let config = &mut value["gears"]["construct"]["config"];
-        config["model"] = model.construct_section();
+        config["model"] = construct_section();
         config["processing"] = json!({ "run_without_sensitive_data_checks": true });
     }
     Ok(serde_json::from_value(value)?)
@@ -493,7 +496,7 @@ mod tests {
             Path::new("/run/construct/pg"),
             4321,
             &"ab".repeat(32),
-            None,
+            false,
         )
         .unwrap();
         let gateway = &config.gears["api-gateway"]["config"];
@@ -532,36 +535,33 @@ mod tests {
     }
 
     #[test]
-    fn a_model_turns_processing_on_and_names_the_route_but_not_the_key() {
-        let model = ModelConfig::new("https://x.example/v1", "gpt-4.1", "sk-secret", None).unwrap();
+    fn the_config_turns_processing_on_and_names_the_route_but_no_key() {
         let config = build_config(
             Path::new("/data/host"),
             Path::new("/run/construct/pg"),
             4321,
             &"ab".repeat(32),
-            Some(&model),
+            true,
         )
         .unwrap();
         let construct = &config.gears["construct"]["config"];
         assert_eq!(construct["model"]["upstream_alias"], "model");
-        assert_eq!(construct["model"]["model"], "gpt-4.1");
-        // Construct limits the whole call, which makes three attempts of 60 s (the default).
+        // Construct limits the whole call, which makes three attempts of 60 s.
         assert_eq!(
             construct["model"]["timeout"],
-            format!("{}s", model.call_budget_secs())
+            format!("{}s", crate::model::call_budget_secs())
         );
-        assert!(model.call_budget_secs() > 3 * 60);
+        assert!(crate::model::call_budget_secs() > 3 * 60);
         assert_eq!(
             construct["processing"]["run_without_sensitive_data_checks"],
             true
         );
         assert_eq!(construct["processing_identity"], PROCESSING_IDENTITY);
-        assert!(!format!("{config:?}").contains("sk-secret"));
     }
 
     #[test]
     fn without_a_model_the_config_has_no_model_and_no_switch() {
-        let config = build_config(Path::new("/d"), Path::new("/s"), 1, "t", None).unwrap();
+        let config = build_config(Path::new("/d"), Path::new("/s"), 1, "t", false).unwrap();
         let construct = &config.gears["construct"]["config"];
         assert!(construct.get("model").is_none());
         assert!(construct.get("processing").is_none());

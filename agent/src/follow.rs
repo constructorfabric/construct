@@ -42,6 +42,9 @@ pub struct ToolStatus {
     pub scanning: bool,
     /// Files that could not be read in the last pass.
     pub unreadable: u64,
+    /// The user has this tool, or all collection, switched off: its files are followed so the
+    /// saved position moves on, and nothing is stored. As of the last pass.
+    pub off: bool,
     /// Why this tool is not followed fully: its files cannot be listed (or some directories
     /// cannot), the records cannot be written, the progress cannot be saved, the follower did
     /// not start, or it stopped. Several causes are joined with `; `.
@@ -56,6 +59,9 @@ impl ToolStatus {
             "scanning": self.scanning,
         });
         if let Some(fields) = value.as_object_mut() {
+            if self.off {
+                fields.insert("off".into(), true.into());
+            }
             if self.unreadable > 0 {
                 fields.insert("unreadable".into(), self.unreadable.into());
             }
@@ -275,6 +281,8 @@ impl<S: Sink> Follower<S> {
         } = self;
         let mut failure = None;
         for tool in tools.iter() {
+            let off = !switch.as_ref().is_none_or(|on| on(tool.name()));
+            stats.update(tool.name(), |s| s.off = off);
             let root = tool.root(home);
             let listing = match tool.find_files(&root) {
                 Ok(listing) => listing,

@@ -395,6 +395,33 @@ fn what_is_copied_from_the_logs_is_for_the_user_only() {
     assert_eq!(mode(s.data.join("connectors-progress.json")), 0o600);
 }
 
+/// A user line of a Claude Code session file.
+fn claude_user(text: &str) -> String {
+    format!(
+        r#"{{"type":"user","timestamp":"2026-11-11T10:15:30.123Z","cwd":"/w","sessionId":"sess-1","message":{{"role":"user","content":"{text}"}}}}"#
+    )
+}
+
+/// A line of a Codex session file: `kind` is its `type`, `payload` its JSON payload.
+fn codex_item(kind: &str, payload: &str) -> String {
+    format!(r#"{{"timestamp":"2026-11-11T10:15:30.123Z","type":"{kind}","payload":{payload}}}"#)
+}
+
+/// The first line of a Codex session file.
+fn codex_meta(id: &str) -> String {
+    codex_item("session_meta", &format!(r#"{{"id":"{id}","cwd":"/w"}}"#))
+}
+
+/// A user message line of a Codex session file.
+fn codex_user(text: &str) -> String {
+    codex_item(
+        "response_item",
+        &format!(
+            r#"{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{text}"}}]}}"#
+        ),
+    )
+}
+
 #[test]
 fn the_real_tools_count_what_they_skip() {
     let s = Setup::new("real");
@@ -405,11 +432,7 @@ fn the_real_tools_count_what_they_skip() {
     fs::create_dir_all(claude.parent().unwrap()).unwrap();
     fs::create_dir_all(&codex).unwrap();
 
-    let user = |text: &str| {
-        format!(
-            r#"{{"type":"user","timestamp":"2026-11-11T10:15:30.123Z","cwd":"/w","sessionId":"sess-1","message":{{"role":"user","content":"{text}"}}}}"#
-        )
-    };
+    let user = claude_user;
     let huge = format!(
         r#"{{"type":"user","pad":"{}"}}"#,
         "x".repeat(MAX_LINE_BYTES)
@@ -424,22 +447,13 @@ fn the_real_tools_count_what_they_skip() {
             user("two")
         ),
     );
-    let item = |kind: &str, payload: &str| {
-        format!(r#"{{"timestamp":"2026-11-11T10:15:30.123Z","type":"{kind}","payload":{payload}}}"#)
-    };
     append(
         &codex_log,
         &format!(
             "{}\n{{broken\n{}\n{}\n",
-            item(
-                "session_meta",
-                r#"{"id":"01a0bee2-6260-73a3-b389-43c86bb8930f","cwd":"/w"}"#
-            ),
-            item(
-                "response_item",
-                r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"fix it"}]}"#
-            ),
-            item("event_msg", r#"{"type":"token_count"}"#),
+            codex_meta("01a0bee2-6260-73a3-b389-43c86bb8930f"),
+            codex_user("fix it"),
+            codex_item("event_msg", r#"{"type":"token_count"}"#),
         ),
     );
 
@@ -835,15 +849,204 @@ fn the_switch_is_asked_for_every_file_so_a_long_scan_stops_when_it_is_turned_off
     let s = Setup::new("switch-per-file");
     append(&s.log("a.log"), "one\n");
     append(&s.log("b.log"), "two\n");
-    // On for the first file of the pass only: the user turns collection off during the scan.
-    let asked = Arc::new(AtomicUsize::new(0));
-    let switch: follow::Switch = {
-        let asked = asked.clone();
-        Arc::new(move |_| asked.fetch_add(1, Ordering::SeqCst) == 0)
-    };
+    // On until the first file has been stored: the user turns collection off during the scan.
+    let stored = s.data.join("records/fake/a.jsonl");
+    let switch: follow::Switch = Arc::new(move |_| !stored.exists());
     let stats = Stats::default();
     s.follower(&stats).with_switch(switch).pass().unwrap();
     assert_eq!(s.texts("a"), ["one"]);
     assert!(s.texts("b").is_empty());
-    assert_eq!(asked.load(Ordering::SeqCst), 2);
+}
+
+/// The real tools under a temporary home, with the real settings as the switch: what the
+/// agent does with the user's three collection switches.
+struct Switched {
+    s: Setup,
+    settings: construct_agent::settings::Settings,
+    claude: PathBuf,
+    codex: PathBuf,
+}
+
+const CODEX_SESSION: &str = "01a0bee2-6260-73a3-b389-43c86bb8930f";
+const NEW_SESSION: &str = "01a0bee2-6260-73a3-b389-43c86bb8930e";
+
+impl Switched {
+    fn new(name: &str) -> Self {
+        let s = Setup::new(name);
+        let claude = s.home.join(".claude/projects/project/sess-1.jsonl");
+        let codex = s.home.join(format!(
+            ".codex/sessions/2026/11/11/rollout-2026-11-11T10-15-00-{CODEX_SESSION}.jsonl"
+        ));
+        fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        let settings = construct_agent::settings::Settings::open(&s.root.join("config")).unwrap();
+        append(&codex, &format!("{}\n", codex_meta(CODEX_SESSION)));
+        Self {
+            s,
+            settings,
+            claude,
+            codex,
+        }
+    }
+
+    fn say_claude(&self, text: &str) {
+        append(&self.claude, &format!("{}\n", claude_user(text)));
+    }
+
+    fn say_codex(&self, text: &str) {
+        append(&self.codex, &format!("{}\n", codex_user(text)));
+    }
+
+    /// A follower as an agent start makes it, with the settings as its switch.
+    fn follower(&self, stats: &Stats) -> Follower<FileSink> {
+        let registry = Registry::new(vec![
+            Box::new(Under(ClaudeCode, ".claude/projects")),
+            Box::new(Under(Codex, ".codex/sessions")),
+        ]);
+        let settings = self.settings.clone();
+        self.s
+            .follower_of(registry, stats)
+            .with_switch(Arc::new(move |tool| settings.collects(tool)))
+    }
+
+    fn set(&self, json: &str) {
+        self.settings
+            .apply(construct_agent::settings::Update::parse(json).unwrap())
+            .unwrap();
+    }
+
+    fn stored(&self, tool: &str, session: &str) -> Vec<String> {
+        FileSink::new(&self.s.data)
+            .turns_before(tool, session, "9999", 1000)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.text)
+            .collect()
+    }
+}
+
+#[test]
+fn a_tool_that_is_off_stores_nothing_and_a_tool_that_is_on_is_not_affected() {
+    let t = Switched::new("tool-off");
+    t.set(r#"{"collection":{"codex":false}}"#);
+    let stats = Stats::default();
+    let mut follower = t.follower(&stats);
+    t.say_claude("c1");
+    t.say_codex("x1");
+    follower.pass().unwrap();
+    t.say_claude("c2");
+    t.say_codex("x2");
+    follower.pass().unwrap();
+    assert_eq!(t.stored("claude-code", "sess-1"), ["c1", "c2"]);
+    assert!(t.stored("codex", CODEX_SESSION).is_empty());
+    let shown = stats.to_json();
+    assert_eq!(shown["codex"]["off"], true);
+    assert_eq!(shown["codex"]["turns"], 0);
+    assert!(shown["claude-code"].get("off").is_none(), "{shown}");
+
+    // Switched on: what was written while it was off is never collected, what comes next is.
+    t.set(r#"{"collection":{"codex":true}}"#);
+    follower.pass().unwrap();
+    assert!(t.stored("codex", CODEX_SESSION).is_empty());
+    t.say_codex("x3");
+    follower.pass().unwrap();
+    assert_eq!(t.stored("codex", CODEX_SESSION), ["x3"]);
+    assert!(stats.to_json()["codex"].get("off").is_none());
+
+    // The other tool is switched off in its turn; Codex goes on.
+    t.set(r#"{"collection":{"claude_code":false}}"#);
+    t.say_claude("c3");
+    t.say_codex("x4");
+    follower.pass().unwrap();
+    assert_eq!(t.stored("claude-code", "sess-1"), ["c1", "c2"]);
+    assert_eq!(t.stored("codex", CODEX_SESSION), ["x3", "x4"]);
+    assert_eq!(stats.to_json()["claude-code"]["off"], true);
+}
+
+#[test]
+fn the_master_switch_stops_both_tools_and_turning_it_on_collects_only_what_comes_next() {
+    let t = Switched::new("master-off");
+    let stats = Stats::default();
+    let mut follower = t.follower(&stats);
+    t.say_claude("c1");
+    t.say_codex("x1");
+    follower.pass().unwrap();
+
+    t.set(r#"{"collection":{"enabled":false}}"#);
+    t.say_claude("c2");
+    t.say_codex("x2");
+    follower.pass().unwrap();
+    // The records collected before stay; nothing new is stored.
+    assert_eq!(t.stored("claude-code", "sess-1"), ["c1"]);
+    assert_eq!(t.stored("codex", CODEX_SESSION), ["x1"]);
+    let shown = stats.to_json();
+    assert_eq!(shown["claude-code"]["off"], true);
+    assert_eq!(shown["codex"]["off"], true);
+
+    // Master on, but a tool's own switch is off: that tool stays off.
+    t.set(r#"{"collection":{"enabled":true,"codex":false}}"#);
+    t.say_claude("c3");
+    t.say_codex("x3");
+    follower.pass().unwrap();
+    assert_eq!(t.stored("claude-code", "sess-1"), ["c1", "c3"]);
+    assert_eq!(t.stored("codex", CODEX_SESSION), ["x1"]);
+}
+
+#[test]
+fn a_fresh_agent_with_a_tool_off_reads_nothing_of_it_and_a_session_that_appears_is_skipped() {
+    let t = Switched::new("fresh");
+    t.say_claude("c1");
+    t.say_codex("x1");
+    t.set(r#"{"collection":{"codex":false}}"#);
+
+    // The very first scan of an agent that has never run.
+    let stats = Stats::default();
+    t.follower(&stats).pass().unwrap();
+    assert_eq!(t.stored("claude-code", "sess-1"), ["c1"]);
+    assert!(t.stored("codex", CODEX_SESSION).is_empty());
+    assert!(!t.s.data.join("records/codex").exists());
+    assert_eq!(stats.to_json()["codex"]["scanning"], false);
+    assert_eq!(stats.to_json()["codex"]["off"], true);
+
+    // A new session of the tool appears while it is off, and the agent is restarted.
+    let new = t
+        .codex
+        .with_file_name("rollout-2026-11-11T11-00-00-01a0bee2-6260-73a3-b389-43c86bb8930e.jsonl");
+    append(
+        &new,
+        &format!(
+            "{}
+",
+            codex_meta(NEW_SESSION)
+        ),
+    );
+    // It already holds a user message: a file read from its start would store it.
+    append(
+        &new,
+        &format!(
+            "{}
+",
+            codex_user("n0")
+        ),
+    );
+    t.say_codex("x2");
+    let mut follower = t.follower(&Stats::default());
+    follower.pass().unwrap();
+
+    // Switched on: nothing of the time it was off, in the old file or in the new one.
+    t.set(r#"{"collection":{"codex":true}}"#);
+    follower.pass().unwrap();
+    assert!(t.stored("codex", CODEX_SESSION).is_empty());
+    t.say_codex("x3");
+    append(
+        &new,
+        &format!(
+            "{}
+",
+            codex_user("n1")
+        ),
+    );
+    follower.pass().unwrap();
+    assert_eq!(t.stored("codex", CODEX_SESSION), ["x3"]);
+    assert_eq!(t.stored("codex", NEW_SESSION), ["n1"]);
 }
