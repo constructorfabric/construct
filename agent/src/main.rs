@@ -73,13 +73,18 @@ fn uninstall() -> std::io::Result<()> {
 #[cfg(unix)]
 fn run() -> std::io::Result<()> {
     use construct_agent::database::{self, Database, Health, State};
+    use construct_agent::host;
     use tokio::signal::unix::{SignalKind, signal};
 
     let socket = construct_agent::ipc::socket_path()?;
     let paths = database::Paths::from_env()?;
+    let host_paths = host::Paths::from_env()?;
     let health = Health::default();
 
-    let server = construct_agent::ipc::Server::bind(&socket)?.with_database(health.clone());
+    let construct_health = Health::default();
+    let server = construct_agent::ipc::Server::bind(&socket)?
+        .with_database(health.clone())
+        .with_construct(construct_health.clone());
     eprintln!(
         "construct-agent {} listening on {}",
         env!("CARGO_PKG_VERSION"),
@@ -134,15 +139,24 @@ fn run() -> std::io::Result<()> {
                 return Ok(());
             }
         };
-        // A database that stops answering is reported as failed; the agent itself keeps running.
-        let watch = async {
-            if let Some(db) = &database {
-                db.watch().await;
-                health.set(State::Failed);
-                eprintln!("database failed: PostgreSQL stopped answering");
+        // The Construct host needs the database; without one it does not start.
+        let started = start_construct_until_stopped(
+            database.as_ref(),
+            &host_paths,
+            (&health, &construct_health),
+            &mut stop_signal,
+        )
+        .await;
+        let mut host = match started {
+            Ok(host) => host,
+            Err(sig) => {
+                eprintln!("{sig} while the Construct host was starting; stopped");
+                stop_all(None, database.as_ref()).await;
+                return Ok(());
             }
-            std::future::pending::<()>().await;
         };
+        let watch = watch_database(database.as_ref(), &health);
+        let watch_host = watch_construct(host.as_mut(), &construct_health);
         let result = tokio::select! {
             sig = &mut stop_signal => {
                 eprintln!("{sig}: stopping");
@@ -153,14 +167,135 @@ fn run() -> std::io::Result<()> {
                 Err(_) => Err(std::io::Error::other("the socket server stopped")),
             },
             () = watch => Ok(()),
+            () = watch_host => Ok(()),
         };
-        if let Some(db) = database
-            && let Err(e) = db.stop().await
-        {
-            eprintln!("{e}");
-        }
+        stop_all(host, database.as_ref()).await;
         result
     })
+}
+
+/// [`start_construct`] (no host without a database) until it ends, or until `stop_signal` fires (`Err` with the signal's
+/// name) or PostgreSQL stops answering (no host). In both cases the host that was begun is
+/// stopped, and awaited, before this returns, so the caller may stop the database at once.
+#[cfg(unix)]
+async fn start_construct_until_stopped<S>(
+    db: Option<&construct_agent::database::Database>,
+    paths: &construct_agent::host::Paths,
+    (health, construct_health): (
+        &construct_agent::database::Health,
+        &construct_agent::database::Health,
+    ),
+    stop_signal: &mut S,
+) -> Result<Option<construct_agent::host::Host>, &'static str>
+where
+    S: std::future::Future<Output = &'static str> + Unpin,
+{
+    use construct_agent::database::State;
+
+    let Some(db) = db else {
+        construct_health.set(State::Failed);
+        return Ok(None);
+    };
+    let abort = tokio_util::sync::CancellationToken::new();
+    let start = start_construct(db, paths, construct_health, &abort);
+    tokio::pin!(start);
+    tokio::select! {
+        host = &mut start => Ok(host),
+        sig = stop_signal => {
+            abort.cancel();
+            stop_all(start.await, None).await;
+            Err(sig)
+        }
+        // `watch_database` reports it; do not wait for the host's own timeout.
+        () = watch_database(Some(db), health) => {
+            abort.cancel();
+            stop_all(start.await, None).await;
+            construct_health.set(State::Failed);
+            Ok(None)
+        }
+    }
+}
+
+/// Create the graph storage database and start the Construct host on it, and record the
+/// outcome in `health`; a host that fails to start leaves the agent running without it.
+#[cfg(unix)]
+async fn start_construct(
+    db: &construct_agent::database::Database,
+    paths: &construct_agent::host::Paths,
+    health: &construct_agent::database::Health,
+    abort: &tokio_util::sync::CancellationToken,
+) -> Option<construct_agent::host::Host> {
+    use construct_agent::database::State;
+    use construct_agent::host::{GRAPH_DBNAME, Host};
+
+    let started = async {
+        db.ensure_database(GRAPH_DBNAME).await?;
+        Host::start(paths, db.paths(), abort).await
+    };
+    match started.await {
+        Ok(host) => {
+            health.set(State::Ready);
+            eprintln!("construct ready on 127.0.0.1:{}", host.connection().port);
+            Some(host)
+        }
+        Err(e) => {
+            health.set(State::Failed);
+            eprintln!("construct failed: {e:#}");
+            None
+        }
+    }
+}
+
+/// Resolves never; marks the database failed when PostgreSQL stops answering. The agent
+/// itself keeps running.
+#[cfg(unix)]
+async fn watch_database(
+    database: Option<&construct_agent::database::Database>,
+    health: &construct_agent::database::Health,
+) {
+    use construct_agent::database::State;
+    if let Some(db) = database {
+        db.watch().await;
+        health.set(State::Failed);
+        eprintln!("database failed: PostgreSQL stopped answering");
+    }
+    std::future::pending::<()>().await;
+}
+
+/// The same for a Construct host that stops on its own.
+#[cfg(unix)]
+async fn watch_construct(
+    host: Option<&mut construct_agent::host::Host>,
+    health: &construct_agent::database::Health,
+) {
+    use construct_agent::database::State;
+    if let Some(host) = host {
+        let res = host.stopped().await;
+        health.set(State::Failed);
+        match res {
+            Ok(()) => eprintln!("construct failed: the host stopped"),
+            Err(e) => eprintln!("construct failed: {e:#}"),
+        }
+    }
+    std::future::pending::<()>().await;
+}
+
+/// Stop the Construct host first, since it uses the database, then the database.
+#[cfg(unix)]
+async fn stop_all(
+    host: Option<construct_agent::host::Host>,
+    database: Option<&construct_agent::database::Database>,
+) {
+    if let Some(host) = host
+        && let Err(e) = host.stop().await
+    {
+        eprintln!("construct: {e:#}");
+    }
+    if let Some(db) = database
+        && let Err(e) = db.stop().await
+    {
+        eprintln!("{e}");
+    }
 }
 
 #[cfg(not(unix))]

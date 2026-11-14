@@ -20,7 +20,7 @@ use crate::ipc::{absolute_env_path, create_private_dir};
 /// The PostgreSQL release bundled into the binary (set in `.cargo/config.toml`).
 const POSTGRESQL_VERSION: &str = env!("POSTGRESQL_VERSION");
 /// Port number used only to name the socket file (`.s.PGSQL.5432`); nothing listens on TCP.
-const SOCKET_PORT: u16 = 5432;
+pub const SOCKET_PORT: u16 = 5432;
 /// Only the local socket is reachable, and only by the user (the socket directory is `0700`):
 /// the user connects as the superuser `postgres` without a password.
 const PG_HBA: &str = "local all all trust\n";
@@ -290,6 +290,26 @@ impl Database {
                 String::from_utf8_lossy(&out.stderr).trim()
             )))
         }
+    }
+
+    /// Create the database `name` unless it exists; the Construct host's graph storage
+    /// does not create its own.
+    ///
+    /// # Errors
+    /// Fails when PostgreSQL refuses the check or the creation.
+    pub async fn ensure_database(&self, name: &str) -> Result<(), Error> {
+        let exists = self
+            .postgres
+            .database_exists(name)
+            .await
+            .map_err(|e| err(&format!("check database {name}"), e))?;
+        if exists {
+            return Ok(());
+        }
+        self.postgres
+            .create_database(name)
+            .await
+            .map_err(|e| err(&format!("create database {name}"), e))
     }
 
     /// Whether PostgreSQL accepts connections on its socket.

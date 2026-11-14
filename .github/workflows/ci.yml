@@ -45,6 +45,14 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      # The toolkit's build compiles a .proto file: protoc and the well-known types. The agent's
+      # host is unix-only, so Windows does not need them.
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends protobuf-compiler libprotobuf-dev
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
       # rust-toolchain.toml pins the compiler; rustup installs it on first use.
       - name: Format
         run: cargo fmt --check
