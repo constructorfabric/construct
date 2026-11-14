@@ -71,6 +71,8 @@ fn uninstall() -> std::io::Result<()> {
 /// database), serve it on a thread, start the database in the background so `status` never
 /// waits for it, and stop the database on SIGTERM or SIGINT.
 #[cfg(unix)]
+// One sequence of start-up and shutdown steps; split it when a part grows its own logic.
+#[allow(clippy::too_many_lines)]
 fn run() -> std::io::Result<()> {
     use construct_agent::database::{self, Database, Health, State};
     use construct_agent::follow::Stats;
@@ -84,10 +86,12 @@ fn run() -> std::io::Result<()> {
 
     let construct_health = Health::default();
     let connectors = Stats::default();
+    let model_state = construct_agent::model::ModelState::default();
     let server = construct_agent::ipc::Server::bind(&socket)?
         .with_database(health.clone())
         .with_construct(construct_health.clone())
-        .with_connectors(connectors.clone());
+        .with_connectors(connectors.clone())
+        .with_model(model_state.clone());
     eprintln!(
         "construct-agent {} listening on {}",
         env!("CARGO_PKG_VERSION"),
@@ -152,6 +156,7 @@ fn run() -> std::io::Result<()> {
             database.as_ref(),
             &host_paths,
             (&health, &construct_health),
+            &model_state,
             &mut stop_signal,
         )
         .await;
@@ -205,6 +210,7 @@ async fn start_construct_until_stopped<S>(
         &construct_agent::database::Health,
         &construct_agent::database::Health,
     ),
+    model_state: &construct_agent::model::ModelState,
     stop_signal: &mut S,
 ) -> Result<Option<construct_agent::host::Host>, &'static str>
 where
@@ -217,7 +223,7 @@ where
         return Ok(None);
     };
     let abort = tokio_util::sync::CancellationToken::new();
-    let start = start_construct(db, paths, construct_health, &abort);
+    let start = start_construct(db, paths, construct_health, model_state, &abort);
     tokio::pin!(start);
     tokio::select! {
         host = &mut start => Ok(host),
@@ -243,14 +249,22 @@ async fn start_construct(
     db: &construct_agent::database::Database,
     paths: &construct_agent::host::Paths,
     health: &construct_agent::database::Health,
+    model_state: &construct_agent::model::ModelState,
     abort: &tokio_util::sync::CancellationToken,
 ) -> Option<construct_agent::host::Host> {
     use construct_agent::database::State;
     use construct_agent::host::{GRAPH_DBNAME, Host};
 
+    let model = load_model();
     let started = async {
         db.ensure_database(GRAPH_DBNAME).await?;
-        Host::start(paths, db.paths(), abort).await
+        Host::start(
+            paths,
+            db.paths(),
+            model.as_ref().map(|m| (m, model_state)),
+            abort,
+        )
+        .await
     };
     match started.await {
         Ok(host) => {
@@ -261,6 +275,27 @@ async fn start_construct(
         Err(e) => {
             health.set(State::Failed);
             eprintln!("construct failed: {e:#}");
+            None
+        }
+    }
+}
+
+/// The model of `agent.toml`. A missing file, or one that is refused, leaves the host without a
+/// model: it takes records and drops them. The reason is printed; the key never is.
+#[cfg(unix)]
+fn load_model() -> Option<construct_agent::model::ModelConfig> {
+    use construct_agent::model::ModelConfig;
+    match ModelConfig::load_default() {
+        Ok(Some(model)) => {
+            eprintln!("model: {} at {}", model.model, model.base_url);
+            Some(model)
+        }
+        Ok(None) => {
+            eprintln!("model: not configured, records are not processed");
+            None
+        }
+        Err(e) => {
+            eprintln!("model: agent.toml not used: {e}");
             None
         }
     }
