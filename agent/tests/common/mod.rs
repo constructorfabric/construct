@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use construct_agent::autostart::{linux, macos, CommandRunner};
+use construct_agent::autostart::{CommandRunner, linux, macos};
 
 #[derive(Clone, Default)]
 pub struct Recorder(pub Rc<RefCell<Vec<String>>>, Rc<RefCell<Vec<&'static str>>>);

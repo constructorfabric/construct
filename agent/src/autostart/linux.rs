@@ -5,7 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::{binary_stamp, escape, render, with_lock, Autostart, CommandRunner, SERVICE_NAME};
+use super::{Autostart, CommandRunner, SERVICE_NAME, binary_stamp, escape, render, with_lock};
 
 const UNIT_TEMPLATE: &str = include_str!("../../templates/construct-agent.service");
 

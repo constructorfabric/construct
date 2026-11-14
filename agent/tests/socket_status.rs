@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::thread;
 
-use construct_agent::ipc::{query_status, Server};
+use construct_agent::ipc::{Server, query_status};
 
 fn temp_socket(name: &str) -> std::path::PathBuf {
     std::env::temp_dir()

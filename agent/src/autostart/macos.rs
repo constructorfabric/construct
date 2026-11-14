@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::{binary_stamp, escape, render, with_lock, Autostart, CommandRunner};
+use super::{Autostart, CommandRunner, binary_stamp, escape, render, with_lock};
 
 const PLIST_TEMPLATE: &str = include_str!("../../templates/cf.construct.agent.plist");
 
@@ -145,10 +145,10 @@ impl Autostart for LaunchAgent {
             // job is still loaded: then the file stays, so the command can be run
             // again. A job that is not loaded is already stopped.
             let target = self.gui_domain_target();
-            if let Err(e) = self.runner.run("launchctl", &["bootout", &target]) {
-                if self.is_loaded() {
-                    return Err(e);
-                }
+            if let Err(e) = self.runner.run("launchctl", &["bootout", &target])
+                && self.is_loaded()
+            {
+                return Err(e);
             }
             for file in [self.plist_path(), self.stamp_path()] {
                 match fs::remove_file(file) {

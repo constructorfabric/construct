@@ -5,9 +5,9 @@ mod common;
 
 use std::path::Path;
 
-use construct_agent::autostart::{self, linux, macos, Autostart};
+use construct_agent::autostart::{self, Autostart, linux, macos};
 
-use common::{Scenario, LINUX_INSTALL};
+use common::{LINUX_INSTALL, Scenario};
 
 #[test]
 fn linux_unit_file_restarts_and_starts_at_login() {
@@ -91,9 +91,10 @@ fn linux_uninstall_stops_the_service_even_when_the_unit_file_is_gone() {
     let sd = s.linux();
     assert!(!sd.is_installed());
     sd.uninstall().unwrap();
-    assert!(s
-        .take_calls()
-        .contains(&"systemctl --user stop construct-agent.service".to_string()));
+    assert!(
+        s.take_calls()
+            .contains(&"systemctl --user stop construct-agent.service".to_string())
+    );
 }
 
 #[test]
