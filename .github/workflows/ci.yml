@@ -52,3 +52,7 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --locked
+      # These start a real PostgreSQL with pgvector; pgvector is built for Linux x86_64 only.
+      - name: Test (embedded PostgreSQL)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -- --ignored

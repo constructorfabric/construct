@@ -3,8 +3,6 @@
 
 use std::io;
 use std::path::Path;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::path::PathBuf;
 use std::process::Command;
 
 pub mod linux;
@@ -139,10 +137,8 @@ pub(crate) fn with_lock<T>(lock: &Path, f: impl FnOnce() -> io::Result<T>) -> io
 pub fn current() -> io::Result<Box<dyn Autostart>> {
     #[cfg(target_os = "linux")]
     {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .map_or_else(|| home_dir().map(|h| h.join(".config")), Ok)?;
+        let config = crate::ipc::absolute_env_path("XDG_CONFIG_HOME")
+            .map_or_else(|| crate::ipc::home_dir().map(|h| h.join(".config")), Ok)?;
         Ok(Box::new(linux::SystemdUser::new(
             config.join("systemd/user"),
             Box::new(SystemRunner),
@@ -153,7 +149,7 @@ pub fn current() -> io::Result<Box<dyn Autostart>> {
         let out = Command::new("id").arg("-u").output()?;
         let uid = parse_uid(out.status.success(), &String::from_utf8_lossy(&out.stdout))?;
         Ok(Box::new(macos::LaunchAgent::new(
-            home_dir()?,
+            crate::ipc::home_dir()?,
             uid,
             Box::new(SystemRunner),
         )))
@@ -165,11 +161,4 @@ pub fn current() -> io::Result<Box<dyn Autostart>> {
             "start at login is not available on this platform yet",
         ))
     }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn home_dir() -> io::Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))
 }

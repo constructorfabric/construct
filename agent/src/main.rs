@@ -67,9 +67,101 @@ fn uninstall() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Bind the agent socket first (a second agent must fail here, before it touches the
+/// database), serve it on a thread, start the database in the background so `status` never
+/// waits for it, and stop the database on SIGTERM or SIGINT.
 #[cfg(unix)]
 fn run() -> std::io::Result<()> {
-    construct_agent::ipc::serve(&construct_agent::ipc::socket_path()?)
+    use construct_agent::database::{self, Database, Health, State};
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let socket = construct_agent::ipc::socket_path()?;
+    let paths = database::Paths::from_env()?;
+    let health = Health::default();
+
+    let server = construct_agent::ipc::Server::bind(&socket)?.with_database(health.clone());
+    eprintln!(
+        "construct-agent {} listening on {}",
+        env!("CARGO_PKG_VERSION"),
+        server.path().display()
+    );
+    let (served_tx, served_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        server.serve();
+        let _ = served_tx.send(());
+    });
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let (mut term, mut int) = rt.block_on(async {
+        Ok::<_, std::io::Error>((
+            signal(SignalKind::terminate())?,
+            signal(SignalKind::interrupt())?,
+        ))
+    })?;
+
+    rt.block_on(async {
+        let stop_signal = async {
+            tokio::select! {
+                _ = term.recv() => "SIGTERM",
+                _ = int.recv() => "SIGINT",
+            }
+        };
+        tokio::pin!(stop_signal);
+        // The start future lives only inside this block, so a signal drops it before
+        // the leftover PostgreSQL is stopped.
+        let started = {
+            let start = Database::start(paths.clone());
+            tokio::select! {
+                res = start => Ok(res),
+                sig = &mut stop_signal => Err(sig),
+            }
+        };
+        let database = match started {
+            Ok(Ok(db)) => {
+                health.set(State::Ready);
+                eprintln!("database ready on {}", db.paths().socket_dir.display());
+                Some(db)
+            }
+            Ok(Err(e)) => {
+                health.set(State::Failed);
+                eprintln!("database failed: {e}");
+                None
+            }
+            Err(sig) => {
+                eprintln!("{sig} while the database was starting; stopping");
+                database::stop_leftover(&paths).await;
+                return Ok(());
+            }
+        };
+        // A database that stops accepting connections is reported as failed and the agent exits
+        // with an error, so the service manager starts it again and the database with it. A start that
+        // failed stays `failed`: restarting would only repeat it.
+        let watch = async {
+            match &database {
+                Some(db) => db.watch().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let result = tokio::select! {
+            sig = &mut stop_signal => {
+                eprintln!("{sig}: stopping");
+                Ok(())
+            }
+            _ = served_rx => Err(std::io::Error::other("the socket server stopped")),
+            () = watch => {
+                health.set(State::Failed);
+                Err(std::io::Error::other("PostgreSQL stopped accepting connections"))
+            }
+        };
+        if let Some(db) = database {
+            if let Err(e) = db.stop().await {
+                eprintln!("{e}");
+            }
+        }
+        result
+    })
 }
 
 #[cfg(not(unix))]
