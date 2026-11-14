@@ -145,15 +145,40 @@ fn linux_uninstall_reports_a_failed_stop_of_an_installed_unit_and_keeps_the_file
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// `bootout` is refused while `print` still finds the job: it is loaded.
+struct Refusing;
+
+impl CommandRunner for Refusing {
+    fn run(&self, _program: &str, args: &[&str]) -> io::Result<()> {
+        match args.first() {
+            Some(&"bootout") => Err(io::Error::other("launchctl bootout refused")),
+            _ => Ok(()),
+        }
+    }
+}
+
 #[test]
-fn macos_uninstall_reports_a_failed_bootout_of_an_installed_agent_and_keeps_the_file() {
+fn macos_uninstall_reports_a_refused_bootout_of_a_loaded_job_and_keeps_the_file() {
     let home =
         std::env::temp_dir().join(format!("construct-agent-bootfail-{}", std::process::id()));
     let ok = macos::LaunchAgent::new(home.clone(), "1234".into(), Box::new(Recorder::default()));
     ok.install(Path::new("/usr/bin/construct-agent")).unwrap();
-    let agent = macos::LaunchAgent::new(home.clone(), "1234".into(), Box::new(Failing));
+    let agent = macos::LaunchAgent::new(home.clone(), "1234".into(), Box::new(Refusing));
     assert!(agent.uninstall().is_err());
     assert!(agent.is_installed());
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn macos_uninstall_removes_the_plist_of_a_job_that_is_not_loaded() {
+    let home =
+        std::env::temp_dir().join(format!("construct-agent-notloaded-{}", std::process::id()));
+    let ok = macos::LaunchAgent::new(home.clone(), "1234".into(), Box::new(Recorder::default()));
+    ok.install(Path::new("/usr/bin/construct-agent")).unwrap();
+    // Every launchctl call fails, `print` included: nothing is loaded.
+    let agent = macos::LaunchAgent::new(home.clone(), "1234".into(), Box::new(Failing));
+    agent.uninstall().unwrap();
+    assert!(!agent.is_installed());
     let _ = std::fs::remove_dir_all(home);
 }
 

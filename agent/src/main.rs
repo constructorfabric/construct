@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use construct_agent::{autostart, ipc};
+use construct_agent::autostart;
 
 const USAGE: &str = "usage: construct-agent <command>
 
@@ -56,7 +56,7 @@ fn uninstall() -> std::io::Result<()> {
 
 #[cfg(unix)]
 fn run() -> std::io::Result<()> {
-    ipc::serve(&ipc::socket_path()?)
+    construct_agent::ipc::serve(&construct_agent::ipc::socket_path()?)
 }
 
 #[cfg(not(unix))]
@@ -71,8 +71,8 @@ fn run() -> std::io::Result<()> {
 /// `stopped` with the reason and exit 1 otherwise.
 #[cfg(unix)]
 fn status() -> ExitCode {
-    let reply = ipc::socket_path()
-        .and_then(|p| ipc::query_status(&p))
+    let reply = construct_agent::ipc::socket_path()
+        .and_then(|p| construct_agent::ipc::query_status(&p))
         .and_then(|line| running_reply(&line));
     match reply {
         Ok(line) => {

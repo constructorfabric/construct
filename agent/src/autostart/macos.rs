@@ -72,15 +72,14 @@ impl Autostart for LaunchAgent {
     }
 
     fn uninstall(&self) -> io::Result<()> {
-        // Always try to stop it. Without a plist "not loaded" is expected and
-        // ignored; with one, a failure is reported and the file stays, so the
-        // command can be run again.
-        let installed = self.is_installed();
-        let stopped = self
-            .runner
-            .run("launchctl", &["bootout", &self.gui_domain_target()]);
-        if installed {
-            stopped?;
+        // Always try to stop it. A failed `bootout` is an error only while the
+        // job is still loaded: then the file stays, so the command can be run
+        // again. A job that is not loaded is already stopped.
+        let target = self.gui_domain_target();
+        if let Err(e) = self.runner.run("launchctl", &["bootout", &target]) {
+            if self.runner.run("launchctl", &["print", &target]).is_ok() {
+                return Err(e);
+            }
         }
         match fs::remove_file(self.plist_path()) {
             Ok(()) => Ok(()),
