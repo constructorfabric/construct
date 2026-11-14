@@ -6,6 +6,7 @@ const USAGE: &str = "usage: construct-agent <command>
 
 commands:
   install-service    start the agent at every login and start it now
+  ensure-service     install-service, unless it is installed for this binary already
   uninstall-service  stop the agent and remove it from login
   status             ask the running agent for its status
   run                run the agent in the foreground (the service runs this)";
@@ -14,6 +15,7 @@ fn main() -> ExitCode {
     let cmd = std::env::args().nth(1);
     let result = match cmd.as_deref() {
         Some("install-service") => install(),
+        Some("ensure-service") => ensure(),
         Some("uninstall-service") => uninstall(),
         Some("status") => return status(),
         Some("run") => run(),
@@ -35,7 +37,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn install() -> std::io::Result<()> {
+/// The path of this binary, which the service file must be able to hold.
+fn agent_exe() -> std::io::Result<std::path::PathBuf> {
     let exe = std::env::current_exe()?.canonicalize()?;
     if exe.to_str().is_none() {
         return Err(std::io::Error::new(
@@ -43,8 +46,18 @@ fn install() -> std::io::Result<()> {
             "the path of the agent binary is not valid UTF-8; move it and try again",
         ));
     }
-    autostart::current()?.install(&exe)?;
+    Ok(exe)
+}
+
+fn install() -> std::io::Result<()> {
+    autostart::current()?.install(&agent_exe()?)?;
     println!("installed and started {}", autostart::SERVICE_NAME);
+    Ok(())
+}
+
+fn ensure() -> std::io::Result<()> {
+    autostart::current()?.ensure(&agent_exe()?)?;
+    println!("{} is registered", autostart::SERVICE_NAME);
     Ok(())
 }
 

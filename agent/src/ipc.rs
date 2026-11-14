@@ -11,6 +11,7 @@ use std::path::PathBuf;
 pub const SOCKET_NAME: &str = "agent.sock";
 
 /// The JSON line the agent answers to `status`.
+#[must_use]
 pub fn status_response(pid: u32) -> String {
     serde_json::json!({
         "status": "running",
@@ -21,12 +22,16 @@ pub fn status_response(pid: u32) -> String {
 }
 
 /// The JSON line the agent answers to anything else.
+#[must_use]
 pub fn unknown_command_response(command: &str) -> String {
     serde_json::json!({ "error": "unknown command", "command": command }).to_string()
 }
 
 /// Socket path from the runtime directory (`$XDG_RUNTIME_DIR` on Linux, the
 /// per-user `$TMPDIR` on macOS).
+///
+/// # Errors
+/// Fails when that variable is not set to an absolute path.
 pub fn socket_path() -> io::Result<PathBuf> {
     let var = if cfg!(target_os = "macos") {
         "TMPDIR"
@@ -74,8 +79,17 @@ mod unix {
     impl Server {
         /// Bind the socket, replacing a stale file left by a dead agent but
         /// refusing to replace a live one.
+        ///
+        /// # Errors
+        /// Fails when the socket path has no parent, another agent is listening
+        /// on it, or the directory or socket cannot be created.
         pub fn bind(path: &Path) -> io::Result<Self> {
-            let dir = path.parent().expect("socket path has a parent");
+            let Some(dir) = path.parent() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "socket path has no parent directory",
+                ));
+            };
             if !dir.exists() {
                 fs::DirBuilder::new()
                     .recursive(true)
@@ -95,12 +109,14 @@ mod unix {
             })
         }
 
+        #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
         }
 
-        /// Accept connections forever, one thread each.
-        pub fn serve(&self) -> io::Result<()> {
+        /// Accept connections forever, one thread each. An accept error is logged and
+        /// retried.
+        pub fn serve(&self) {
             for conn in self.listener.incoming() {
                 match conn {
                     Ok(stream) => {
@@ -116,7 +132,6 @@ mod unix {
                     }
                 }
             }
-            Ok(())
         }
     }
 
@@ -146,6 +161,9 @@ mod unix {
     }
 
     /// Bind and serve on `path`.
+    ///
+    /// # Errors
+    /// Fails when the socket cannot be bound.
     pub fn serve(path: &Path) -> io::Result<()> {
         let server = Server::bind(path)?;
         eprintln!(
@@ -153,7 +171,8 @@ mod unix {
             env!("CARGO_PKG_VERSION"),
             server.path().display()
         );
-        server.serve()
+        server.serve();
+        Ok(())
     }
 
     fn handle(stream: UnixStream) -> io::Result<()> {
@@ -170,6 +189,10 @@ mod unix {
 
     /// Ask the agent on `path` for its status; returns the JSON line. The whole
     /// call, connect included, gives up after `QUERY_TIMEOUT`.
+    ///
+    /// # Errors
+    /// Fails when nothing listens on `path`, the agent does not answer in time, or it
+    /// sends an empty reply.
     pub fn query_status(path: &Path) -> io::Result<String> {
         let (tx, rx) = mpsc::channel();
         let path = path.to_path_buf();
