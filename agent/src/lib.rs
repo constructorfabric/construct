@@ -5,6 +5,8 @@
 pub mod autostart;
 #[cfg(unix)]
 pub mod database;
+#[cfg(unix)]
+pub mod host;
 pub mod ipc;
 #[cfg(unix)]
 pub mod pgvector;

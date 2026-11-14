@@ -12,12 +12,13 @@ pub const SOCKET_NAME: &str = "agent.sock";
 
 /// The JSON line the agent answers to `status`.
 #[must_use]
-pub fn status_response(pid: u32, database: &str) -> String {
+pub fn status_response(pid: u32, database: &str, construct: &str) -> String {
     serde_json::json!({
         "status": "running",
         "version": env!("CARGO_PKG_VERSION"),
         "pid": pid,
         "database": database,
+        "construct": construct,
     })
     .to_string()
 }
@@ -144,6 +145,7 @@ mod unix {
         listener: UnixListener,
         path: PathBuf,
         database: Health,
+        construct: Health,
     }
 
     impl Server {
@@ -171,6 +173,7 @@ mod unix {
                 listener,
                 path: path.to_path_buf(),
                 database: Health::default(),
+                construct: Health::default(),
             })
         }
 
@@ -178,6 +181,13 @@ mod unix {
         #[must_use]
         pub fn with_database(mut self, database: Health) -> Self {
             self.database = database;
+            self
+        }
+
+        /// Report this Construct host state in `status`.
+        #[must_use]
+        pub fn with_construct(mut self, construct: Health) -> Self {
+            self.construct = construct;
             self
         }
 
@@ -193,8 +203,9 @@ mod unix {
                 match conn {
                     Ok(stream) => {
                         let database = self.database.clone();
+                        let construct = self.construct.clone();
                         thread::spawn(move || {
-                            if let Err(e) = handle(stream, &database) {
+                            if let Err(e) = handle(stream, &database, &construct) {
                                 eprintln!("connection error: {e}");
                             }
                         });
@@ -233,13 +244,17 @@ mod unix {
         }
     }
 
-    fn handle(stream: UnixStream, database: &Health) -> io::Result<()> {
+    fn handle(stream: UnixStream, database: &Health, construct: &Health) -> io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         let mut line = String::new();
         BufReader::new(io::Read::take(&stream, 1024)).read_line(&mut line)?;
         let mut stream = stream;
         let reply = match line.trim() {
-            "status" => status_response(std::process::id(), database.get().as_str()),
+            "status" => status_response(
+                std::process::id(),
+                database.get().as_str(),
+                construct.get().as_str(),
+            ),
             other => unknown_command_response(other),
         };
         writeln!(stream, "{reply}")
