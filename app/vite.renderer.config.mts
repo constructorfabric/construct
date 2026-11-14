@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 
@@ -14,4 +15,4 @@ const devContentSecurityPolicy = {
     html.replace(/(http-equiv="Content-Security-Policy"\s+content=")[^"]*"/, `$1${devPolicy}"`),
 } satisfies Plugin;
 
-export default defineConfig({ plugins: [devContentSecurityPolicy] });
+export default defineConfig({ plugins: [react(), devContentSecurityPolicy] });

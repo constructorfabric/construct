@@ -19,7 +19,11 @@
     "test:unit": "vitest run unit/"
   },
   "dependencies": {
-    "electron-squirrel-startup": "1.0.1"
+    "@base-ui/react": "1.6.0",
+    "@gears-frontx/ui-kit": "0.5.1",
+    "electron-squirrel-startup": "1.0.1",
+    "react": "19.2.9",
+    "react-dom": "19.2.9"
   },
   "devDependencies": {
     "@electron-forge/cli": "8.0.1",
@@ -33,6 +37,9 @@
     "@playwright/test": "1.65.0",
     "@types/electron-squirrel-startup": "1.0.2",
     "@types/node": "26.6.6",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.1",
     "electron": "45.2.3",
     "eslint": "9.39.4",
     "prettier": "3.8.1",

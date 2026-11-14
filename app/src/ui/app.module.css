@@ -1,0 +1,36 @@
+/* The kit's theme leaves the browser's body margin, which would make the page scroll. */
+:global(body) {
+  margin: 0;
+}
+
+.content {
+  box-sizing: border-box;
+  overflow: auto;
+  padding: var(--space-6);
+}
+
+.column {
+  max-width: 38rem;
+  margin: 0 auto;
+}
+
+.state {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-heading-1-size);
+  line-height: var(--text-heading-1-line-height);
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+.state[data-state='running'] {
+  color: var(--success-foreground);
+}
+
+.state[data-state='stopped'] {
+  color: var(--danger-foreground);
+}
+
+.detail {
+  margin-top: var(--space-2);
+  overflow-wrap: anywhere;
+}

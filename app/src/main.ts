@@ -28,8 +28,10 @@ const registerAgent = async () => {
 
 const createWindow = () => {
   const window = new BrowserWindow({
-    width: 480,
-    height: 320,
+    width: 960,
+    height: 640,
+    minWidth: 720,
+    minHeight: 480,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
