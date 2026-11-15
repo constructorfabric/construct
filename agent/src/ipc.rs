@@ -4,7 +4,10 @@
 //!
 //! Protocol: the client sends one line, the agent answers one JSON line. Commands:
 //! `status`, `settings-get`, `settings-set <JSON object>` (the fields to change; see
-//! `settings`), and `settings-test [JSON object]` (one ping to the model; see `model_test`). A request line is at most `MAX_REQUEST` bytes.
+//! `settings`), and `settings-test [JSON object]` (one ping to the model; see `model_test`).
+//! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
+//! streams an answer, `chat-get` sends one line per record. A request line is at most
+//! `MAX_REQUEST` bytes, and a `chat-send` line at most `chat::MAX_REQUEST`.
 
 use std::io;
 use std::path::PathBuf;
@@ -35,7 +38,8 @@ pub fn status_response(
     .to_string()
 }
 
-/// Longest request line the agent reads, in bytes. A longer one is refused.
+/// Longest request line the agent reads, in bytes, for every command but `chat-send`. A longer
+/// one is refused.
 pub const MAX_REQUEST: usize = 16 * 1024;
 /// Longest command word the agent repeats in an error.
 const MAX_ECHO: usize = 24;
@@ -113,6 +117,7 @@ mod unix {
     use std::time::Duration;
 
     use super::{MAX_REQUEST, error_response, status_response, unknown_command_response};
+    use crate::chat::{self, Chat};
     use crate::database::Health;
     use crate::follow::Stats;
     use crate::model::{ModelHealth, ModelState};
@@ -150,6 +155,7 @@ mod unix {
         connectors: Stats,
         model: ModelState,
         settings: Option<Settings>,
+        chat: Option<Chat>,
     }
 
     impl Server {
@@ -181,6 +187,7 @@ mod unix {
                 connectors: Stats::default(),
                 model: ModelState::default(),
                 settings: None,
+                chat: None,
             })
         }
 
@@ -221,6 +228,13 @@ mod unix {
             self
         }
 
+        /// Serve the chat commands from this chat. Without it they answer an error.
+        #[must_use]
+        pub fn with_chat(mut self, chat: Chat) -> Self {
+            self.chat = Some(chat);
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -239,6 +253,7 @@ mod unix {
                         let connectors = self.connectors.clone();
                         let model = self.model.clone();
                         let settings = self.settings.clone();
+                        let chat = self.chat.clone();
                         thread::spawn(move || {
                             let shared = Shared {
                                 database: &database,
@@ -246,6 +261,7 @@ mod unix {
                                 connectors: &connectors,
                                 model: &model,
                                 settings: settings.as_ref(),
+                                chat: chat.as_ref(),
                             };
                             if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
@@ -287,18 +303,55 @@ mod unix {
         }
     }
 
-    /// Read one request line of at most `MAX_REQUEST` bytes, without its line end.
-    /// `Ok(None)` when the line is longer.
-    fn read_request(stream: &UnixStream) -> io::Result<Option<Vec<u8>>> {
+    /// The trimmed line, its command word and the rest of it.
+    fn split_command(line: &str) -> (&str, &str, &str) {
+        let line = line.trim();
+        match line.split_once(char::is_whitespace) {
+            Some((command, rest)) => (line, command, rest.trim()),
+            None => (line, line, ""),
+        }
+    }
+
+    /// What `read_request` found.
+    enum Request {
+        Line(Vec<u8>),
+        /// A line over its limit; `chat` when it is a `chat-send`.
+        TooLong {
+            chat: bool,
+        },
+    }
+
+    /// Whether `line` starts with the command word `chat-send`.
+    fn is_chat_send(line: &[u8]) -> bool {
+        line.strip_prefix(b"chat-send")
+            .is_some_and(|rest| rest.first().is_none_or(u8::is_ascii_whitespace))
+    }
+
+    /// Read one request line without its line end: at most `MAX_REQUEST` bytes, or
+    /// `chat::MAX_REQUEST` for a `chat-send`.
+    fn read_request(stream: &UnixStream) -> io::Result<Request> {
         let mut line = Vec::new();
         let limit = u64::try_from(MAX_REQUEST + 1).unwrap_or(u64::MAX);
-        let mut reader = BufReader::new(io::Read::take(stream, limit));
-        reader.read_until(b'\n', &mut line)?;
-        if line.len() > MAX_REQUEST {
-            discard_rest(stream);
-            return Ok(None);
+        BufReader::new(io::Read::take(stream, limit)).read_until(b'\n', &mut line)?;
+        if line.len() <= MAX_REQUEST {
+            return Ok(Request::Line(line));
         }
-        Ok(Some(line))
+        let chat = is_chat_send(&line);
+        if chat && line.ends_with(b"\n") {
+            return Ok(Request::Line(line));
+        }
+        if chat {
+            // The first read took everything it was given, so the second starts where it ended.
+            let more = u64::try_from(chat::MAX_REQUEST - MAX_REQUEST).unwrap_or(u64::MAX);
+            BufReader::new(io::Read::take(stream, more)).read_until(b'\n', &mut line)?;
+            if line.len() <= chat::MAX_REQUEST {
+                return Ok(Request::Line(line));
+            }
+        }
+        if !line.ends_with(b"\n") {
+            discard_rest(stream);
+        }
+        Ok(Request::TooLong { chat })
     }
 
     /// Read and drop the rest of an over-long line, up to `DRAIN_LIMIT` bytes, so that closing
@@ -327,6 +380,7 @@ mod unix {
         connectors: &'a Stats,
         model: &'a ModelState,
         settings: Option<&'a Settings>,
+        chat: Option<&'a Chat>,
     }
 
     /// Never log, or return in an error, any part of `line`: it can hold a key.
@@ -335,11 +389,7 @@ mod unix {
         let Ok(line) = std::str::from_utf8(line) else {
             return error_response("invalid request");
         };
-        let line = line.trim();
-        let (command, argument) = match line.split_once(char::is_whitespace) {
-            Some((command, rest)) => (command, rest.trim()),
-            None => (line, ""),
-        };
+        let (line, command, argument) = split_command(line);
         let (model_name, model_state) = settings.map_or_else(
             || ("not set".to_string(), ModelHealth::NotConfigured),
             |s| {
@@ -378,12 +428,72 @@ mod unix {
 
     fn handle(stream: UnixStream, shared: &Shared) -> io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        let reply = match read_request(&stream)? {
-            Some(line) => reply(&line, shared),
-            None => error_response("request too long"),
-        };
         let mut stream = stream;
+        let reply = match read_request(&stream)? {
+            Request::Line(line) => {
+                if let Some(chat_reply) = chat_command(&line, shared, &mut stream)? {
+                    return Ok(chat_reply);
+                }
+                reply(&line, shared)
+            }
+            Request::TooLong { chat: true } => chat::event_error("request too large"),
+            Request::TooLong { chat: false } => error_response("request too long"),
+        };
         writeln!(stream, "{reply}")
+    }
+
+    /// Serve a chat command; `None` when the line is not one. An answer can take minutes, so
+    /// the read timeout of the request line is lifted; a client that is gone is found by a
+    /// failed write. Never log, or return in an error, any part of `line`.
+    fn chat_command(
+        line: &[u8],
+        shared: &Shared,
+        stream: &mut UnixStream,
+    ) -> io::Result<Option<()>> {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return Ok(None);
+        };
+        let (_, command, argument) = split_command(line);
+        if !matches!(
+            command,
+            "chat-send" | "chat-stop" | "chat-list" | "chat-get" | "chat-delete"
+        ) {
+            return Ok(None);
+        }
+        let Some(chat) = shared.chat else {
+            let unavailable = if command == "chat-send" {
+                chat::event_error("chat is not available")
+            } else {
+                error_response("chat is not available")
+            };
+            writeln!(stream, "{unavailable}")?;
+            return Ok(Some(()));
+        };
+        stream.set_read_timeout(None)?;
+        stream.set_write_timeout(Some(chat::WRITE_TIMEOUT))?;
+        match command {
+            "chat-send" => {
+                let mut out = stream.try_clone()?;
+                chat.send(argument, &mut |l| {
+                    out.write_all(format!("{l}\n").as_bytes()).is_ok()
+                });
+            }
+            "chat-stop" => {
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({ "stopped": chat.stop(argument) })
+                )?;
+            }
+            "chat-list" => writeln!(stream, "{}", chat.list())?,
+            "chat-get" => {
+                for l in chat.get(argument) {
+                    writeln!(stream, "{l}")?;
+                }
+            }
+            _ => writeln!(stream, "{}", chat.delete(argument))?,
+        }
+        Ok(Some(()))
     }
 
     /// Ask the agent on `path` for its status; returns the JSON line. The whole

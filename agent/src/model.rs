@@ -64,19 +64,19 @@ pub fn construct_section() -> serde_json::Value {
 }
 
 /// A model the settings describe completely, checked for one call.
-struct Target {
+pub(crate) struct Target {
     /// The API root, without a trailing `/`: the path `/chat/completions` is added to it.
     base_url: String,
-    model: String,
+    pub(crate) model: String,
     /// `Bearer <key>`, marked sensitive.
-    authorization: HeaderValue,
+    pub(crate) authorization: HeaderValue,
 }
 
 impl Target {
     /// `None` when the address, the model name or the key is missing or cannot be used. The
     /// address is checked here too: a file edited by hand, or written by an older agent, must
     /// not make the key go out over plain `http` to another host.
-    fn from_settings(model: &Model) -> Option<Self> {
+    pub(crate) fn from_settings(model: &Model) -> Option<Self> {
         let base_url = model.base_url.trim().trim_end_matches('/');
         let key = model.api_key.as_deref()?.trim();
         let name = model.model.as_str();
@@ -101,6 +101,22 @@ impl Target {
 
     fn url(&self) -> String {
         format!("{}/chat/completions", self.base_url)
+    }
+
+    /// The POST to the chat-completions address with the key as a sensitive header: the one
+    /// place that decides where the key goes. `accept` is the media type the caller reads.
+    pub(crate) fn request(
+        &self,
+        client: &reqwest::Client,
+        accept: &'static str,
+        body: impl Into<reqwest::Body>,
+    ) -> reqwest::RequestBuilder {
+        client
+            .post(self.url())
+            .header(header::AUTHORIZATION, self.authorization.clone())
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, accept)
+            .body(body)
     }
 }
 
@@ -141,9 +157,7 @@ struct StateInner {
 
 impl ModelState {
     fn lock(&self) -> std::sync::MutexGuard<'_, StateInner> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::sync::lock(&self.0)
     }
 
     /// The state for `status`, from the saved model and the last refusal. A refusal counts
@@ -217,17 +231,12 @@ impl ModelGateway {
         target: &Target,
         body: &Bytes,
     ) -> Result<(StatusCode, Bytes), reqwest::Error> {
-        let response = self
-            .client
-            .post(target.url())
-            .header(header::AUTHORIZATION, target.authorization.clone())
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "application/json")
-            .body(body.clone())
+        let response = target
+            .request(&self.client, "application/json", body.clone())
             .send()
             .await?;
         let status = response.status();
-        let answer = read_capped(response).await?;
+        let answer = read_capped(response, ANSWER_LIMIT).await?;
         Ok((status, answer))
     }
 }
@@ -243,14 +252,17 @@ fn with_model(body: Bytes, model: &str) -> Bytes {
     }
 }
 
-/// The body, up to the limit. An answer over the limit is cut there, which makes it a bad
-/// answer for the caller instead of memory for the host.
-async fn read_capped(mut response: reqwest::Response) -> Result<Bytes, reqwest::Error> {
+/// The body, up to `limit`. A body over it is cut there (one byte past the limit is kept, so
+/// the caller can tell), which makes it a bad answer instead of memory for the host.
+pub(crate) async fn read_capped(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Bytes, reqwest::Error> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         bytes.extend_from_slice(&chunk);
-        if bytes.len() > ANSWER_LIMIT {
-            bytes.truncate(ANSWER_LIMIT + 1);
+        if bytes.len() > limit {
+            bytes.truncate(limit + 1);
             break;
         }
     }

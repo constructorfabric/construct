@@ -1,16 +1,22 @@
 //! Shared by the autostart tests: a recording fake for `systemctl` and `launchctl`, and a
-//! scenario that owns a throw-away directory with a fake agent binary.
+//! scenario that owns a throw-away directory with a fake agent binary. Shared by the chat
+//! tests: the parts of a fake provider and a guard for a started agent.
 
 // Helpers sit outside `#[test]` functions, where `clippy.toml` does not allow `unwrap`.
 #![allow(clippy::unwrap_used, dead_code)]
 
 use std::cell::RefCell;
-use std::io;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::path::PathBuf;
+use std::process::Child;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use construct_agent::autostart::{CommandRunner, linux, macos};
+use serde_json::{Value, json};
 
 #[derive(Clone, Default)]
 pub struct Recorder(pub Rc<RefCell<Vec<String>>>, Rc<RefCell<Vec<&'static str>>>);
@@ -136,3 +142,78 @@ pub const MACOS_INSTALL: [&str; 2] = [
     "launchctl bootstrap gui/1234 ",
 ];
 pub const MACOS_PRINT: &str = "launchctl print gui/1234/cf.construct.agent";
+
+/// Kills the agent when the test ends, however it ends.
+pub struct Agent(pub Child);
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Reads one request: its body and its `Authorization` header.
+pub fn read_request(stream: &mut TcpStream) -> (String, String) {
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let (mut length, mut authorization) = (0, String::new());
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let lower = line.to_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
+            length = v.trim().parse().unwrap();
+        }
+        if lower.starts_with("authorization:") {
+            authorization = line.split_once(':').unwrap().1.trim().to_string();
+        }
+        if line.trim().is_empty() {
+            break;
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    (String::from_utf8(body).unwrap(), authorization)
+}
+
+pub fn head(stream: &mut TcpStream) {
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    stream.flush().unwrap();
+}
+
+/// One chunk; `false` once the client has gone.
+pub fn chunk(stream: &mut TcpStream, content: &str) -> bool {
+    let data = json!({ "choices": [{ "delta": { "content": content } }] });
+    write!(stream, "data: {data}\n\n")
+        .and_then(|()| stream.flush())
+        .is_ok()
+}
+
+pub fn done(stream: &mut TcpStream) {
+    let _ = write!(stream, "data: [DONE]\n\n");
+}
+
+pub fn status(stream: &mut TcpStream, code: u16, body: &str) {
+    write!(
+        stream,
+        "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+}
+
+/// Keep the connection open and quiet until the test ends.
+pub fn hold(stream: &TcpStream) {
+    let _keep = stream.try_clone().unwrap();
+    thread::sleep(Duration::from_secs(30));
+}
+
+/// A chunk of any shape.
+pub fn raw_chunk(stream: &mut TcpStream, data: &Value) {
+    write!(stream, "data: {data}\n\n").unwrap();
+    stream.flush().unwrap();
+}

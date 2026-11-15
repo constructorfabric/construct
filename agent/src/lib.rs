@@ -3,6 +3,8 @@
 
 pub mod autostart;
 #[cfg(unix)]
+pub mod chat;
+#[cfg(unix)]
 pub mod database;
 pub mod follow;
 #[cfg(unix)]
@@ -17,3 +19,4 @@ pub mod pgvector;
 pub mod records;
 #[cfg(unix)]
 pub mod settings;
+mod sync;

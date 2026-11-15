@@ -79,9 +79,7 @@ pub struct Stats(Arc<Mutex<BTreeMap<String, ToolStatus>>>);
 
 impl Stats {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<String, ToolStatus>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::sync::lock(&self.0)
     }
 
     /// Changes one tool's status. `f` runs under the lock: it must not do I/O.

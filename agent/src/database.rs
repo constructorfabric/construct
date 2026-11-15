@@ -68,17 +68,11 @@ impl Default for Health {
 impl Health {
     #[must_use]
     pub fn get(&self) -> State {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *crate::sync::lock(&self.0)
     }
 
     pub fn set(&self, state: State) {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
+        *crate::sync::lock(&self.0) = state;
     }
 }
 
