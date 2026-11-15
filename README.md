@@ -17,9 +17,11 @@ configure yourself.
 
 - **Reads your coding tools.** The agent follows the session logs of Claude Code and Codex and turns every
   prompt and answer into a record, within seconds. Log files are only opened for reading.
-- **Runs the Construct gear.** The records go to the Construct gear, which runs inside the agent next to its
-  own PostgreSQL database with pgvector. Everything listens on your machine only: a Unix socket and the
-  loopback address, protected by a token that only your user can read.
+- **Keeps the records on your computer.** The agent stores the records as plain files in its data directory.
+- **Runs the Construct gear.** On Linux x86_64 the agent starts the Construct gear inside itself, next to an
+  embedded PostgreSQL database with pgvector that serves graph storage. Nothing listens beyond your machine:
+  the agent socket and the database socket are open to your user only, and the gear's REST interface is on the
+  loopback address and needs a token that only your user can read.
 - **Keeps working after you close the window.** The installed app registers the agent to start at login, as a
   systemd user service on Linux and a LaunchAgent on macOS.
 - **Shows what the agent is doing.** The Status page shows whether the agent is running, its version, its
@@ -30,8 +32,7 @@ configure yourself.
 - **Chat.** The Chat page streams the model's answers as Markdown, lets you stop an answer, and keeps your
   conversations on your computer.
 
-The window follows the light or dark theme of your system and is built with the
-FrontX UI kit (`@gears-frontx/ui-kit`).
+The window follows the light or dark theme of your system.
 
 ## What works on each system
 
@@ -44,15 +45,15 @@ FrontX UI kit (`@gears-frontx/ui-kit`).
 | Embedded PostgreSQL with pgvector                            | yes                  | no: pgvector is built for Linux x86_64 only | no                                                                     |
 | Construct gear                                               | yes                  | no: it needs the database                   | no                                                                     |
 
-The Linux package is built and tested in a clean Ubuntu 24.04 container. The macOS column is read from the
+`make smoke` installs the Linux package in a clean Ubuntu 24.04 container and starts it there. The macOS column is read from the
 code and has not been run on a real Mac.
 
 ## Build and test
 
-You need Rust (the toolchain in `rust-toolchain.toml` is installed by `rustup`), Node.js 24 with npm, and
+You need Rust (the toolchain in `rust-toolchain.toml` is installed by `rustup`), Node.js 22.13 or newer (22 or 24) with npm, and
 `protoc` with the protobuf headers (Debian and Ubuntu: `protobuf-compiler` and `libprotobuf-dev`; macOS:
 `brew install protobuf`). On Linux the build also needs `curl`, `tar`, `make` and `gcc`, which build pgvector,
-and the tests need `xvfb-run` for the Electron window.
+and `make test` needs `xvfb-run` for the Electron window, so it runs on Linux. `make package` and `make smoke` also need `dpkg` and `fakeroot`.
 
 ```bash
 make build    # build the agent: target/release/construct-agent
@@ -64,7 +65,7 @@ make smoke    # build the .deb, install it in a clean Ubuntu 24.04 container and
 ```
 
 `make help` lists the targets. `make test` runs the Electron test under a virtual display; it opens the
-window, walks through the pages in both themes and fails on any content security policy violation.
+window, takes a screenshot of each page in both themes and fails on any content security policy violation.
 `make smoke` checks that the installed agent answers `status` with `running` and that the app is still alive
 after 15 seconds.
 
