@@ -17,6 +17,13 @@ import { t } from '../translation';
 import styles from './app.module.css';
 import { tones } from './state-tones';
 
+const loginVariants = {
+  registered: 'success',
+  not_registered: 'secondary',
+  unknown: 'secondary',
+  not_supported: 'secondary',
+} as const;
+
 const variants = { running: 'success', stopped: 'danger', unknown: 'secondary' } as const;
 
 export function StatusPage({ status }: { readonly status: AgentStatus | null }): ReactNode {
@@ -60,6 +67,22 @@ export function StatusPage({ status }: { readonly status: AgentStatus | null }):
           )}
         </CardContent>
       </Card>
+      {status !== null && (
+        <Card className={styles.card}>
+          <CardHeader>
+            <CardTitle render={<h2 />}>{t('StatusPage.StartAtLogin')}</CardTitle>
+            <CardAction>
+              <Badge
+                id="start-at-login"
+                variant={loginVariants[status.startAtLogin]}
+                data-state={status.startAtLogin}
+              >
+                {t(`StatusPage.StartAtLogin.${status.startAtLogin}`)}
+              </Badge>
+            </CardAction>
+          </CardHeader>
+        </Card>
+      )}
     </>
   );
 }

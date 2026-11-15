@@ -97,7 +97,8 @@ fn run() -> std::io::Result<()> {
                 .with_database(health.clone())
                 .with_construct(construct_health.clone())
                 .with_connectors(connectors.clone())
-                .with_model(model_state.clone()),
+                .with_model(model_state.clone())
+                .with_service(login_service()),
             settings.as_ref(),
         ),
         settings.as_ref(),
@@ -196,6 +197,18 @@ fn run() -> std::io::Result<()> {
     // Only now may the follower stop: it is the last thing running besides the exit.
     drop(follow_alive);
     result
+}
+
+/// What `status` reports as `service`. The platform's service handle is built once, here:
+/// building it can start a program (macOS asks `id` for the user), and `status` must not. Where
+/// it cannot be built (no home directory, `id` fails) the check answers `None`, so the reply
+/// has no `service` and the app shows it as unknown.
+#[cfg(unix)]
+fn login_service() -> impl Fn() -> Option<bool> + Send + Sync + 'static {
+    let login = construct_agent::autostart::current()
+        .inspect_err(|e| eprintln!("construct-agent: start at login cannot be checked: {e}"))
+        .ok();
+    move || login.as_ref().map(|login| login.is_installed())
 }
 
 /// The settings file. A file that cannot be read must not stop the agent: then `settings-*`

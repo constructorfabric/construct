@@ -3,8 +3,10 @@
 //! `SOCKET_MODE`), so only the user can connect. The agent opens no TCP port.
 //!
 //! Protocol: the client sends one line, the agent answers one JSON line. Commands:
-//! `status`, `settings-get`, `settings-set <JSON object>` (the fields to change; see
-//! `settings`), and `settings-test [JSON object]` (one ping to the model; see `model_test`).
+//! `status` (the reply has `service`: `registered` or `not_registered`, whether the login
+//! service of the agent is registered, and no `service` when that cannot be told),
+//! `settings-get`, `settings-set <JSON object>` (the fields to change; see `settings`), and
+//! `settings-test [JSON object]` (one ping to the model; see `model_test`).
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
 //! `MAX_REQUEST` bytes, and a `chat-send` line at most `chat::MAX_REQUEST`.
@@ -24,8 +26,9 @@ pub fn status_response(
     connectors: &serde_json::Value,
     model: &str,
     model_state: &str,
+    service_registered: Option<bool>,
 ) -> String {
-    serde_json::json!({
+    let mut reply = serde_json::json!({
         "status": "running",
         "version": env!("CARGO_PKG_VERSION"),
         "pid": pid,
@@ -34,8 +37,16 @@ pub fn status_response(
         "connectors": connectors,
         "model": model,
         "model_state": model_state,
-    })
-    .to_string()
+    });
+    if let Some(registered) = service_registered {
+        reply["service"] = if registered {
+            "registered"
+        } else {
+            "not_registered"
+        }
+        .into();
+    }
+    reply.to_string()
 }
 
 /// Longest request line the agent reads, in bytes, for every command but `chat-send`. A longer
@@ -112,7 +123,7 @@ mod unix {
     use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -154,6 +165,7 @@ mod unix {
         construct: Health,
         connectors: Stats,
         model: ModelState,
+        service: Arc<dyn Fn() -> Option<bool> + Send + Sync>,
         settings: Option<Settings>,
         chat: Option<Chat>,
     }
@@ -186,6 +198,7 @@ mod unix {
                 construct: Health::default(),
                 connectors: Stats::default(),
                 model: ModelState::default(),
+                service: Arc::new(|| None),
                 settings: None,
                 chat: None,
             })
@@ -216,6 +229,18 @@ mod unix {
         #[must_use]
         pub fn with_model(mut self, model: ModelState) -> Self {
             self.model = model;
+            self
+        }
+
+        /// Report in `status` as `service` whether `check` finds the login service registered; a
+        /// `None` leaves the field out. It runs at every `status`, so it must be cheap: a file
+        /// test, no program started.
+        #[must_use]
+        pub fn with_service(
+            mut self,
+            check: impl Fn() -> Option<bool> + Send + Sync + 'static,
+        ) -> Self {
+            self.service = Arc::new(check);
             self
         }
 
@@ -252,6 +277,7 @@ mod unix {
                         let construct = self.construct.clone();
                         let connectors = self.connectors.clone();
                         let model = self.model.clone();
+                        let service = Arc::clone(&self.service);
                         let settings = self.settings.clone();
                         let chat = self.chat.clone();
                         thread::spawn(move || {
@@ -260,6 +286,7 @@ mod unix {
                                 construct: &construct,
                                 connectors: &connectors,
                                 model: &model,
+                                service: service.as_ref(),
                                 settings: settings.as_ref(),
                                 chat: chat.as_ref(),
                             };
@@ -379,6 +406,7 @@ mod unix {
         construct: &'a Health,
         connectors: &'a Stats,
         model: &'a ModelState,
+        service: &'a (dyn Fn() -> Option<bool> + Send + Sync),
         settings: Option<&'a Settings>,
         chat: Option<&'a Chat>,
     }
@@ -408,6 +436,7 @@ mod unix {
                 &shared.connectors.to_json(),
                 &model_name,
                 model_state.as_str(),
+                (shared.service)(),
             ),
             ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
             ("settings-set", Some(s)) => {

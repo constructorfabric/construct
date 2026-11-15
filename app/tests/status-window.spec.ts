@@ -7,6 +7,7 @@ import path from 'node:path';
 import { _electron as electron, expect, test as base } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { agentSocketPath } from '../src/agent-socket';
+import { screenshotBothThemes, screenshotInTheme } from './screenshots';
 
 const appDir = path.resolve(__dirname, '..');
 const agentBinary = path.resolve(appDir, '..', 'target', 'release', 'construct-agent');
@@ -80,8 +81,9 @@ const test = base.extend<{ session: Session; app: ElectronApplication; page: Pag
   session: async ({}, use) => {
     const runtimeDir = mkdtempSync(path.join(tmpdir(), 'cb-run-'));
     const userDataDir = mkdtempSync(path.join(tmpdir(), 'cb-data-'));
-    // The agent reads its settings from the home directory: a private one keeps a model
-    // configured on the machine running the test out of the page and its screenshots.
+    // The agent reads its settings and looks for its login service in the home directory: a
+    // private one keeps a model or a service of the machine running the test out of the page
+    // and its screenshots.
     const homeDir = mkdtempSync(path.join(tmpdir(), 'cb-home-'));
     const env = stringEnv({
       XDG_RUNTIME_DIR: runtimeDir,
@@ -319,21 +321,12 @@ test('the window opens at 960 by 640 with a 720 by 480 minimum', async ({ app, p
 });
 
 test('the theme follows the operating system', async ({ page }) => {
-  // Neither `nativeTheme` nor `page.emulateMedia` changes the setting in an Electron window under
-  // a virtual display; the DevTools protocol does.
   await expect(page.locator('#agent-status')).toHaveText('running');
   const cdp = await page.context().newCDPSession(page);
   const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
   const backgrounds: string[] = [];
   for (const scheme of ['light', 'dark', 'light'] as const) {
-    await cdp.send('Emulation.setEmulatedMedia', {
-      features: [{ name: 'prefers-color-scheme', value: scheme }],
-    });
-    // The kit eases colours between themes; a screenshot taken mid-way shows a mix of both.
-    await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)));
-    await page.screenshot({
-      path: path.join(appDir, 'test-results', 'screenshots', `status-${scheme}.png`),
-    });
+    await screenshotInTheme(page, cdp, scheme, 'status');
     backgrounds.push(await background());
   }
   const [light, dark, lightAgain] = backgrounds;
@@ -344,4 +337,15 @@ test('the theme follows the operating system', async ({ page }) => {
     ),
   ).toBe(true);
   expect(lightAgain).toBe(light);
+});
+
+test('the Start at login block shows not registered when nothing registered the agent', async ({
+  page,
+}) => {
+  const block = page.locator('#start-at-login');
+  await expect(block).toHaveText('not registered');
+  await expect(block).toHaveAttribute('data-state', 'not_registered');
+  await expect(page.getByRole('heading', { name: 'Start at login' })).toBeVisible();
+
+  await screenshotBothThemes(page, 'start-at-login-not-registered');
 });

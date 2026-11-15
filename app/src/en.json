@@ -8,5 +8,10 @@
   "StatusPage.Checking": "checking",
   "StatusPage.Version": "version {{version}}, pid {{pid}}",
   "StatusPage.Model": "model {{model}}",
+  "StatusPage.StartAtLogin": "Start at login",
+  "StatusPage.StartAtLogin.registered": "registered",
+  "StatusPage.StartAtLogin.not_registered": "not registered",
+  "StatusPage.StartAtLogin.unknown": "unknown",
+  "StatusPage.StartAtLogin.not_supported": "not supported",
   "SettingsPage.Title": "Settings"
 }

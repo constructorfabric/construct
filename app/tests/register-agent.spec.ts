@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import { agentBinaryPath, shouldRegisterAgent } from '../src/agent-service';
+import { screenshotBothThemes } from './screenshots';
 
 const appDir = path.resolve(__dirname, '..');
 const agentBinary = path.resolve(appDir, '..', 'target', 'release', 'construct-agent');
@@ -117,7 +118,7 @@ test('a plain development run registers nothing', async () => {
   }
 });
 
-test('quitting the app leaves the agent that the app registered running', async () => {
+test('the app registers the agent, shows it, and leaves it running when it quits', async () => {
   const sandbox = makeSandbox(true);
   const userData = mkdtempSync(path.join(tmpdir(), 'cb-data-'));
   const status = () =>
@@ -135,6 +136,13 @@ test('quitting the app leaves the agent that the app registered running', async 
     await expect(() => {
       agentPid = status().pid;
     }).toPass({ timeout: 10_000 });
+
+    const page = await app.firstWindow();
+    const block = page.locator('#start-at-login');
+    await expect(block).toHaveText('registered', { timeout: 20_000 });
+    await expect(block).toHaveAttribute('data-state', 'registered');
+    await screenshotBothThemes(page, 'start-at-login-registered');
+
     await app.close();
     expect(status().pid).toBe(agentPid);
   } finally {

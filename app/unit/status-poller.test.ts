@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentStatus } from '../src/agent-status';
 import { startStatusPoller } from '../src/status-poller';
 
-const running: AgentStatus = { state: 'running', version: '0.1.0', pid: 7 };
+const running: AgentStatus = {
+  state: 'running',
+  version: '0.1.0',
+  pid: 7,
+  startAtLogin: 'unknown',
+};
 
 describe('startStatusPoller', () => {
   beforeEach(() => {
@@ -36,7 +41,7 @@ describe('startStatusPoller', () => {
     );
 
     await vi.advanceTimersByTimeAsync(0);
-    expect(seen).toEqual([{ state: 'unknown', reason: 'bridge gone' }]);
+    expect(seen).toEqual([{ state: 'unknown', reason: 'bridge gone', startAtLogin: 'unknown' }]);
     poller.stop();
   });
 
