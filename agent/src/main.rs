@@ -86,13 +86,22 @@ fn run() -> std::io::Result<()> {
     let connectors = Stats::default();
     let model_state = construct_agent::model::ModelState::default();
     let settings = open_settings();
-    let server = with_settings(
-        construct_agent::ipc::Server::bind(&socket)?
-            .with_database(health.clone())
-            .with_construct(construct_health.clone())
-            .with_connectors(connectors.clone())
-            .with_model(model_state.clone()),
+    // Built before the socket server: a chat answer runs on this runtime, driven by the
+    // thread of its connection.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let server = with_chat(
+        with_settings(
+            construct_agent::ipc::Server::bind(&socket)?
+                .with_database(health.clone())
+                .with_construct(construct_health.clone())
+                .with_connectors(connectors.clone())
+                .with_model(model_state.clone()),
+            settings.as_ref(),
+        ),
         settings.as_ref(),
+        rt.handle(),
     );
     eprintln!(
         "construct-agent {} listening on {}",
@@ -109,9 +118,6 @@ fn run() -> std::io::Result<()> {
     // dropped, so it is kept until the agent stops (see the end of this function).
     let follow_alive = spawn_follower(&connectors, settings.as_ref());
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
     let (mut term, mut int) = rt.block_on(async {
         Ok::<_, std::io::Error>((
             signal(SignalKind::terminate())?,
@@ -203,6 +209,33 @@ fn open_settings() -> Option<construct_agent::settings::Settings> {
         Err(e) => {
             eprintln!("settings unavailable: {e}");
             None
+        }
+    }
+}
+
+/// Serve the chat commands; without settings (the model comes from them) or without a data
+/// directory they answer an error.
+#[cfg(unix)]
+fn with_chat(
+    server: construct_agent::ipc::Server,
+    settings: Option<&construct_agent::settings::Settings>,
+    handle: &tokio::runtime::Handle,
+) -> construct_agent::ipc::Server {
+    use construct_agent::chat::{Chat, Deadlines};
+    let Some(settings) = settings else {
+        return server;
+    };
+    let chat = construct_agent::records::data_dir()
+        .map_err(|e| e.to_string())
+        .and_then(|dir| {
+            Chat::new(settings.clone(), &dir, handle.clone(), Deadlines::default())
+                .map_err(|e| e.to_string())
+        });
+    match chat {
+        Ok(chat) => server.with_chat(chat),
+        Err(e) => {
+            eprintln!("chat unavailable: {e}");
+            server
         }
     }
 }

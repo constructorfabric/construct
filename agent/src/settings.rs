@@ -13,7 +13,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 use url::{Host, Url};
@@ -352,7 +352,7 @@ impl Settings {
     }
 
     fn lock(&self) -> MutexGuard<'_, Data> {
-        self.data.lock().unwrap_or_else(PoisonError::into_inner)
+        crate::sync::lock(&self.data)
     }
 
     /// The current model, key included. For the model client only; never to the socket.
