@@ -1,5 +1,6 @@
 import type { ModelSettingsApi } from './agent-settings';
 import type { ChatApi } from './chat-protocol';
+import type { ExternalApi } from './external';
 
 /**
  * Whether the agent starts at login. `unknown` when the agent is not running or its reply has no
@@ -22,7 +23,8 @@ export type AgentStatus =
   | { readonly state: 'unknown'; readonly reason: string; readonly startAtLogin: StartAtLogin };
 
 export type ConstructAgentApi = ModelSettingsApi &
-  ChatApi & {
+  ChatApi &
+  ExternalApi & {
     readonly getStatus: () => Promise<AgentStatus>;
   };
 

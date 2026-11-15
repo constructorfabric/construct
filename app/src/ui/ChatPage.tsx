@@ -29,7 +29,13 @@ import { t } from '../translation';
 import styles from './app.module.css';
 import { reasonText } from './chat-reasons';
 import type { Failure } from './chat-state';
+import { Markdown } from './markdown';
 import type { Chat } from './useChat';
+
+/** Opens an address in the system browser; the window itself never leaves its page. */
+function openLink(address: string): void {
+  void window.constructAgent.openLink(address);
+}
 
 /** How far from the bottom the thread still counts as "at the bottom", in pixels. */
 const bottomSlackPx = 48;
@@ -109,10 +115,22 @@ export function ChatPage({
                   >
                     <MessageContent>
                       <Bubble
-                        variant={message.role === 'user' ? 'secondary' : 'ghost'}
+                        variant={message.role === 'user' ? 'outline' : 'ghost'}
                         align={message.role === 'user' ? 'end' : 'start'}
                       >
-                        <BubbleContent className={styles.messageText}>{message.text}</BubbleContent>
+                        {message.role === 'user' ? (
+                          <BubbleContent className={styles.messageText}>
+                            {message.text}
+                          </BubbleContent>
+                        ) : (
+                          <BubbleContent className={styles.answerText}>
+                            <Markdown
+                              text={message.text}
+                              onOpenLink={openLink}
+                              imageLabel={t('Markdown.Image')}
+                            />
+                          </BubbleContent>
+                        )}
                       </Bubble>
                     </MessageContent>
                   </Message>

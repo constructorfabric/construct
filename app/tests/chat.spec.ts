@@ -6,41 +6,18 @@ import {
   expectNoPolicyViolations,
   expect,
   openApp,
-  test as base,
   windowText,
 } from './fixtures';
-import { closedPort, goodKey, goodModel, providerFixture } from './provider';
-import type { Provider } from './provider';
+import { ask, assistant, configure, input, test } from './chat-helpers';
+import { closedPort, goodKey, goodModel } from './provider';
 import { screenshotBothThemes } from './screenshots';
 
 const reasonDeadlineMs = 15_000;
 const stopDeadlineMs = 2000;
 
-const test = base.extend<{ provider: Provider }>(providerFixture);
-
-async function configure(
-  page: Page,
-  fields: { address: string; model?: string; key?: string },
-): Promise<void> {
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByLabel('Address').fill(fields.address);
-  await page.getByLabel('Model name').fill(fields.model ?? goodModel);
-  await page.getByLabel('API key', { exact: true }).fill(fields.key ?? goodKey);
-  await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page.locator('#model-outcome')).toContainText('Saved');
-  await page.getByRole('button', { name: 'Chat', exact: true }).click();
-}
-
-const input = (page: Page) => page.locator('#chat-input');
-const assistant = (page: Page) => page.locator('[data-role=assistant]');
 const user = (page: Page) => page.locator('[data-role=user]');
 const turns = (page: Page) => page.locator('[data-role]');
 const rows = (page: Page) => page.locator('#chat-conversations li');
-
-async function ask(page: Page, message: string): Promise<void> {
-  await input(page).fill(message);
-  await input(page).press('Enter');
-}
 
 async function atBottom(page: Page): Promise<boolean> {
   return page.locator('#chat-thread').evaluate((element) => {
@@ -134,7 +111,8 @@ test('the thread follows the answer down only while the reader is at the bottom'
   page,
   provider,
 }) => {
-  const lines = Array.from({ length: 60 }, (_, index) => `line ${index}\n`);
+  // A list item for each line: Markdown would join plain lines into one paragraph.
+  const lines = Array.from({ length: 60 }, (_, index) => `- line ${index}\n`);
   provider.script = { chunks: lines, pauseMs: 20, holdAt: 30 };
   await configure(page, { address: provider.url });
 

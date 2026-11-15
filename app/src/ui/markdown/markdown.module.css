@@ -1,0 +1,103 @@
+/*
+ * What the kit's typeset does not give an answer: colours, borders and radii come from the kit's
+ * tokens, so they follow the theme. It also holds the colours of the highlighted code, one class
+ * for each kind of token, in the kit's text colours, which the kit checks at 4.5:1 in both themes.
+ */
+.markdown {
+  min-width: 0;
+}
+
+.codeBlock {
+  margin-block: var(--typeset-flow, 1.25em);
+}
+
+.markdown blockquote {
+  border-inline-start-color: var(--border-strong);
+}
+
+.markdown table {
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.markdown th {
+  background: var(--muted);
+  font-weight: 600;
+}
+
+.markdown th,
+.markdown td {
+  padding: var(--space-2) var(--space-3);
+}
+
+.image {
+  color: var(--muted-foreground);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag,
+.hljs-meta .hljs-keyword {
+  color: var(--link-foreground);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-meta .hljs-string {
+  color: var(--success-foreground);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--warning-foreground);
+}
+
+.hljs-built_in,
+.hljs-type,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--danger-foreground);
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-class .hljs-title {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-property,
+.hljs-params {
+  color: var(--foreground);
+}
+
+.hljs-meta {
+  color: var(--subtle-foreground);
+}
+
+.hljs-deletion {
+  color: var(--destructive);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
+}

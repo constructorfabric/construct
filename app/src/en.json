@@ -75,5 +75,6 @@
   "ChatReason.Status": "The provider answered with status {{status}}.",
   "ChatReason.Other": "The answer failed: {{reason}}.",
   "NoModel.Text": "No model is set yet. Set one in Settings to chat.",
+  "Markdown.Image": "Image",
   "Thread.ToEnd": "Scroll to the newest message"
 }
