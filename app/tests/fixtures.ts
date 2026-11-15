@@ -1,0 +1,162 @@
+import { execFileSync, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { _electron as electron, expect, test as base } from '@playwright/test';
+import type { ElectronApplication, Page } from '@playwright/test';
+
+export { expect };
+
+export const appDir = path.resolve(__dirname, '..');
+export const agentBinary = path.resolve(appDir, '..', 'target', 'release', 'construct-agent');
+
+// Under a virtual display on a VPS the Chromium sandbox cannot start, and `--no-sandbox` turns it
+// off for every process. `sandbox: true` on the window still keeps Node out of the renderer, which
+// the tests check; the OS-level sandbox is not exercised by this run.
+const launchArgs = ['--no-sandbox'];
+
+export interface Session {
+  /** The agent that runs now; `restartAgent` replaces it. */
+  readonly agent: ChildProcess;
+  readonly appArgs: readonly string[];
+  readonly env: Record<string, string>;
+  /** Everything the agent has written to its output and error streams, over all its runs. */
+  readonly agentLog: () => string;
+  readonly stopAgent: () => Promise<void>;
+  readonly startAgent: () => Promise<void>;
+}
+
+function stringEnv(extra: Record<string, string>): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      merged[key] = value;
+    }
+  }
+  return { ...merged, ...extra };
+}
+
+/** An app window that listens for policy violations from the first page load on. */
+export interface OpenedApp {
+  readonly app: ElectronApplication;
+  readonly page: Page;
+  /** What the main process has written to its output and error streams. */
+  readonly output: () => string;
+}
+
+export async function openApp(session: Session): Promise<OpenedApp> {
+  const app = await electron.launch({ args: [...session.appArgs], env: session.env });
+  return { app, ...(await prepareWindow(app)) };
+}
+
+async function prepareWindow(
+  app: ElectronApplication,
+): Promise<Pick<OpenedApp, 'page' | 'output'>> {
+  let output = '';
+  for (const stream of [app.process().stdout, app.process().stderr]) {
+    stream?.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+  }
+  const page = await app.firstWindow();
+  // The first window, reloaded under a listener for policy violations: any `securitypolicyviolation`
+  // event of the page fails the test that raised it.
+  await page.addInitScript(() => {
+    const violations: string[] = [];
+    Object.assign(window, { policyViolations: violations });
+    document.addEventListener('securitypolicyviolation', (event) => {
+      violations.push(`${event.violatedDirective} ${event.blockedURI}`);
+    });
+  });
+  await page.reload();
+  return { page, output: () => output };
+}
+
+export async function expectNoPolicyViolations(page: Page): Promise<void> {
+  expect(await page.evaluate(() => Reflect.get(window, 'policyViolations') as string[])).toEqual(
+    [],
+  );
+}
+
+export const test = base.extend<{ session: Session; app: ElectronApplication; page: Page }>({
+  // A real agent from this repo, with its socket in a private runtime directory and its settings
+  // in a private home directory. Playwright wants an object pattern here, even when the fixture
+  // needs nothing.
+  // eslint-disable-next-line no-empty-pattern
+  session: async ({}, use) => {
+    const runtimeDir = mkdtempSync(path.join(tmpdir(), 'cb-run-'));
+    const userDataDir = mkdtempSync(path.join(tmpdir(), 'cb-data-'));
+    // The agent reads its settings and looks for its login service in the home directory: a
+    // private one keeps a model or a service of the machine running the test out of the page
+    // and its screenshots.
+    const homeDir = mkdtempSync(path.join(tmpdir(), 'cb-home-'));
+    // The agent also starts its PostgreSQL; its data goes to a throw-away directory.
+    const dataHome = mkdtempSync(path.join(tmpdir(), 'cb-pg-'));
+    const logDir = mkdtempSync(path.join(tmpdir(), 'cb-log-'));
+    const logPath = path.join(logDir, 'agent.log');
+    const env = stringEnv({
+      XDG_RUNTIME_DIR: runtimeDir,
+      TMPDIR: runtimeDir,
+      XDG_DATA_HOME: dataHome,
+      HOME: homeDir,
+      XDG_CONFIG_HOME: path.join(homeDir, '.config'),
+    });
+    let agent: ChildProcess | null = null;
+
+    const startAgent = async (): Promise<void> => {
+      const log = openSync(logPath, 'a');
+      agent = spawn(agentBinary, ['run'], { env, stdio: ['ignore', log, log] });
+      closeSync(log);
+      await expect(() => {
+        execFileSync(agentBinary, ['status'], { env, stdio: 'ignore' });
+      }).toPass({ timeout: 10_000 });
+    };
+    const stopAgent = async (): Promise<void> => {
+      const running = agent;
+      if (running === null) {
+        return;
+      }
+      running.kill('SIGTERM');
+      // Let the agent stop PostgreSQL before its directories go away.
+      if (running.exitCode === null && running.signalCode === null) {
+        await new Promise((resolve) => running.once('exit', resolve));
+      }
+    };
+
+    try {
+      await startAgent();
+      await use({
+        get agent() {
+          if (agent === null) {
+            throw new Error('the agent was never started');
+          }
+          return agent;
+        },
+        env,
+        appArgs: [appDir, ...launchArgs, `--user-data-dir=${userDataDir}`],
+        agentLog: () => readFileSync(logPath, 'utf8'),
+        stopAgent,
+        startAgent,
+      });
+    } finally {
+      await stopAgent();
+      for (const dir of [runtimeDir, userDataDir, homeDir, dataHome, logDir]) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  },
+  app: async ({ session }, use) => {
+    const app = await electron.launch({ args: [...session.appArgs], env: session.env });
+    try {
+      await use(app);
+    } finally {
+      await app.close();
+    }
+  },
+  page: async ({ app }, use) => {
+    const { page } = await prepareWindow(app);
+    await use(page);
+    await expectNoPolicyViolations(page);
+  },
+});

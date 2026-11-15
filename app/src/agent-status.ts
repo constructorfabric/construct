@@ -1,3 +1,5 @@
+import type { ModelSettingsApi } from './agent-settings';
+
 /**
  * Whether the agent starts at login. `unknown` when the agent is not running or its reply has no
  * such field; `not_supported` where the app has no way to register it (Windows).
@@ -18,7 +20,7 @@ export type AgentStatus =
   /** The app could not find out: a local failure, or an agent that answered wrongly. */
   | { readonly state: 'unknown'; readonly reason: string; readonly startAtLogin: StartAtLogin };
 
-export type ConstructAgentApi = {
+export type ConstructAgentApi = ModelSettingsApi & {
   readonly getStatus: () => Promise<AgentStatus>;
 };
 
