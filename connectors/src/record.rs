@@ -38,12 +38,41 @@ pub struct Mark {
     pub branch: String,
 }
 
+/// A tool the model asked to run, in a chat. Written by the chat only, never by a reader.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// The source the session belongs to (`chat`).
+    pub tool: String,
+    pub session: String,
+    /// RFC 3339, UTC.
+    pub time: String,
+    pub call_id: String,
+    pub name: String,
+    /// The arguments as the JSON text the model sent, byte for byte: never parsed and
+    /// written again, because that would sort the keys and change the bytes.
+    pub arguments: String,
+}
+
+/// What a tool answered, in a chat. Written by the chat only, never by a reader.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResult {
+    /// The source the session belongs to (`chat`).
+    pub tool: String,
+    pub session: String,
+    /// RFC 3339, UTC.
+    pub time: String,
+    pub call_id: String,
+    pub text: String,
+}
+
 /// What a line of a session file turns into. On disk the variant is the `kind` field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Record {
     Turn(Turn),
     Mark(Mark),
+    ToolCall(ToolCall),
+    ToolResult(ToolResult),
 }
 
 impl Record {
@@ -52,6 +81,8 @@ impl Record {
         match self {
             Record::Turn(t) => &t.tool,
             Record::Mark(m) => &m.tool,
+            Record::ToolCall(c) => &c.tool,
+            Record::ToolResult(r) => &r.tool,
         }
     }
 
@@ -60,6 +91,8 @@ impl Record {
         match self {
             Record::Turn(t) => &t.session,
             Record::Mark(m) => &m.session,
+            Record::ToolCall(c) => &c.session,
+            Record::ToolResult(r) => &r.session,
         }
     }
 
@@ -68,6 +101,8 @@ impl Record {
         match self {
             Record::Turn(t) => &t.time,
             Record::Mark(m) => &m.time,
+            Record::ToolCall(c) => &c.time,
+            Record::ToolResult(r) => &r.time,
         }
     }
 }
@@ -104,6 +139,37 @@ mod tests {
         );
         assert_eq!(compare_times(b, "2026-11-11T10:00:01Z"), Ordering::Less);
         assert_eq!(minute_of(b), "2026-11-11T10:00");
+    }
+
+    #[test]
+    fn tool_records_are_one_json_object_with_kind_and_keep_the_arguments_text() {
+        let arguments = r#"{ "b": 1,  "a": 2 }"#;
+        let call = Record::ToolCall(ToolCall {
+            tool: "chat".into(),
+            session: "s".into(),
+            time: "2026-11-11T10:00:00.001Z".into(),
+            call_id: "call_1".into(),
+            name: "search".into(),
+            arguments: arguments.into(),
+        });
+        let json = serde_json::to_string(&call).unwrap();
+        assert!(!json.contains('\n') && json.contains(r#""kind":"toolcall""#));
+        match serde_json::from_str::<Record>(&json).unwrap() {
+            Record::ToolCall(c) => assert_eq!(c.arguments, arguments),
+            other => panic!("{other:?}"),
+        }
+        let result = Record::ToolResult(ToolResult {
+            tool: "chat".into(),
+            session: "s".into(),
+            time: "2026-11-11T10:00:00.002Z".into(),
+            call_id: "call_1".into(),
+            text: "line 1\nline 2".into(),
+        });
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains('\n') && json.contains(r#""kind":"toolresult""#));
+        assert_eq!(serde_json::from_str::<Record>(&json).unwrap(), result);
+        assert_eq!(result.session(), "s");
+        assert_eq!(call.tool(), "chat");
     }
 
     #[test]

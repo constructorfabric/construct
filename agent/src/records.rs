@@ -1,6 +1,8 @@
 //! Where the records read from the coding tools' session logs are kept: JSON lines in
 //! `records/<tool>/<session>.jsonl` in the agent's data directory, plus the read offset and
-//! per-file state of every log file. Plain files, no database.
+//! per-file state of every log file. Plain files, no database. A chat keeps its conversations
+//! the same way, as the source `chat`, and is the only writer of tool call and tool result
+//! records.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -45,6 +47,17 @@ pub struct Progress {
     pub files: BTreeMap<String, FileProgress>,
 }
 
+/// One session of a source, as listed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionInfo {
+    /// The real id, read from the file, not its file name.
+    pub session: String,
+    /// The time of the last record (UTC RFC 3339).
+    pub last_time: String,
+    /// The text of the first user turn; empty when there is none.
+    pub first_user_text: String,
+}
+
 /// What the readers write to and the rest of the agent reads from.
 pub trait Sink {
     /// Adds a record. A mark is dropped when its session already has one in the same minute,
@@ -86,7 +99,7 @@ pub trait Sink {
 struct SessionFile {
     /// The minutes that have a mark.
     marked: HashSet<String>,
-    /// Keys of the stored turns.
+    /// Keys of the stored turns and tool records.
     turns: HashSet<u64>,
 }
 
@@ -95,6 +108,8 @@ impl SessionFile {
         match record {
             Record::Mark(m) => self.marked.contains(minute_of(&m.time)),
             Record::Turn(t) => self.turns.contains(&turn_key(t)),
+            Record::ToolCall(c) => self.turns.contains(&tool_key(record, &c.call_id)),
+            Record::ToolResult(r) => self.turns.contains(&tool_key(record, &r.call_id)),
         }
     }
 
@@ -105,6 +120,12 @@ impl SessionFile {
             }
             Record::Turn(t) => {
                 self.turns.insert(turn_key(t));
+            }
+            Record::ToolCall(c) => {
+                self.turns.insert(tool_key(record, &c.call_id));
+            }
+            Record::ToolResult(r) => {
+                self.turns.insert(tool_key(record, &r.call_id));
             }
         }
     }
@@ -129,11 +150,121 @@ impl FileSink {
         }
     }
 
+    fn source_dir(&self, tool: &str) -> PathBuf {
+        self.dir.join("records").join(file_name(tool))
+    }
+
     fn session_path(&self, tool: &str, session: &str) -> PathBuf {
-        self.dir
-            .join("records")
-            .join(file_name(tool))
+        self.source_dir(tool)
             .join(format!("{}.jsonl", file_name(session)))
+    }
+
+    /// Makes one file and the entries above it durable, up to the data directory.
+    fn sync_file(&self, path: &Path) -> io::Result<()> {
+        OpenOptions::new().append(true).open(path)?.sync_data()?;
+        // A first write also created `records/<tool>` and maybe `records/` in the data
+        // directory: make the whole chain of new entries durable, the data directory last.
+        for dir in path.ancestors().skip(1) {
+            sync_dir(dir)?;
+            if dir == self.dir {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// The sessions of a source, newest last record first. The id comes from the first line
+    /// of the file, so a session whose id is not a plain file name is listed as it is.
+    ///
+    /// # Errors
+    /// Fails when the directory or a file cannot be read.
+    pub fn list_sessions(&self, tool: &str) -> io::Result<Vec<SessionInfo>> {
+        let entries = match fs::read_dir(self.source_dir(tool)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut sessions = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "jsonl") {
+                continue;
+            }
+            let records = read_records(&path)?;
+            let Some(first) = records.first() else {
+                continue;
+            };
+            let last_time = records
+                .iter()
+                .map(Record::time)
+                .max_by(|a, b| compare_times(a, b))
+                .unwrap_or_default();
+            let first_user_text = records.iter().find_map(|r| match r {
+                Record::Turn(t) if t.role == Role::User => Some(t.text.clone()),
+                _ => None,
+            });
+            sessions.push(SessionInfo {
+                session: first.session().to_owned(),
+                last_time: last_time.to_owned(),
+                first_user_text: first_user_text.unwrap_or_default(),
+            });
+        }
+        sessions.sort_by(|a, b| compare_times(&b.last_time, &a.last_time));
+        Ok(sessions)
+    }
+
+    /// Every record of a session in the order written; empty for an unknown session.
+    ///
+    /// # Errors
+    /// Fails when the file cannot be read.
+    pub fn read_session(&self, tool: &str, session: &str) -> io::Result<Vec<Record>> {
+        read_records(&self.session_path(tool, session))
+    }
+
+    /// Removes a session, and what this sink remembers of it, so a conversation that reuses
+    /// the id starts clean. A session that is not there is not an error.
+    ///
+    /// # Errors
+    /// Fails when the file cannot be removed.
+    pub fn delete_session(&mut self, tool: &str, session: &str) -> io::Result<()> {
+        let path = self.session_path(tool, session);
+        self.sessions.remove(&path);
+        self.unsynced.remove(&path);
+        match fs::remove_file(&path) {
+            Ok(()) => path.parent().map_or(Ok(()), sync_dir),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Removes every session of a source and what this sink remembers of them. Other sources
+    /// and the progress file are left alone.
+    ///
+    /// # Errors
+    /// Fails when the directory cannot be removed.
+    pub fn delete_source(&mut self, tool: &str) -> io::Result<()> {
+        let dir = self.source_dir(tool);
+        self.sessions.retain(|p, _| !p.starts_with(&dir));
+        self.unsynced.retain(|p| !p.starts_with(&dir));
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => dir.parent().map_or(Ok(()), sync_dir),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Makes the records appended to one session durable, without saving the progress of the
+    /// readers: a chat must never call `save_progress`.
+    ///
+    /// # Errors
+    /// Fails when the file cannot be synced.
+    pub fn flush_session(&mut self, tool: &str, session: &str) -> io::Result<()> {
+        let path = self.session_path(tool, session);
+        if self.unsynced.contains(&path) {
+            self.sync_file(&path)?;
+            self.unsynced.remove(&path);
+        }
+        Ok(())
     }
 }
 
@@ -171,6 +302,15 @@ fn turn_key(t: &Turn) -> u64 {
         Role::Assistant => "assistant",
     };
     fnv(&[&t.time, role, &t.text])
+}
+
+/// The identity of a stored tool record: its time, its kind and its call id.
+fn tool_key(record: &Record, call_id: &str) -> u64 {
+    let kind = match record {
+        Record::ToolCall(_) => "toolcall",
+        _ => "toolresult",
+    };
+    fnv(&[record.time(), kind, call_id])
 }
 
 /// The records of a file; a line that does not parse (a torn last line) is skipped.
@@ -307,15 +447,7 @@ impl Sink for FileSink {
     fn save_progress(&mut self, progress: &Progress) -> io::Result<()> {
         // The offset may only move past records that are on the disk.
         for path in &self.unsynced {
-            OpenOptions::new().append(true).open(path)?.sync_data()?;
-            // A first write also created `records/<tool>` and maybe `records/`: make the whole
-            // chain of new entries durable, up to the data directory (synced below).
-            for dir in path.ancestors().skip(1) {
-                sync_dir(dir)?;
-                if dir == self.dir.join("records") {
-                    break;
-                }
-            }
+            self.sync_file(path)?;
         }
         self.unsynced.clear();
         private_dirs(&self.dir, &self.dir)?;
@@ -342,7 +474,7 @@ impl Sink for FileSink {
 
 #[cfg(test)]
 mod tests {
-    use connectors::{Mark, Role};
+    use connectors::{Mark, Role, ToolCall, ToolResult};
 
     use super::*;
 
@@ -362,6 +494,16 @@ mod tests {
             branch: String::new(),
             role: Role::User,
             text: text.into(),
+        })
+    }
+
+    fn reply(tool: &str, session: &str, time: &str, text: &str) -> Record {
+        let Record::Turn(user) = turn(tool, session, time, text) else {
+            unreachable!()
+        };
+        Record::Turn(Turn {
+            role: Role::Assistant,
+            ..user
         })
     }
 
@@ -579,5 +721,267 @@ mod tests {
             .turns_before("claude", id, "2026-11-12T00:00:00Z", 9)
             .unwrap();
         assert_eq!(found.len(), 1);
+    }
+
+    fn call(session: &str, time: &str, id: &str, arguments: &str) -> Record {
+        Record::ToolCall(ToolCall {
+            tool: "chat".into(),
+            session: session.into(),
+            time: time.into(),
+            call_id: id.into(),
+            name: "search".into(),
+            arguments: arguments.into(),
+        })
+    }
+
+    fn result(session: &str, time: &str, id: &str, text: &str) -> Record {
+        Record::ToolResult(ToolResult {
+            tool: "chat".into(),
+            session: session.into(),
+            time: time.into(),
+            call_id: id.into(),
+            text: text.into(),
+        })
+    }
+
+    #[test]
+    fn sessions_list_newest_first_with_the_first_user_text() {
+        let mut sink = FileSink::new(&temp("list"));
+        sink.append(&reply(
+            "chat",
+            "old",
+            "2026-11-11T09:59:59.000Z",
+            "greeting",
+        ))
+        .unwrap();
+        sink.append(&turn(
+            "chat",
+            "old",
+            "2026-11-11T10:00:00.000Z",
+            "first old",
+        ))
+        .unwrap();
+        sink.append(&turn("chat", "old", "2026-11-11T10:00:01.000Z", "second"))
+            .unwrap();
+        sink.append(&turn(
+            "chat",
+            "new",
+            "2026-11-12T09:00:00.000Z",
+            "first new",
+        ))
+        .unwrap();
+        sink.append(&result("new", "2026-11-12T09:00:00.500Z", "c1", "r"))
+            .unwrap();
+        sink.append(&turn("claude", "other", "2026-11-13T09:00:00Z", "x"))
+            .unwrap();
+        let listed = sink.list_sessions("chat").unwrap();
+        assert_eq!(
+            listed,
+            [
+                SessionInfo {
+                    session: "new".into(),
+                    last_time: "2026-11-12T09:00:00.500Z".into(),
+                    first_user_text: "first new".into(),
+                },
+                SessionInfo {
+                    session: "old".into(),
+                    last_time: "2026-11-11T10:00:01.000Z".into(),
+                    first_user_text: "first old".into(),
+                },
+            ]
+        );
+        assert!(sink.list_sessions("nothing").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_session_with_an_odd_id_is_listed_with_its_real_id() {
+        let mut sink = FileSink::new(&temp("odd-id"));
+        let id = "Chat/2026 ../x";
+        sink.append(&turn("chat", id, "2026-11-11T10:00:00Z", "hi"))
+            .unwrap();
+        let listed = sink.list_sessions("chat").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session, id);
+        assert_eq!(sink.read_session("chat", id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reading_a_session_returns_every_kind_in_order_and_skips_a_torn_line() {
+        let dir = temp("read");
+        let mut sink = FileSink::new(&dir);
+        let records = [
+            turn("chat", "s1", "2026-11-11T10:00:00.000Z", "q"),
+            call(
+                "s1",
+                "2026-11-11T10:00:00.001Z",
+                "c1",
+                r#"{ "b": 1,  "a": 2 }"#,
+            ),
+            result("s1", "2026-11-11T10:00:00.002Z", "c1", "found"),
+            mark("chat", "s1", "2026-11-11T10:00:00.003Z"),
+        ];
+        for r in &records {
+            sink.append(r).unwrap();
+        }
+        let path = dir.join("records/chat/s1.jsonl");
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(br#"{"kind":"toolcall","tool":"ch"#).unwrap();
+        let read = sink.read_session("chat", "s1").unwrap();
+        assert_eq!(read, records);
+        match &read[1] {
+            Record::ToolCall(c) => assert_eq!(c.arguments, r#"{ "b": 1,  "a": 2 }"#),
+            other => panic!("{other:?}"),
+        }
+        assert!(sink.read_session("chat", "none").unwrap().is_empty());
+    }
+
+    #[test]
+    fn turns_before_skips_the_tool_records() {
+        let mut sink = FileSink::new(&temp("context"));
+        sink.append(&turn("chat", "s1", "2026-11-11T10:00:00.000Z", "a"))
+            .unwrap();
+        sink.append(&call("s1", "2026-11-11T10:00:00.001Z", "c1", "{}"))
+            .unwrap();
+        sink.append(&result("s1", "2026-11-11T10:00:00.002Z", "c1", "r"))
+            .unwrap();
+        sink.append(&turn("chat", "s1", "2026-11-11T10:00:00.003Z", "b"))
+            .unwrap();
+        let turns = sink
+            .turns_before("chat", "s1", "2026-11-12T00:00:00Z", 9)
+            .unwrap();
+        assert_eq!(texts(&turns), ["a", "b"]);
+    }
+
+    #[test]
+    fn deleting_a_session_removes_its_file_listing_and_memory() {
+        let dir = temp("delete-session");
+        let mut sink = FileSink::new(&dir);
+        let first = turn("chat", "s1", "2026-11-11T10:00:00.000Z", "a");
+        sink.append(&first).unwrap();
+        sink.append(&turn("chat", "s2", "2026-11-11T10:00:00.000Z", "b"))
+            .unwrap();
+        assert_eq!(sink.unsynced.len(), 2);
+        sink.delete_session("chat", "s1").unwrap();
+        assert!(!dir.join("records/chat/s1.jsonl").exists());
+        // The deleted file is not waited for any more, so saving the progress still works.
+        sink.save_progress(&Progress::default()).unwrap();
+        let listed = sink.list_sessions("chat").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session, "s2");
+        // A new conversation that reuses the id keeps its first records.
+        assert!(sink.append(&first).unwrap());
+        assert_eq!(sink.read_session("chat", "s1").unwrap(), [first]);
+        sink.delete_session("chat", "never-there").unwrap();
+    }
+
+    #[test]
+    fn deleting_a_source_leaves_other_sources_and_the_progress() {
+        let dir = temp("delete-source");
+        let mut sink = FileSink::new(&dir);
+        let first = turn("chat", "s1", "2026-11-11T10:00:00Z", "a");
+        sink.append(&first).unwrap();
+        sink.append(&turn("claude", "s1", "2026-11-11T10:00:00Z", "b"))
+            .unwrap();
+        let mut progress = Progress::default();
+        progress
+            .files
+            .insert("/logs/a".into(), FileProgress::default());
+        sink.save_progress(&progress).unwrap();
+        let saved = fs::read(dir.join(PROGRESS_FILE)).unwrap();
+        // A write that is not synced yet when the source goes.
+        sink.append(&turn("chat", "s2", "2026-11-11T10:00:01Z", "c"))
+            .unwrap();
+        sink.delete_source("chat").unwrap();
+        assert!(!dir.join("records/chat").exists());
+        assert!(sink.list_sessions("chat").unwrap().is_empty());
+        assert_eq!(sink.read_session("claude", "s1").unwrap().len(), 1);
+        // No file of the deleted source is waited for, and the progress is as it was.
+        sink.save_progress(&progress).unwrap();
+        assert_eq!(fs::read(dir.join(PROGRESS_FILE)).unwrap(), saved);
+        // A source that is created again keeps its first records.
+        assert!(sink.append(&first).unwrap());
+        assert_eq!(sink.read_session("chat", "s1").unwrap(), [first]);
+        sink.delete_source("never-there").unwrap();
+    }
+
+    #[test]
+    fn ids_cannot_read_or_delete_outside_the_records_directory() {
+        let dir = temp("traversal");
+        let mut sink = FileSink::new(&dir);
+        sink.append(&turn("chat", "s1", "2026-11-11T10:00:00Z", "a"))
+            .unwrap();
+        // Valid records where `../x` would land from `records/chat/` and from `records/`, and
+        // in the data directory, which is what the source `..` would list.
+        let planted = format!(
+            "{}\n",
+            serde_json::to_string(&turn("chat", "x", "2026-11-11T10:00:00Z", "outside")).unwrap()
+        );
+        let outside = [
+            dir.join("records/x.jsonl"),
+            dir.join("x.jsonl"),
+            dir.join("records/chat/x.jsonl"),
+        ];
+        for path in &outside {
+            fs::write(path, &planted).unwrap();
+        }
+        fs::create_dir_all(dir.join("x")).unwrap();
+        fs::write(dir.join("x/y"), "keep").unwrap();
+        assert!(sink.read_session("chat", "../x").unwrap().is_empty());
+        assert!(sink.read_session("chat", "../../x").unwrap().is_empty());
+        assert!(sink.list_sessions("..").unwrap().is_empty());
+        assert!(sink.list_sessions("../x").unwrap().is_empty());
+        sink.delete_session("chat", "../x").unwrap();
+        sink.delete_session("chat", "../../x").unwrap();
+        sink.delete_source("../x").unwrap();
+        sink.delete_source("..").unwrap();
+        sink.delete_source("").unwrap();
+        for path in &outside {
+            assert_eq!(fs::read_to_string(path).unwrap(), planted, "{path:?}");
+        }
+        assert_eq!(fs::read(dir.join("x/y")).unwrap(), b"keep");
+        assert_eq!(sink.read_session("chat", "s1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn equal_messages_a_millisecond_apart_are_both_stored() {
+        let dir = temp("millis");
+        let mut sink = FileSink::new(&dir);
+        assert!(
+            sink.append(&turn("chat", "s1", "2026-11-11T10:00:00.001Z", "ok"))
+                .unwrap()
+        );
+        assert!(
+            sink.append(&turn("chat", "s1", "2026-11-11T10:00:00.002Z", "ok"))
+                .unwrap()
+        );
+        // The same turn again is a replay.
+        assert!(
+            !sink
+                .append(&turn("chat", "s1", "2026-11-11T10:00:00.002Z", "ok"))
+                .unwrap()
+        );
+        // Tool records have their own identity: time, kind and call id.
+        let time = "2026-11-11T10:00:00.003Z";
+        assert!(sink.append(&call("s1", time, "c1", "{}")).unwrap());
+        assert!(sink.append(&result("s1", time, "c1", "r")).unwrap());
+        assert!(sink.append(&call("s1", time, "c2", "{}")).unwrap());
+        assert!(!sink.append(&call("s1", time, "c1", "{}")).unwrap());
+        let mut reopened = FileSink::new(&dir);
+        assert!(!reopened.append(&result("s1", time, "c1", "r")).unwrap());
+        assert_eq!(reopened.read_session("chat", "s1").unwrap().len(), 5);
+    }
+
+    #[test]
+    fn flushing_a_session_syncs_it_and_leaves_the_progress_alone() {
+        let dir = temp("flush");
+        let mut sink = FileSink::new(&dir);
+        sink.append(&turn("chat", "s1", "2026-11-11T10:00:00Z", "a"))
+            .unwrap();
+        sink.append(&turn("chat", "s2", "2026-11-11T10:00:00Z", "b"))
+            .unwrap();
+        sink.flush_session("chat", "s1").unwrap();
+        assert_eq!(sink.unsynced.len(), 1);
+        assert!(!dir.join(PROGRESS_FILE).exists());
+        sink.flush_session("chat", "unknown").unwrap();
     }
 }
