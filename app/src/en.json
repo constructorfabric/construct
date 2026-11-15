@@ -1,0 +1,10 @@
+{
+  "App.Navigation": "Pages",
+  "App.Status": "Status",
+  "App.Settings": "Settings",
+  "App.AgentState": "Agent",
+  "StatusPage.Title": "Construct agent",
+  "StatusPage.Checking": "checking",
+  "StatusPage.Version": "version {{version}}, pid {{pid}}",
+  "SettingsPage.Title": "Settings"
+}
