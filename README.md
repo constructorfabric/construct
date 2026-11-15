@@ -69,6 +69,60 @@ window, takes a screenshot of each page in both themes and fails on any content 
 `make smoke` checks that the installed agent answers `status` with `running` and that the app is still alive
 after 15 seconds.
 
+## Install from source
+
+There are no downloads yet, so you build the app yourself. First install the tools from
+[Build and test](#build-and-test), then follow the steps for your system. All commands run in the root of this
+repository.
+
+### Linux (Ubuntu and Debian, x86_64)
+
+```bash
+make build app-deps
+(cd app && npm run make)
+sudo apt install ./app/out/make/deb/x64/*.deb
+```
+
+Start **Construct Browser** from your application menu, or run `construct-browser`. The installed app
+registers the agent to start at login. `make smoke` runs the same install in a clean container.
+
+### macOS (Apple Silicon)
+
+The build makes an app bundle, and you turn it into a disk image and sign it yourself. The signature is
+ad-hoc: it is not tied to a developer account, so it only has to be good enough for your own Mac.
+
+```bash
+make package
+APP="app/out/Construct Browser-darwin-arm64/Construct Browser.app"
+codesign --force --deep --sign - "$APP"
+
+# A disk image with the app and a shortcut to the Applications folder.
+mkdir -p dmg && cp -R "$APP" dmg/ && ln -s /Applications dmg/Applications
+hdiutil create -volname "Construct Browser" -srcfolder dmg -ov -format UDZO "Construct Browser.dmg"
+```
+
+Open `Construct Browser.dmg` and drag **Construct Browser** onto **Applications**. A disk image you built on
+this Mac opens without a warning. If you copy it from another machine, macOS blocks the app on the first start:
+open **Applications**, right-click **Construct Browser**, choose **Open**, and confirm. You only do this once.
+
+On macOS the agent runs without the database and the Construct gear (see the table above).
+
+### Windows
+
+Windows has no installer from source yet, and the agent does not run there. You can start the window in
+development mode, which shows the Status page as `unknown`. With Rust, Node.js and `protoc` installed, run in
+PowerShell:
+
+```powershell
+cargo build --release --locked
+cd app
+npm ci
+node node_modules/electron/install.js
+npm start
+```
+
+The steps for macOS and Windows have not been run on those systems yet.
+
 ## Contributing and license
 
 Contribution rules and how to report a security issue are in the
