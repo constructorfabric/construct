@@ -32,6 +32,22 @@ describe('startStatusPoller', () => {
     poller.stop();
   });
 
+  it('asks again at once on refresh, but not while an ask is out', async () => {
+    const seen: AgentStatus[] = [];
+    const poller = startStatusPoller(
+      () => Promise.resolve(running),
+      (s) => seen.push(s),
+      60_000,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    poller.refresh();
+    poller.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toHaveLength(2);
+    poller.stop();
+  });
+
   it('turns a failed poll into an unknown status with the reason', async () => {
     const seen: AgentStatus[] = [];
     const poller = startStatusPoller(

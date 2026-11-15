@@ -1,94 +1,24 @@
 import { execFileSync } from 'node:child_process';
-import { createServer } from 'node:http';
-import type { IncomingMessage, Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import type { Page } from '@playwright/test';
-import { agentBinary, expectNoPolicyViolations, expect, openApp, test as base } from './fixtures';
+import {
+  agentBinary,
+  captureTestOutput,
+  expectNoPolicyViolations,
+  expect,
+  openApp,
+  test as base,
+  windowText,
+} from './fixtures';
+import { closedPort, goodKey, goodModel, providerFixture } from './provider';
+import type { Provider } from './provider';
 import { screenshotBothThemes } from './screenshots';
 
-const goodKey = 'sk-fake-7d41c9e0a5b2';
-const goodModel = 'fake-model';
 const unreachableDeadlineMs = 15_000;
 
-interface Seen {
-  readonly authorization: string | undefined;
-  readonly model: string;
-}
-
-interface Provider {
-  /** `http://127.0.0.1:<port>/v1` */
-  readonly url: string;
-  readonly seen: readonly Seen[];
-  /** The answer is held back this long, so a test can look at the window meanwhile. */
-  delayMs: number;
-}
-
-function readBody(request: IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
-    let body = '';
-    request.on('data', (chunk: Buffer) => {
-      body += chunk.toString();
-    });
-    request.on('end', () => {
-      resolve(body);
-    });
-  });
-}
-
-// A fake provider on a local port: it accepts one key and one model, like the real one would.
-async function startProvider(): Promise<{ provider: Provider; server: Server }> {
-  const seen: Seen[] = [];
-  const provider: Provider = { url: '', seen, delayMs: 0 };
-  const server = createServer((request, response) => {
-    void readBody(request).then((raw) => {
-      const body: unknown = JSON.parse(raw);
-      const model = String(Reflect.get(Object(body), 'model'));
-      const { authorization } = request.headers;
-      seen.push({ authorization, model });
-      const answer = (status: number, payload: unknown): void => {
-        setTimeout(() => {
-          response.writeHead(status, { 'Content-Type': 'application/json' });
-          response.end(JSON.stringify(payload));
-        }, provider.delayMs);
-      };
-      if (authorization !== `Bearer ${goodKey}`) {
-        answer(401, { error: { message: 'bad key' } });
-      } else if (model !== goodModel) {
-        answer(404, { error: { message: 'no such model' } });
-      } else {
-        answer(200, { choices: [{ message: { role: 'assistant', content: 'pong' } }] });
-      }
-    });
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const { port } = server.address() as AddressInfo;
-  return { provider: Object.assign(provider, { url: `http://127.0.0.1:${port}/v1` }), server };
-}
-
-/** A local port with nothing behind it. */
-async function closedPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const { port } = server.address() as AddressInfo;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
-const test = base.extend<{ provider: Provider }>({
-  // eslint-disable-next-line no-empty-pattern
-  provider: async ({}, use) => {
-    const { provider, server } = await startProvider();
-    await use(provider);
-    await new Promise((resolve) => server.close(resolve));
-  },
-});
+const test = base.extend<{ provider: Provider }>(providerFixture);
 
 async function openSettings(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Model' })).toBeVisible();
 }
 
@@ -104,43 +34,7 @@ async function fill(page: Page, fields: { address?: string; model?: string; key?
   }
 }
 
-/** What this process writes to its output and error streams, from now until `stop`. */
-function captureTestOutput(): { text: () => string; stop: () => void } {
-  let text = '';
-  const [stdoutWrite, stderrWrite] = [process.stdout.write, process.stderr.write];
-  const wrap = (original: typeof process.stdout.write): typeof process.stdout.write =>
-    function (this: unknown, chunk: unknown, ...rest: unknown[]): boolean {
-      text += String(chunk);
-      return Reflect.apply(original, this, [chunk, ...rest]) as boolean;
-    };
-  process.stdout.write = wrap(process.stdout.write.bind(process.stdout));
-  process.stderr.write = wrap(process.stderr.write.bind(process.stderr));
-  return {
-    text: () => text,
-    stop: () => {
-      process.stdout.write = stdoutWrite;
-      process.stderr.write = stderrWrite;
-    },
-  };
-}
-
 const outcome = (page: Page) => page.locator('#model-outcome');
-
-/** Everything on the page that a person could read or a script could reach. */
-async function windowText(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const inputs = [...document.querySelectorAll('input')].map(
-      (input) => `${input.value}|${input.placeholder}`,
-    );
-    return [
-      document.documentElement.outerHTML,
-      document.body.innerText,
-      ...inputs,
-      JSON.stringify({ ...localStorage }),
-      JSON.stringify({ ...sessionStorage }),
-    ].join('\n');
-  });
-}
 
 test('the model section starts with the defaults, and the key field is empty', async ({ page }) => {
   await openSettings(page);
@@ -252,7 +146,7 @@ test('Save with a blank Address and Model name shows what is required and sends 
   await expect(outcome(page)).toHaveCount(0);
 
   // The agent was never asked to save: it still has no model.
-  await page.getByRole('button', { name: 'Status' }).click();
+  await page.getByRole('button', { name: 'Status', exact: true }).click();
   await expect(page.locator('#agent-model')).toHaveText('model not set');
 });
 
@@ -283,6 +177,7 @@ test('the Status page shows model not set, then the saved model name', async ({
   page,
   provider,
 }) => {
+  await page.getByRole('button', { name: 'Status', exact: true }).click();
   await expect(page.locator('#agent-model')).toHaveText('model not set', { timeout: 10_000 });
 
   await openSettings(page);
@@ -290,7 +185,7 @@ test('the Status page shows model not set, then the saved model name', async ({
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(outcome(page)).toContainText('Saved');
 
-  await page.getByRole('button', { name: 'Status' }).click();
+  await page.getByRole('button', { name: 'Status', exact: true }).click();
   await expect(page.locator('#agent-model')).toHaveText(`model ${goodModel}`, {
     timeout: 10_000,
   });
@@ -302,7 +197,7 @@ test('after Save, closing the app and the agent and starting both again keeps th
 }) => {
   const first = await openApp(session);
   try {
-    await first.page.locator('#agent-status').waitFor();
+    await first.page.getByRole('button', { name: 'Settings', exact: true }).waitFor();
     await openSettings(first.page);
     await fill(first.page, { address: provider.url, model: goodModel, key: goodKey });
     await first.page.getByRole('button', { name: 'Save' }).click();
@@ -357,11 +252,11 @@ test('the key is nowhere but in the settings file and the request to the provide
     await fill(page, { address: provider.url });
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(outcome(page)).toContainText('Saved');
-    await page.getByRole('button', { name: 'Status' }).click();
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
     await expect(page.locator('#agent-model')).toHaveText(`model ${goodModel}`, {
       timeout: 10_000,
     });
-    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(page.getByLabel('API key', { exact: true })).toHaveValue('');
 
     // The key did reach the provider, so an empty search below means something.

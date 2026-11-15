@@ -79,6 +79,42 @@ export async function expectNoPolicyViolations(page: Page): Promise<void> {
   );
 }
 
+/** What this process writes to its output and error streams, from now until `stop`. */
+export function captureTestOutput(): { text: () => string; stop: () => void } {
+  let text = '';
+  const [stdoutWrite, stderrWrite] = [process.stdout.write, process.stderr.write];
+  const wrap = (original: typeof process.stdout.write): typeof process.stdout.write =>
+    function (this: unknown, chunk: unknown, ...rest: unknown[]): boolean {
+      text += String(chunk);
+      return Reflect.apply(original, this, [chunk, ...rest]) as boolean;
+    };
+  process.stdout.write = wrap(process.stdout.write.bind(process.stdout));
+  process.stderr.write = wrap(process.stderr.write.bind(process.stderr));
+  return {
+    text: () => text,
+    stop: () => {
+      process.stdout.write = stdoutWrite;
+      process.stderr.write = stderrWrite;
+    },
+  };
+}
+
+/** Everything on the page that a person could read or a script could reach. */
+export async function windowText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const inputs = [...document.querySelectorAll('input')].map(
+      (input) => `${input.value}|${input.placeholder}`,
+    );
+    return [
+      document.documentElement.outerHTML,
+      document.body.innerText,
+      ...inputs,
+      JSON.stringify({ ...localStorage }),
+      JSON.stringify({ ...sessionStorage }),
+    ].join('\n');
+  });
+}
+
 export const test = base.extend<{ session: Session; app: ElectronApplication; page: Page }>({
   // A real agent from this repo, with its socket in a private runtime directory and its settings
   // in a private home directory. Playwright wants an object pattern here, even when the fixture

@@ -8,32 +8,12 @@ import {
   settingsTestLine,
 } from './agent-settings';
 import type { ModelInput, ModelTestResult, SettingsResult } from './agent-settings';
-import { callAgent, isAgentAbsent, settingsLimits, testLimits } from './agent-socket';
-import type { CallLimits } from './agent-socket';
-
-interface Where {
-  readonly env: NodeJS.ProcessEnv;
-  readonly platform: NodeJS.Platform;
-}
+import { callAgent, failureText, settingsLimits, testLimits } from './agent-socket';
+import type { CallLimits, Where } from './agent-socket';
 
 const keyForAnotherAddress =
   'the saved key belongs to the saved address: type the key again to use another address';
 const invalidInput = 'the window sent settings in a form the app does not accept';
-
-/**
- * A failure as text for the window. The messages here come from the socket and from the agent's
- * fixed texts; none of them holds a line that was sent, because that line can carry the API key.
- */
-function failureText(error: unknown): string {
-  if (isAgentAbsent(error)) {
-    return 'the agent is not running';
-  }
-  // A JSON syntax error quotes the text it could not read, which is the agent's answer.
-  if (error instanceof SyntaxError) {
-    return 'the agent gave an answer the app cannot read';
-  }
-  return error instanceof Error ? error.message : 'the agent call failed';
-}
 
 async function settingsCall(where: Where, line: string): Promise<SettingsResult> {
   try {

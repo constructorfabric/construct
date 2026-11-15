@@ -11,23 +11,35 @@ import {
   SidebarProvider,
   StatusDot,
 } from '@gears-frontx/ui-kit';
-import { Activity, Settings } from 'lucide-react';
-import { useState } from 'react';
+import { Activity, MessageSquare, Settings } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { t } from '../translation';
 import styles from './app.module.css';
+import { ChatPage } from './ChatPage';
+import { ConversationList } from './ConversationList';
 import { SettingsPage } from './SettingsPage';
 import { tones } from './state-tones';
 import { StatusPage } from './StatusPage';
 import { useAgentStatus } from './useAgentStatus';
+import { useChat } from './useChat';
 
-type Page = 'status' | 'settings';
+type Page = 'chat' | 'status' | 'settings';
 
 export function App(): ReactNode {
   // A page is a piece of state: the app has no addresses to navigate to.
-  const [page, setPage] = useState<Page>('status');
-  const status = useAgentStatus();
+  const [page, setPage] = useState<Page>('chat');
+  const { status, refresh } = useAgentStatus();
   const state = status?.state ?? 'unknown';
+  const chat = useChat(page === 'chat');
+  // The model may have been set in Settings a moment ago; the chat page must not say otherwise.
+  useEffect(() => {
+    if (page === 'chat') {
+      refresh();
+    }
+  }, [page, refresh]);
+  // Only an agent that says so has no model; one that cannot be reached is not "without a model".
+  const modelSet = status?.state !== 'running' || status.model !== 'not set';
 
   return (
     // `defaultOpen` keeps the sidebar from reading its cookie; it never collapses on its own, and
@@ -38,6 +50,21 @@ export function App(): ReactNode {
           <SidebarGroup>
             <SidebarGroupContent>
               <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    isActive={page === 'chat'}
+                    render={
+                      <button
+                        type="button"
+                        aria-current={page === 'chat' ? 'page' : undefined}
+                        onClick={() => setPage('chat')}
+                      />
+                    }
+                  >
+                    <MessageSquare aria-hidden />
+                    <span>{t('App.Chat')}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     isActive={page === 'status'}
@@ -71,6 +98,7 @@ export function App(): ReactNode {
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
+          {page === 'chat' ? <ConversationList chat={chat} /> : null}
         </SidebarContent>
         <SidebarFooter>
           <StatusDot
@@ -86,10 +114,22 @@ export function App(): ReactNode {
           />
         </SidebarFooter>
       </Sidebar>
-      <SidebarInset render={<main className={styles.content} />}>
-        <div className={styles.column}>
-          {page === 'status' ? <StatusPage status={status} /> : <SettingsPage />}
-        </div>
+      <SidebarInset
+        render={<main className={page === 'chat' ? styles.contentChat : styles.content} />}
+      >
+        {page === 'chat' ? (
+          <ChatPage
+            chat={chat}
+            modelSet={modelSet}
+            onOpenSettings={() => {
+              setPage('settings');
+            }}
+          />
+        ) : (
+          <div className={styles.column}>
+            {page === 'status' ? <StatusPage status={status} /> : <SettingsPage />}
+          </div>
+        )}
       </SidebarInset>
     </SidebarProvider>
   );
