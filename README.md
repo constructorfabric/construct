@@ -1,35 +1,78 @@
 # Construct Browser
 
-Construct Browser is a desktop app made of an Electron shell and a Rust agent
-that runs in the background. It is part of
-[Constructor Fabric](https://github.com/constructorfabric/governance).
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-> **Status:** work in progress. Nothing here is ready for use yet.
+**Construct Browser is a desktop app that runs your personal Construct on your own computer, under your control.**
 
-## Building the agent
+It is part of [Constructor Fabric](https://www.constructorfabric.org). The Construct gear of
+[Constructor Fabric Gears](https://github.com/constructorfabric/gears-rust) builds a living profile of a
+person from the tools they already use. Construct Browser is where that gear runs for one person: an
+Electron window you open and close, and a Rust agent that keeps working in the background. The agent, the
+data it collects and the settings stay on your machine. The only service the agent calls is the model you
+configure yourself.
 
-On Linux and macOS the build needs `protoc` and the protobuf headers (Debian and Ubuntu:
-`protobuf-compiler` and `libprotobuf-dev`; macOS: `brew install protobuf`), because the toolkit
-compiles a `.proto` file. `make test` runs the format check, clippy and the tests.
+> **Status:** early. The app is not released yet, and there are no downloads.
 
-## Model
+## What it does today
 
-The planner of the Construct host calls a model through a small gateway of the agent's own
-(`agent/src/model.rs`), not through OAGW, which needs a credential store and a tenant resolver at start.
-The address, the model name and the key come from the settings store (`settings.json`, saved by the
-Settings page or `settings-set`). The gateway reads them on every call, so a change takes effect on the
-next call, without a restart. There is no other source.
+- **Reads your coding tools.** The agent follows the session logs of Claude Code and Codex and turns every
+  prompt and answer into a record, within seconds. Log files are only opened for reading.
+- **Runs the Construct gear.** The records go to the Construct gear, which runs inside the agent next to its
+  own PostgreSQL database with pgvector. Everything listens on your machine only: a Unix socket and the
+  loopback address, protected by a token that only your user can read.
+- **Keeps working after you close the window.** The installed app registers the agent to start at login, as a
+  systemd user service on Linux and a LaunchAgent on macOS.
+- **Shows what the agent is doing.** The Status page shows whether the agent is running, its version, its
+  process id, the model in use and whether it starts at login.
+- **Talks to the model you choose.** The Settings page takes the address, the name and the API key of a model,
+  can test the call, and can remove the key. The key is never written to a log or shown in the status. A
+  change applies to the next call, with no restart.
+- **Chat.** The Chat page streams the model's answers as Markdown, lets you stop an answer, and keeps your
+  conversations on your computer.
 
-- Whenever the settings open, the host is set up for a model (if the settings file cannot be opened, the
-  host has none and drops records), and the model name of each request is replaced by the saved one.
-  A call while the address, the name or the key is missing makes no request and fails as unavailable.
-- A failed call (connect error, 429, 5xx) is tried up to three times, each with a 60 s limit (Construct is
-  given the time of all three). A rejected key (`401` or `403`) is not retried, since it stays wrong: the
-  record is dropped, the host stays up, and `status` shows `"model_state":"key_rejected"` until another
-  key or address is saved.
-- `status` shows `"model"`: the saved model name, or `not set`; and `"model_state"`: `not_configured`
-  (the settings do not hold an address, a name and a key), `configured` or `key_rejected`.
-- The key is in no log line, no error text and not in `status`.
+The window follows the light or dark theme of your system and is built with the
+FrontX UI kit (`@gears-frontx/ui-kit`).
 
-See the [governance repository](https://github.com/constructorfabric/governance)
-for the project's license, contribution rules and community documents.
+## What works on each system
+
+| Part                                                         | Linux x86_64         | macOS (Apple Silicon)                       | Windows                                                                |
+| ------------------------------------------------------------ | -------------------- | ------------------------------------------- | ---------------------------------------------------------------------- |
+| Window, Status, Settings and Chat pages                      | yes                  | yes                                         | the window opens; Status says `unknown`, Settings says "not available" |
+| Agent socket and `status`                                    | yes                  | yes                                         | no: the agent stops with "not implemented on this platform"            |
+| Start at login                                               | systemd user service | LaunchAgent                                 | no: "not implemented on Windows yet"                                   |
+| Log readers (Claude Code, Codex), settings, model test, chat | yes                  | yes (no database needed)                    | no: the agent does not start                                           |
+| Embedded PostgreSQL with pgvector                            | yes                  | no: pgvector is built for Linux x86_64 only | no                                                                     |
+| Construct gear                                               | yes                  | no: it needs the database                   | no                                                                     |
+
+The Linux package is built and tested in a clean Ubuntu 24.04 container. The macOS column is read from the
+code and has not been run on a real Mac.
+
+## Build and test
+
+You need Rust (the toolchain in `rust-toolchain.toml` is installed by `rustup`), Node.js 24 with npm, and
+`protoc` with the protobuf headers (Debian and Ubuntu: `protobuf-compiler` and `libprotobuf-dev`; macOS:
+`brew install protobuf`). On Linux the build also needs `curl`, `tar`, `make` and `gcc`, which build pgvector,
+and the tests need `xvfb-run` for the Electron window.
+
+```bash
+make build    # build the agent: target/release/construct-agent
+make test     # format check, clippy, agent tests, then the app tests and the Electron test
+make lint     # the app's lint and type check
+make run      # build the agent and start the app in development mode
+make package  # package the app with the agent inside
+make smoke    # build the .deb, install it in a clean Ubuntu 24.04 container and start it (needs Docker)
+```
+
+`make help` lists the targets. `make test` runs the Electron test under a virtual display; it opens the
+window, walks through the pages in both themes and fails on any content security policy violation.
+`make smoke` checks that the installed agent answers `status` with `running` and that the app is still alive
+after 15 seconds.
+
+## Contributing and license
+
+Contribution rules and how to report a security issue are in the
+[Constructor Fabric governance repository](https://github.com/constructorfabric/governance), starting with
+[CONTRIBUTING.md](https://github.com/constructorfabric/governance/blob/main/CONTRIBUTING.md). Commits are
+signed off, as the [DCO](https://github.com/constructorfabric/governance/blob/main/DCO.md) asks.
+
+Construct Browser is licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
