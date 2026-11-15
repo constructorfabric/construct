@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import started from 'electron-squirrel-startup';
 import { agentBinaryPath, ensureAgentService, shouldRegisterAgent } from './agent-service';
 import {
@@ -20,6 +20,8 @@ import {
   CHAT_SEND_CHANNEL,
   CHAT_STOP_CHANNEL,
 } from './chat-protocol';
+import { createLinkHandler } from './external-calls';
+import { OPEN_LINK_CHANNEL } from './external';
 import { createSettingsHandlers } from './settings-calls';
 
 let mainWindow: BrowserWindow | null = null;
@@ -109,6 +111,10 @@ function startApp(): void {
     ipcMain.handle(CHAT_SEND_CHANNEL, (_event, input: unknown) => chat.send(input));
     ipcMain.handle(CHAT_STOP_CHANNEL, () => chat.stop());
     app.on('before-quit', chat.close);
+    // The window never opens a page itself: a link of an answer comes here, and only a web address
+    // goes on to the system browser.
+    const openLink = createLinkHandler((address) => shell.openExternal(address));
+    ipcMain.handle(OPEN_LINK_CHANNEL, (_event, url: unknown) => openLink(url));
     void registerAgent();
     createWindow();
 
