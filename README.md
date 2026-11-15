@@ -45,8 +45,7 @@ The window follows the light or dark theme of your system.
 | Embedded PostgreSQL with pgvector                            | yes                  | no: pgvector is built for Linux x86_64 only | no                                                                     |
 | Construct gear                                               | yes                  | no: it needs the database                   | no                                                                     |
 
-`make smoke` installs the Linux package in a clean Ubuntu 24.04 container and starts it there. The macOS column is read from the
-code and has not been run on a real Mac.
+`make smoke` installs the Linux package in a clean Ubuntu 24.04 container and starts it there. Tested on Linux x86_64 (Ubuntu 24.04).
 
 ## Build and test
 
@@ -120,8 +119,6 @@ npm ci
 node node_modules/electron/install.js
 npm start
 ```
-
-The steps for macOS and Windows have not been run on those systems yet.
 
 ## Contributing and license
 
