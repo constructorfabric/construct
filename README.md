@@ -4,7 +4,7 @@
 
 **Construct Browser is a desktop app that runs your personal Construct on your own computer, under your control.**
 
-It is part of [Constructor Fabric](https://www.constructorfabric.org). The Construct gear of
+It is part of [Constructor Fabric](http://www.constructorfabric.com/). The Construct gear of
 [Constructor Fabric Gears](https://github.com/constructorfabric/gears-rust) builds a living profile of a
 person from the tools they already use. Construct Browser is where that gear runs for one person: an
 Electron window you open and close, and a Rust agent that keeps working in the background. The agent, the
