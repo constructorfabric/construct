@@ -108,7 +108,9 @@ test('a plain development run registers nothing', async () => {
     env: sandbox.env,
   });
   try {
-    await expect((await app.firstWindow()).locator('#agent-status')).toBeVisible();
+    const window = await app.firstWindow();
+    await window.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(window.locator('#agent-status')).toBeVisible();
     expect(existsSync(unitFile(sandbox))).toBe(false);
     expect(existsSync(sandbox.systemctlLog)).toBe(false);
   } finally {
@@ -138,6 +140,7 @@ test('the app registers the agent, shows it, and leaves it running when it quits
     }).toPass({ timeout: 10_000 });
 
     const page = await app.firstWindow();
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
     const block = page.locator('#start-at-login');
     await expect(block).toHaveText('registered', { timeout: 20_000 });
     await expect(block).toHaveAttribute('data-state', 'registered');

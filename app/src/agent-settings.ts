@@ -1,3 +1,4 @@
+import { isRecord, parseLine, replyError } from './agent-json';
 /** What the window sees of the model settings. The API key is never part of it. */
 export interface ModelSettings {
   readonly baseUrl: string;
@@ -43,10 +44,6 @@ export const SETTINGS_REMOVE_KEY_CHANNEL = 'settings:remove-key';
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_MODEL = 'gpt-6-luna';
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
 /** The input of a bridge call, which comes from the window and so is checked. */
 export function parseModelInput(value: unknown): ModelInput | null {
   if (!isRecord(value)) {
@@ -87,19 +84,6 @@ export function settingsTestLine(input: ModelInput): string {
     body.api_key = input.apiKey;
   }
   return `settings-test ${JSON.stringify(body)}`;
-}
-
-/** The text of an `{"error": "..."}` reply, which the agent keeps fixed; otherwise `null`. */
-function replyError(reply: Record<string, unknown>): string | null {
-  return typeof reply.error === 'string' ? reply.error : null;
-}
-
-function parseLine(line: string): Record<string, unknown> {
-  const reply: unknown = JSON.parse(line);
-  if (!isRecord(reply)) {
-    throw new Error('the agent reply is not a JSON object');
-  }
-  return reply;
 }
 
 /** Turns a `settings-get` or `settings-set` reply into a result. */

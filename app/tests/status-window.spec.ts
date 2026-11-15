@@ -3,7 +3,8 @@ import { mkdirSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { agentSocketPath } from '../src/agent-socket';
-import { appDir, expect, expectNoPolicyViolations, openApp, test } from './fixtures';
+import type { Page } from '@playwright/test';
+import { appDir, expect, expectNoPolicyViolations, openApp, test as base } from './fixtures';
 import type { Session } from './fixtures';
 import { screenshotBothThemes, screenshotInTheme } from './screenshots';
 
@@ -29,6 +30,14 @@ async function launchSecondInstance(session: Session): Promise<Exit> {
   clearTimeout(killTimer);
   return exit;
 }
+
+// Chat is the first page and the default; these tests are about the Status page.
+const test = base.extend<{ page: Page }>({
+  page: async ({ page }, use) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await use(page);
+  },
+});
 
 test('the window and its sidebar show running, then stopped within 10 seconds of the agent stopping', async ({
   page,
@@ -87,6 +96,7 @@ test('the Status page shows unknown, with its reason, when the agent answers wro
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   const { app, page } = await openApp(session);
   try {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
     const badge = page.locator('#agent-status');
     await expect(badge).toHaveText('unknown');
     await expect(badge).toHaveAttribute('data-state', 'unknown');
@@ -197,7 +207,7 @@ test('the window cannot navigate away or open another window', async ({ app, pag
   expect(app.windows()).toHaveLength(1);
 });
 
-test('the sidebar switches between the Status and Settings pages', async ({ page }) => {
+test('the sidebar switches between the Chat, Status and Settings pages', async ({ page }) => {
   const sidebar = page.getByRole('navigation', { name: 'Pages' });
   await expect(sidebar).toBeVisible();
   await expect(sidebar.locator('#sidebar-agent-state')).toBeVisible();
@@ -205,11 +215,15 @@ test('the sidebar switches between the Status and Settings pages', async ({ page
   await expect(page.locator('#agent-status')).toHaveText('running');
   await expect(page.locator('#agent-detail')).toContainText(/^version .+, pid \d+$/);
 
-  await page.getByRole('button', { name: 'Settings' }).click();
-  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
   await expect(page.locator('#agent-status')).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Status' }).click();
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  await expect(page.locator('#chat-input')).toBeVisible();
+  await expect(page.locator('#agent-status')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Status', exact: true }).click();
   await expect(page.locator('#agent-status')).toHaveText('running');
 });
 

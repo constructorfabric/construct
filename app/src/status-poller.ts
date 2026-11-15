@@ -3,6 +3,8 @@ import type { AgentStatus } from './agent-status';
 export const refreshMs = 3000;
 
 export interface StatusPoller {
+  /** Asks now instead of at the next tick; nothing happens while an ask is out. */
+  readonly refresh: () => void;
   readonly stop: () => void;
 }
 
@@ -44,6 +46,9 @@ export function startStatusPoller(
   }, intervalMs);
 
   return {
+    refresh: () => {
+      void refresh();
+    },
     stop: () => {
       stopped = true;
       clearInterval(timer);

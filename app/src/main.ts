@@ -10,9 +10,20 @@ import {
 } from './agent-settings';
 import { readAgentStatus } from './agent-socket';
 import { STATUS_CHANNEL } from './agent-status';
+import { createChatHandlers } from './chat-calls';
+import type { ChatHandlers } from './chat-calls';
+import {
+  CHAT_DELETE_CHANNEL,
+  CHAT_EVENT_CHANNEL,
+  CHAT_GET_CHANNEL,
+  CHAT_LIST_CHANNEL,
+  CHAT_SEND_CHANNEL,
+  CHAT_STOP_CHANNEL,
+} from './chat-protocol';
 import { createSettingsHandlers } from './settings-calls';
 
 let mainWindow: BrowserWindow | null = null;
+let chatHandlers: ChatHandlers | null = null;
 
 // On first start the agent registers itself as a login service. A failure leaves the window
 // on `stopped`, so it is logged and the app goes on.
@@ -52,6 +63,8 @@ const createWindow = () => {
   });
   window.on('closed', () => {
     mainWindow = null;
+    // The window is gone, and so is the one who wanted the answer.
+    chatHandlers?.close();
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -83,6 +96,19 @@ function startApp(): void {
     ipcMain.handle(SETTINGS_SAVE_CHANNEL, (_event, input: unknown) => settings.save(input));
     ipcMain.handle(SETTINGS_TEST_CHANNEL, (_event, input: unknown) => settings.test(input));
     ipcMain.handle(SETTINGS_REMOVE_KEY_CHANNEL, () => settings.removeKey());
+    // The answer's events go to the window that is open; with no window there is no one to tell.
+    const chat = createChatHandlers({ env: process.env, platform: process.platform }, (event) => {
+      if (mainWindow !== null && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(CHAT_EVENT_CHANNEL, event);
+      }
+    });
+    chatHandlers = chat;
+    ipcMain.handle(CHAT_LIST_CHANNEL, () => chat.list());
+    ipcMain.handle(CHAT_GET_CHANNEL, (_event, conversation: unknown) => chat.get(conversation));
+    ipcMain.handle(CHAT_DELETE_CHANNEL, (_event, which: unknown) => chat.remove(which));
+    ipcMain.handle(CHAT_SEND_CHANNEL, (_event, input: unknown) => chat.send(input));
+    ipcMain.handle(CHAT_STOP_CHANNEL, () => chat.stop());
+    app.on('before-quit', chat.close);
     void registerAgent();
     createWindow();
 
