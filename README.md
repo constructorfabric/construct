@@ -52,7 +52,7 @@ The window follows the light or dark theme of your system.
 You need Rust (the toolchain in `rust-toolchain.toml` is installed by `rustup`), Node.js 22.13 or newer (22 or 24) with npm, and
 `protoc` with the protobuf headers (Debian and Ubuntu: `protobuf-compiler` and `libprotobuf-dev`; macOS:
 `brew install protobuf`). On Linux the build also needs `curl`, `tar`, `make` and `gcc`, which build pgvector,
-and `make test` needs `xvfb-run` for the Electron window, so it runs on Linux. `make package` and `make smoke` also need `dpkg` and `fakeroot`.
+and `make test` needs `xvfb-run` for the Electron window, so it runs on Linux. `make smoke` and the Linux package (`npm run make`) also need `dpkg` and `fakeroot`.
 
 ```bash
 make build    # build the agent: target/release/construct-agent
@@ -83,7 +83,7 @@ sudo apt install ./app/out/make/deb/x64/*.deb
 ```
 
 Start **Construct Browser** from your application menu, or run `construct-browser`. The installed app
-registers the agent to start at login. `make smoke` runs the same install in a clean container.
+registers the agent to start at login. `make smoke` builds the package and installs it in a clean container.
 
 ### macOS (Apple Silicon)
 
@@ -96,24 +96,20 @@ APP="app/out/Construct Browser-darwin-arm64/Construct Browser.app"
 codesign --force --deep --sign - "$APP"
 
 # A disk image with the app and a shortcut to the Applications folder.
-mkdir -p dmg && cp -R "$APP" dmg/ && ln -s /Applications dmg/Applications
-hdiutil create -volname "Construct Browser" -srcfolder dmg -ov -format UDZO "Construct Browser.dmg"
+mkdir -p app/out/dmg && cp -R "$APP" app/out/dmg/ && ln -sf /Applications app/out/dmg/Applications
+hdiutil create -volname "Construct Browser" -srcfolder app/out/dmg -ov -format UDZO "app/out/Construct Browser.dmg"
 ```
 
-Open `Construct Browser.dmg` and drag **Construct Browser** onto **Applications**. A disk image you built on
-this Mac opens without a warning. If you copy it from another machine, macOS blocks the app on the first start:
-open **Applications**, right-click **Construct Browser**, choose **Open**, and confirm. You only do this once.
+Open `app/out/Construct Browser.dmg` and drag **Construct Browser** onto **Applications**.
 
 On macOS the agent runs without the database and the Construct gear (see the table above).
 
 ### Windows
 
 Windows has no installer from source yet, and the agent does not run there. You can start the window in
-development mode, which shows the Status page as `unknown`. With Rust, Node.js and `protoc` installed, run in
-PowerShell:
+development mode, which shows the Status page as `unknown`. With Node.js installed, run in PowerShell:
 
 ```powershell
-cargo build --release --locked
 cd app
 npm ci
 node node_modules/electron/install.js
