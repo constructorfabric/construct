@@ -4,7 +4,9 @@
   "App.Settings": "Settings",
   "App.AgentState": "Agent",
   "StatusPage.Title": "Construct agent",
+  "StatusPage.Agent": "Agent",
   "StatusPage.Checking": "checking",
   "StatusPage.Version": "version {{version}}, pid {{pid}}",
+  "StatusPage.Model": "model {{model}}",
   "SettingsPage.Title": "Settings"
 }
