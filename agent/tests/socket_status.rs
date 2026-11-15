@@ -342,3 +342,35 @@ fn status_shows_the_saved_model_name_and_whether_the_settings_hold_a_complete_mo
     assert_eq!(status(&path)["model_state"], "not_configured");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn status_reports_whether_the_login_service_is_registered() {
+    type Setup = fn(Server) -> Server;
+    let cases: [(&str, Setup, Option<&str>); 4] = [
+        (
+            "service-yes",
+            |s| s.with_service(|| Some(true)),
+            Some("registered"),
+        ),
+        (
+            "service-no",
+            |s| s.with_service(|| Some(false)),
+            Some("not_registered"),
+        ),
+        ("service-unknown", |s| s.with_service(|| None), None),
+        // A server given no check leaves the field out as well.
+        ("service-default", |s| s, None),
+    ];
+    let mut sockets = Vec::new();
+    for (name, setup, expected) in cases {
+        let path = temp_socket(name);
+        let server = setup(Server::bind(&path).unwrap());
+        thread::spawn(move || server.serve());
+        let v: serde_json::Value = serde_json::from_str(&query_status(&path).unwrap()).unwrap();
+        assert_eq!(v["service"].as_str(), expected, "{name}");
+        sockets.push(path);
+    }
+    for path in sockets {
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+}

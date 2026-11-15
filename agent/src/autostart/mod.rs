@@ -15,7 +15,7 @@ pub mod windows;
 pub const SERVICE_NAME: &str = "construct-agent";
 
 /// Register, start and remove the agent as a per-user login service.
-pub trait Autostart {
+pub trait Autostart: Send + Sync {
     /// Register the agent to start at login and start it now.
     ///
     /// # Errors
@@ -41,7 +41,7 @@ pub trait Autostart {
 }
 
 /// Runs external tools (`systemctl`, `launchctl`, `reg`); replaced in tests.
-pub trait CommandRunner {
+pub trait CommandRunner: Send + Sync {
     /// # Errors
     /// Fails when the program cannot start or exits with an error.
     fn run(&self, program: &str, args: &[&str]) -> io::Result<()>;

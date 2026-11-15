@@ -30,6 +30,7 @@ export function startStatusPoller(
         onStatus({
           state: 'unknown',
           reason: error instanceof Error ? error.message : String(error),
+          startAtLogin: 'unknown',
         });
       }
     } finally {

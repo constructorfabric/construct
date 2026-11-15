@@ -78,6 +78,11 @@ export async function readAgentStatus(
     return await askStatus(agentSocketPath(env, platform), deadlineMs);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { state: isAgentAbsent(error) ? 'stopped' : 'unknown', reason };
+    return {
+      state: isAgentAbsent(error) ? 'stopped' : 'unknown',
+      reason,
+      // Windows has no agent socket yet and the app cannot register the agent there.
+      startAtLogin: platform === 'win32' ? 'not_supported' : 'unknown',
+    };
   }
 }

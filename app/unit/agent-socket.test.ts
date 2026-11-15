@@ -67,9 +67,33 @@ describe('readAgentStatus', () => {
           state: 'running',
           version: '0.1.0',
           pid: 7,
+          startAtLogin: 'unknown',
         });
       },
     );
+  });
+
+  it('carries the service field of the agent', async () => {
+    await withFakeAgent(
+      (client) =>
+        client.end('{"status":"running","version":"0.1.0","pid":7,"service":"registered"}\n'),
+      async (env) => {
+        expect(await readAgentStatus(env, 'linux')).toEqual({
+          state: 'running',
+          version: '0.1.0',
+          pid: 7,
+          startAtLogin: 'registered',
+        });
+      },
+    );
+  });
+
+  it('reports start at login as not supported on Windows', async () => {
+    expect(await readAgentStatus({}, 'win32')).toEqual({
+      state: 'unknown',
+      reason: 'the agent socket is not implemented on Windows yet',
+      startAtLogin: 'not_supported',
+    });
   });
 
   it('reports no socket file as stopped', async () => {
@@ -125,7 +149,11 @@ describe('readAgentStatus', () => {
   ])('reports %s as unknown', async (_name, behave, message) => {
     await withFakeAgent(behave, async (env) => {
       const status = await readAgentStatus(env, 'linux', shortDeadlineMs);
-      expect(status).toEqual({ state: 'unknown', reason: expect.stringMatching(message) });
+      expect(status).toEqual({
+        state: 'unknown',
+        reason: expect.stringMatching(message),
+        startAtLogin: 'unknown',
+      });
     });
   });
 });

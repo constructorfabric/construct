@@ -5,13 +5,12 @@
 // Helpers sit outside `#[test]` functions, where `clippy.toml` does not allow `unwrap`.
 #![allow(clippy::unwrap_used, dead_code)]
 
-use std::cell::RefCell;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Child;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -19,20 +18,26 @@ use construct_agent::autostart::{CommandRunner, linux, macos};
 use serde_json::{Value, json};
 
 #[derive(Clone, Default)]
-pub struct Recorder(pub Rc<RefCell<Vec<String>>>, Rc<RefCell<Vec<&'static str>>>);
+pub struct Recorder(pub Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<&'static str>>>);
 
 impl Recorder {
     /// Makes every call whose text contains one of `needles` fail (`""` matches all).
     pub fn fail_on(&self, needles: &[&'static str]) {
-        *self.1.borrow_mut() = needles.to_vec();
+        *self.1.lock().unwrap() = needles.to_vec();
     }
 }
 
 impl CommandRunner for Recorder {
     fn run(&self, program: &str, args: &[&str]) -> io::Result<()> {
         let call = format!("{program} {}", args.join(" "));
-        self.0.borrow_mut().push(call.clone());
-        if self.1.borrow().iter().any(|needle| call.contains(needle)) {
+        self.0.lock().unwrap().push(call.clone());
+        if self
+            .1
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|needle| call.contains(needle))
+        {
             Err(io::Error::other(format!("{call} failed")))
         } else {
             Ok(())
@@ -107,7 +112,7 @@ impl Scenario {
 
     /// The recorded calls and forget them.
     pub fn take_calls(&self) -> Vec<String> {
-        std::mem::take(&mut *self.rec.0.borrow_mut())
+        std::mem::take(&mut *self.rec.0.lock().unwrap())
     }
 
     /// Like `take_calls`, with the plist path of a `bootstrap` call cut off.
