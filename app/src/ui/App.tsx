@@ -17,12 +17,11 @@ import type { CSSProperties, ReactNode } from 'react';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { SettingsPage } from './SettingsPage';
+import { tones } from './state-tones';
 import { StatusPage } from './StatusPage';
 import { useAgentStatus } from './useAgentStatus';
 
 type Page = 'status' | 'settings';
-
-const tones = { running: 'success', stopped: 'danger', unknown: 'neutral' } as const;
 
 export function App(): ReactNode {
   // A page is a piece of state: the app has no addresses to navigate to.

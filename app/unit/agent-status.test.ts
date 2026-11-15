@@ -8,6 +8,12 @@ describe('parseStatusReply', () => {
     );
   });
 
+  it('carries the model name the agent reports', () => {
+    expect(
+      parseStatusReply('{"status":"running","version":"0.1.0","pid":42,"model":"example-model"}'),
+    ).toEqual({ state: 'running', version: '0.1.0', pid: 42, model: 'example-model' });
+  });
+
   it.each([
     ['not JSON', 'running', /JSON/],
     ['not an object', '"running"', /not a JSON object/],
@@ -19,6 +25,11 @@ describe('parseStatusReply', () => {
     ],
     ['no version', '{"status":"running","pid":1}', /no version/],
     ['a version that is not text', '{"status":"running","version":1,"pid":1}', /no version/],
+    [
+      'a model that is not text',
+      '{"status":"running","version":"0.1.0","pid":1,"model":3}',
+      /model/,
+    ],
     ['no pid', '{"status":"running","version":"0.1.0"}', /no pid/],
     ['a pid that is not a number', '{"status":"running","version":"0.1.0","pid":"1"}', /no pid/],
   ])('rejects a reply with %s', (_name, line, message) => {

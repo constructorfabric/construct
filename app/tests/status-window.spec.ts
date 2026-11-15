@@ -1,10 +1,12 @@
 import { execFileSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test as base } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
+import { agentSocketPath } from '../src/agent-socket';
 
 const appDir = path.resolve(__dirname, '..');
 const agentBinary = path.resolve(appDir, '..', 'target', 'release', 'construct-agent');
@@ -52,6 +54,25 @@ async function launchSecondInstance(session: Session): Promise<Exit> {
   return exit;
 }
 
+// Reloads the page under a listener for policy violations: any `securitypolicyviolation` event
+// of the page fails the test that raised it.
+async function watchPolicyViolations(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const violations: string[] = [];
+    Object.assign(window, { policyViolations: violations });
+    document.addEventListener('securitypolicyviolation', (event) => {
+      violations.push(`${event.violatedDirective} ${event.blockedURI}`);
+    });
+  });
+  await page.reload();
+}
+
+async function expectNoPolicyViolations(page: Page): Promise<void> {
+  expect(await page.evaluate(() => Reflect.get(window, 'policyViolations') as string[])).toEqual(
+    [],
+  );
+}
+
 const test = base.extend<{ session: Session; app: ElectronApplication; page: Page }>({
   // A real agent from this repo, with its socket in a private runtime directory.
   // Playwright wants an object pattern here, even when the fixture needs nothing.
@@ -59,7 +80,15 @@ const test = base.extend<{ session: Session; app: ElectronApplication; page: Pag
   session: async ({}, use) => {
     const runtimeDir = mkdtempSync(path.join(tmpdir(), 'cb-run-'));
     const userDataDir = mkdtempSync(path.join(tmpdir(), 'cb-data-'));
-    const env = stringEnv({ XDG_RUNTIME_DIR: runtimeDir, TMPDIR: runtimeDir });
+    // The agent reads its settings from the home directory: a private one keeps a model
+    // configured on the machine running the test out of the page and its screenshots.
+    const homeDir = mkdtempSync(path.join(tmpdir(), 'cb-home-'));
+    const env = stringEnv({
+      XDG_RUNTIME_DIR: runtimeDir,
+      TMPDIR: runtimeDir,
+      HOME: homeDir,
+      XDG_CONFIG_HOME: path.join(homeDir, '.config'),
+    });
     const agent = spawn(agentBinary, ['run'], { env, stdio: 'ignore' });
     try {
       await expect(() => {
@@ -74,6 +103,7 @@ const test = base.extend<{ session: Session; app: ElectronApplication; page: Pag
       agent.kill('SIGTERM');
       rmSync(runtimeDir, { recursive: true, force: true });
       rmSync(userDataDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true });
     }
   },
   app: async ({ session }, use) => {
@@ -84,22 +114,12 @@ const test = base.extend<{ session: Session; app: ElectronApplication; page: Pag
       await app.close();
     }
   },
-  // The first window, reloaded under a listener for policy violations: any `securitypolicyviolation`
-  // event of the page fails the test that raised it.
+  // The first window, watched for policy violations.
   page: async ({ app }, use) => {
     const page = await app.firstWindow();
-    await page.addInitScript(() => {
-      const violations: string[] = [];
-      Object.assign(window, { policyViolations: violations });
-      document.addEventListener('securitypolicyviolation', (event) => {
-        violations.push(`${event.violatedDirective} ${event.blockedURI}`);
-      });
-    });
-    await page.reload();
+    await watchPolicyViolations(page);
     await use(page);
-    expect(await page.evaluate(() => Reflect.get(window, 'policyViolations') as string[])).toEqual(
-      [],
-    );
+    await expectNoPolicyViolations(page);
   },
 });
 
@@ -117,6 +137,60 @@ test('the window and its sidebar show running, then stopped within 10 seconds of
   await expect(status).toHaveText('stopped', { timeout: refreshDeadlineMs });
   await expect(sidebarState).toHaveAttribute('data-state', 'stopped');
   await expect(page.locator('#sidebar-agent-state-word')).toHaveText('stopped');
+});
+
+test('the Status page shows the state word in a badge, the version and the model', async ({
+  page,
+}) => {
+  const badge = page.locator('#agent-status');
+  await expect(badge).toHaveText('running');
+  await expect(badge).toHaveAttribute('data-state', 'running');
+  await expect(page.locator('#agent-detail')).toContainText(/^version .+, pid \d+$/);
+  await expect(page.locator('#agent-model')).toHaveText('model not set');
+});
+
+test('the Status page shows stopped, with its reason, when no agent runs', async ({
+  page,
+  session,
+}) => {
+  await expect(page.locator('#agent-status')).toHaveText('running');
+  session.agent.kill('SIGTERM');
+
+  const badge = page.locator('#agent-status');
+  await expect(badge).toHaveText('stopped', { timeout: refreshDeadlineMs });
+  await expect(badge).toHaveAttribute('data-state', 'stopped');
+  await expect(page.locator('#agent-detail')).toContainText(/ENOENT|ECONNREFUSED/);
+  await expect(page.locator('#agent-model')).toHaveCount(0);
+});
+
+test('the Status page shows unknown, with its reason, when the agent answers wrongly', async ({
+  session,
+}) => {
+  // A stand-in that listens on the agent's socket and answers a line the app cannot read.
+  const socketPath = agentSocketPath(session.env, process.platform);
+  const socketDir = path.dirname(socketPath);
+  session.agent.kill('SIGTERM');
+  await new Promise((resolve) => session.agent.once('exit', resolve));
+  mkdirSync(socketDir, { recursive: true });
+  rmSync(socketPath, { force: true });
+  const server = net.createServer((socket) => {
+    socket.on('error', () => undefined);
+    socket.end('{"status":"confused"}\n');
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  const app = await electron.launch({ args: [...session.appArgs], env: session.env });
+  try {
+    const page = await app.firstWindow();
+    await watchPolicyViolations(page);
+    const badge = page.locator('#agent-status');
+    await expect(badge).toHaveText('unknown');
+    await expect(badge).toHaveAttribute('data-state', 'unknown');
+    await expect(page.locator('#agent-detail')).toContainText('did not report running');
+    await expectNoPolicyViolations(page);
+  } finally {
+    await app.close();
+    server.close();
+  }
 });
 
 test('a second launch exits at once and opens no window of its own', async ({ page, session }) => {

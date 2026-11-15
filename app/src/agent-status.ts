@@ -1,5 +1,11 @@
 export type AgentStatus =
-  | { readonly state: 'running'; readonly version: string; readonly pid: number }
+  | {
+      readonly state: 'running';
+      readonly version: string;
+      readonly pid: number;
+      /** The model's name as the agent sends it (`not set` when none is configured). */
+      readonly model?: string;
+    }
   /** The socket answered "nobody here": no socket file, or nothing listening on it. */
   | { readonly state: 'stopped'; readonly reason: string }
   /** The app could not find out: a local failure, or an agent that answered wrongly. */
@@ -26,5 +32,11 @@ export function parseStatusReply(line: string): AgentStatus {
   if (!('pid' in reply) || typeof reply.pid !== 'number') {
     throw new Error('the agent reply has no pid');
   }
-  return { state: 'running', version: reply.version, pid: reply.pid };
+  if (!('model' in reply)) {
+    return { state: 'running', version: reply.version, pid: reply.pid };
+  }
+  if (typeof reply.model !== 'string') {
+    throw new Error('the agent reply has a model that is not text');
+  }
+  return { state: 'running', version: reply.version, pid: reply.pid, model: reply.model };
 }
