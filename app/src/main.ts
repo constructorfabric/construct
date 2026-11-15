@@ -2,8 +2,15 @@ import path from 'node:path';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import started from 'electron-squirrel-startup';
 import { agentBinaryPath, ensureAgentService, shouldRegisterAgent } from './agent-service';
+import {
+  SETTINGS_GET_CHANNEL,
+  SETTINGS_REMOVE_KEY_CHANNEL,
+  SETTINGS_SAVE_CHANNEL,
+  SETTINGS_TEST_CHANNEL,
+} from './agent-settings';
 import { readAgentStatus } from './agent-socket';
 import { STATUS_CHANNEL } from './agent-status';
+import { createSettingsHandlers } from './settings-calls';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -71,6 +78,11 @@ function startApp(): void {
 
   void app.whenReady().then(() => {
     ipcMain.handle(STATUS_CHANNEL, () => readAgentStatus(process.env, process.platform));
+    const settings = createSettingsHandlers({ env: process.env, platform: process.platform });
+    ipcMain.handle(SETTINGS_GET_CHANNEL, () => settings.get());
+    ipcMain.handle(SETTINGS_SAVE_CHANNEL, (_event, input: unknown) => settings.save(input));
+    ipcMain.handle(SETTINGS_TEST_CHANNEL, (_event, input: unknown) => settings.test(input));
+    ipcMain.handle(SETTINGS_REMOVE_KEY_CHANNEL, () => settings.removeKey());
     void registerAgent();
     createWindow();
 

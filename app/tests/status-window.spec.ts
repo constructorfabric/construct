@@ -1,40 +1,15 @@
-import { execFileSync, spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdirSync, rmSync } from 'node:fs';
 import net from 'node:net';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { _electron as electron, expect, test as base } from '@playwright/test';
-import type { ElectronApplication, Page } from '@playwright/test';
 import { agentSocketPath } from '../src/agent-socket';
+import { appDir, expect, expectNoPolicyViolations, openApp, test } from './fixtures';
+import type { Session } from './fixtures';
 import { screenshotBothThemes, screenshotInTheme } from './screenshots';
 
-const appDir = path.resolve(__dirname, '..');
-const agentBinary = path.resolve(appDir, '..', 'target', 'release', 'construct-agent');
 const electronBinary = path.join(appDir, 'node_modules', '.bin', 'electron');
 const refreshDeadlineMs = 10_000;
 const secondLaunchDeadlineMs = 10_000;
-
-// Under a virtual display on a VPS the Chromium sandbox cannot start, and `--no-sandbox` turns it
-// off for every process. `sandbox: true` on the window still keeps Node out of the renderer, which
-// the test below checks; the OS-level sandbox is not exercised by this run.
-const launchArgs = ['--no-sandbox'];
-
-type Session = {
-  readonly agent: ChildProcess;
-  readonly appArgs: readonly string[];
-  readonly env: Record<string, string>;
-};
-
-function stringEnv(extra: Record<string, string>): Record<string, string> {
-  const merged: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) {
-      merged[key] = value;
-    }
-  }
-  return { ...merged, ...extra };
-}
 
 type Exit = { readonly code: number | null; readonly signal: NodeJS.Signals | null };
 
@@ -54,76 +29,6 @@ async function launchSecondInstance(session: Session): Promise<Exit> {
   clearTimeout(killTimer);
   return exit;
 }
-
-// Reloads the page under a listener for policy violations: any `securitypolicyviolation` event
-// of the page fails the test that raised it.
-async function watchPolicyViolations(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const violations: string[] = [];
-    Object.assign(window, { policyViolations: violations });
-    document.addEventListener('securitypolicyviolation', (event) => {
-      violations.push(`${event.violatedDirective} ${event.blockedURI}`);
-    });
-  });
-  await page.reload();
-}
-
-async function expectNoPolicyViolations(page: Page): Promise<void> {
-  expect(await page.evaluate(() => Reflect.get(window, 'policyViolations') as string[])).toEqual(
-    [],
-  );
-}
-
-const test = base.extend<{ session: Session; app: ElectronApplication; page: Page }>({
-  // A real agent from this repo, with its socket in a private runtime directory.
-  // Playwright wants an object pattern here, even when the fixture needs nothing.
-  // eslint-disable-next-line no-empty-pattern
-  session: async ({}, use) => {
-    const runtimeDir = mkdtempSync(path.join(tmpdir(), 'cb-run-'));
-    const userDataDir = mkdtempSync(path.join(tmpdir(), 'cb-data-'));
-    // The agent reads its settings and looks for its login service in the home directory: a
-    // private one keeps a model or a service of the machine running the test out of the page
-    // and its screenshots.
-    const homeDir = mkdtempSync(path.join(tmpdir(), 'cb-home-'));
-    const env = stringEnv({
-      XDG_RUNTIME_DIR: runtimeDir,
-      TMPDIR: runtimeDir,
-      HOME: homeDir,
-      XDG_CONFIG_HOME: path.join(homeDir, '.config'),
-    });
-    const agent = spawn(agentBinary, ['run'], { env, stdio: 'ignore' });
-    try {
-      await expect(() => {
-        execFileSync(agentBinary, ['status'], { env, stdio: 'ignore' });
-      }).toPass({ timeout: 10_000 });
-      await use({
-        agent,
-        env,
-        appArgs: [appDir, ...launchArgs, `--user-data-dir=${userDataDir}`],
-      });
-    } finally {
-      agent.kill('SIGTERM');
-      rmSync(runtimeDir, { recursive: true, force: true });
-      rmSync(userDataDir, { recursive: true, force: true });
-      rmSync(homeDir, { recursive: true, force: true });
-    }
-  },
-  app: async ({ session }, use) => {
-    const app = await electron.launch({ args: [...session.appArgs], env: session.env });
-    try {
-      await use(app);
-    } finally {
-      await app.close();
-    }
-  },
-  // The first window, watched for policy violations.
-  page: async ({ app }, use) => {
-    const page = await app.firstWindow();
-    await watchPolicyViolations(page);
-    await use(page);
-    await expectNoPolicyViolations(page);
-  },
-});
 
 test('the window and its sidebar show running, then stopped within 10 seconds of the agent stopping', async ({
   page,
@@ -180,10 +85,8 @@ test('the Status page shows unknown, with its reason, when the agent answers wro
     socket.end('{"status":"confused"}\n');
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
-  const app = await electron.launch({ args: [...session.appArgs], env: session.env });
+  const { app, page } = await openApp(session);
   try {
-    const page = await app.firstWindow();
-    await watchPolicyViolations(page);
     const badge = page.locator('#agent-status');
     await expect(badge).toHaveText('unknown');
     await expect(badge).toHaveAttribute('data-state', 'unknown');
