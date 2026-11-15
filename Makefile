@@ -2,7 +2,7 @@
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
 .DEFAULT_GOAL := help
-.PHONY: help build test lint app-deps run package
+.PHONY: help build test lint app-deps run package smoke
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -31,3 +31,14 @@ run: build app-deps ## Build the agent, then start the app in development mode
 
 package: build app-deps ## Package the app with the agent inside
 	cd app && npm run package
+
+# The package declares the libraries Electron needs; apt installs them. The script runs as a normal
+# user because the agent refuses to start PostgreSQL as root.
+smoke: build app-deps ## Build the .deb, install it in a clean Ubuntu 24.04 container and start it (needs Docker)
+	rm -rf app/out/make/deb
+	cd app && npm run make
+	docker run --rm -v "$(CURDIR)/app/out/make/deb/x64:/pkg:ro" -v "$(CURDIR)/scripts:/scripts:ro" ubuntu:24.04 bash -euc '\
+		apt-get update -qq && \
+		apt-get install -y -qq --no-install-recommends xvfb xauth /pkg/*.deb && \
+		useradd --create-home smoke && \
+		runuser -u smoke -- env HOME=/home/smoke /scripts/smoke-linux.sh'

@@ -9,12 +9,18 @@ import type { ForgeConfig } from '@electron-forge/shared-types';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    // The name of the program in the package: /usr/bin/construct-browser, not the product name with a space.
+    executableName: 'construct-browser',
     // The agent is its own program: it goes next to the app, outside the asar archive,
     // and the app finds it in `process.resourcesPath`.
     extraResource: ['../target/release/construct-agent'],
   },
   rebuildConfig: {},
-  makers: [new MakerSquirrel({}), new MakerZIP({}, ['darwin']), new MakerDeb({})],
+  makers: [
+    new MakerSquirrel({}),
+    new MakerZIP({}, ['darwin']),
+    new MakerDeb({ options: { name: 'construct-browser', bin: 'construct-browser' } }),
+  ],
   plugins: [
     new VitePlugin({
       build: [
