@@ -478,6 +478,14 @@ impl<S: Sink> Ctx<'_, S> {
                 }
             };
             if let Some(record) = record.filter(|_| collect) {
+                // Every minute with a log line has a mark, a turn's minute included; the
+                // sink keeps one mark per session and minute, so a replay adds nothing.
+                if let Record::Turn(turn) = &record
+                    && let Err(e) = self.sink.append(&Record::Mark(turn.mark()))
+                {
+                    sink_error = Some(e);
+                    return false;
+                }
                 match self.sink.append(&record) {
                     // A record the sink had stored already is a replay, not a turn read now.
                     Ok(true) if matches!(record, Record::Turn(_)) => {
