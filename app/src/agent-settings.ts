@@ -14,9 +14,25 @@ export interface ModelInput {
   readonly apiKey?: string;
 }
 
+/** What the agent collects: all of it, and each tool on its own. */
+export interface CollectionSettings {
+  readonly enabled: boolean;
+  readonly claudeCode: boolean;
+  readonly codex: boolean;
+}
+
+/** The switches a call changes; a switch left out keeps its value. */
+export type CollectionInput = Partial<CollectionSettings>;
+
 /** The outcome of a settings call: the settings now in force, or a text to show. */
 export type SettingsResult =
-  | { readonly ok: true; readonly model: ModelSettings }
+  | {
+      readonly ok: true;
+      readonly model: ModelSettings;
+      readonly collection: CollectionSettings;
+      /** Why collection is off without the user's say, when the agent says so. */
+      readonly notice: string | null;
+    }
   | { readonly ok: false; readonly error: string };
 
 /** How a model Test ended. `failed` is a call that did not reach the model at all. */
@@ -34,15 +50,25 @@ export interface ModelSettingsApi {
   readonly saveModel: (input: ModelInput) => Promise<SettingsResult>;
   readonly testModel: (input: ModelInput) => Promise<ModelTestResult>;
   readonly removeKey: () => Promise<SettingsResult>;
+  readonly saveCollection: (input: CollectionInput) => Promise<SettingsResult>;
 }
 
 export const SETTINGS_GET_CHANNEL = 'settings:get';
 export const SETTINGS_SAVE_CHANNEL = 'settings:save-model';
 export const SETTINGS_TEST_CHANNEL = 'settings:test-model';
 export const SETTINGS_REMOVE_KEY_CHANNEL = 'settings:remove-key';
+export const SETTINGS_COLLECTION_CHANNEL = 'settings:save-collection';
 
 export const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_MODEL = 'gpt-6-luna';
+
+/** The settings of a page after a collection reply: only its collection and notice are taken. */
+export function withCollectionReply(
+  current: SettingsResult | null,
+  reply: { readonly collection: CollectionSettings; readonly notice: string | null },
+): SettingsResult | null {
+  return current?.ok ? { ...current, collection: reply.collection, notice: reply.notice } : current;
+}
 
 /** The input of a bridge call, which comes from the window and so is checked. */
 export function parseModelInput(value: unknown): ModelInput | null {
@@ -57,6 +83,32 @@ export function parseModelInput(value: unknown): ModelInput | null {
     return { baseUrl, model };
   }
   return typeof apiKey === 'string' ? { baseUrl, model, apiKey } : null;
+}
+
+/** The input of a collection call: the switches it names, each a boolean, at least one. */
+export function parseCollectionInput(value: unknown): CollectionInput | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const { enabled, claudeCode, codex } = value;
+  const given = [enabled, claudeCode, codex];
+  if (given.every((flag) => flag === undefined)) {
+    return null;
+  }
+  if (given.some((flag) => flag !== undefined && typeof flag !== 'boolean')) {
+    return null;
+  }
+  return {
+    ...(typeof enabled === 'boolean' && { enabled }),
+    ...(typeof claudeCode === 'boolean' && { claudeCode }),
+    ...(typeof codex === 'boolean' && { codex }),
+  };
+}
+
+/** `settings-set {"collection":{...}}`: the agent's names, and only the switches given. */
+export function collectionSetLine(input: CollectionInput): string {
+  const collection = { enabled: input.enabled, claude_code: input.claudeCode, codex: input.codex };
+  return `settings-set ${JSON.stringify({ collection })}`;
 }
 
 /** `{"model":{...}}` for `settings-set`; the key is sent only when there is one. */
@@ -102,9 +154,24 @@ export function parseSettingsReply(line: string): SettingsResult {
   ) {
     throw new Error('the agent reply has no model settings');
   }
+  const { collection, notice } = reply;
+  if (
+    !isRecord(collection) ||
+    typeof collection.enabled !== 'boolean' ||
+    typeof collection.claude_code !== 'boolean' ||
+    typeof collection.codex !== 'boolean'
+  ) {
+    throw new Error('the agent reply has no collection settings');
+  }
   return {
     ok: true,
     model: { baseUrl: model.base_url, model: model.model, apiKeySet: model.api_key_set },
+    collection: {
+      enabled: collection.enabled,
+      claudeCode: collection.claude_code,
+      codex: collection.codex,
+    },
+    notice: typeof notice === 'string' ? notice : null,
   };
 }
 

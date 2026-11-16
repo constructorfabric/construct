@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 import {
+  SETTINGS_COLLECTION_CHANNEL,
   SETTINGS_GET_CHANNEL,
   SETTINGS_REMOVE_KEY_CHANNEL,
   SETTINGS_SAVE_CHANNEL,
@@ -45,6 +46,8 @@ const api: ConstructAgentApi = {
       ipcRenderer.removeListener(CHAT_EVENT_CHANNEL, handler);
     };
   },
+  saveCollection: (input) =>
+    ipcRenderer.invoke(SETTINGS_COLLECTION_CHANNEL, input) as Promise<SettingsResult>,
 };
 
 contextBridge.exposeInMainWorld('constructAgent', api);

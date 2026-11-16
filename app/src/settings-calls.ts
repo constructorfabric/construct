@@ -1,4 +1,6 @@
 import {
+  collectionSetLine,
+  parseCollectionInput,
   parseModelInput,
   parseSettingsReply,
   parseTestReply,
@@ -50,10 +52,11 @@ export interface SettingsHandlers {
   readonly save: (value: unknown) => Promise<SettingsResult>;
   readonly test: (value: unknown) => Promise<ModelTestResult>;
   readonly removeKey: () => Promise<SettingsResult>;
+  readonly saveCollection: (value: unknown) => Promise<SettingsResult>;
 }
 
 /**
- * What the four settings channels do. The window's input is checked here, since the window is
+ * What the five settings channels do. The window's input is checked here, since the window is
  * not trusted, and nothing in these handlers logs it: a handler that throws would put its
  * message in the console, so each one answers failures as values.
  */
@@ -81,5 +84,12 @@ export function createSettingsHandlers(where: Where): SettingsHandlers {
       return testCall(where, settingsTestLine(input), testLimits);
     },
     removeKey: () => settingsCall(where, removeKeyLine),
+    saveCollection: async (value) => {
+      const input = parseCollectionInput(value);
+      if (input === null) {
+        return { ok: false, error: invalidInput };
+      }
+      return settingsCall(where, collectionSetLine(input));
+    },
   };
 }
