@@ -1,14 +1,18 @@
 //! The chat loop behind `chat-send`, `chat-stop`, `chat-list`, `chat-get` and `chat-delete`.
 //!
 //! A conversation is a session of the source `chat` in the record store; `chat-send` streams the
-//! provider's answer to the client as JSON lines. The history never travels over the socket,
-//! the loop calls nothing in Construct and never calls `save_progress`.
+//! provider's answer to the client as JSON lines. The history never travels over the socket;
+//! the loop only reads the person's profile from Construct (see below), writes nothing there
+//! (no `manage-facts`) and never calls `save_progress`.
+//!
+//! Before each answer the person's facts are put in the conversation as a `recall_facts` tool
+//! call and its result, when they differ from the last result there (see `recall`).
 //!
 //! The request body is written from typed structs in a fixed field order, never through a
 //! `serde_json::Value` (it sorts keys), with tool-call arguments as the stored text, so a request
 //! starts with the bytes of the one before it and the provider's prompt cache can use that.
 //!
-//! No log line, event or error holds the key or a message text: failures are named by reason
+//! No log line, event or error holds the key, a message text or a fact: failures are named by reason
 //! only, and the provider's error body is read for one question and dropped.
 
 use std::io;
@@ -16,7 +20,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use connectors::{Record, Role, Turn};
+use connectors::{Record, Role, ToolCall, ToolResult, Turn};
 use futures_util::StreamExt;
 use http::StatusCode;
 use oagw_sdk::{ServerEvent, ServerEventsResponse, ServerEventsStream, StreamingError};
@@ -29,12 +33,14 @@ use tokio::time::{Instant, timeout, timeout_at};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::host::Connection;
 use crate::ipc::error_response;
 use crate::model::{ANSWER_LIMIT, Target, read_capped};
 use crate::records::FileSink;
 use crate::settings::Settings;
 use crate::sync::lock;
 
+mod recall;
 mod wire;
 
 use wire::{Chunk, WireCap, into_http, request_body};
@@ -121,6 +127,20 @@ enum End {
     Failed(Failure),
 }
 
+/// Where the chat finds the Construct host: empty until the host is ready. Clones share it.
+#[derive(Clone, Default)]
+pub struct Link(Arc<Mutex<Option<Connection>>>);
+
+impl Link {
+    pub fn set(&self, connection: Connection) {
+        *lock(&self.0) = Some(connection);
+    }
+
+    fn get(&self) -> Option<Connection> {
+        lock(&self.0).clone()
+    }
+}
+
 struct Running {
     conversation: String,
     cancel: CancellationToken,
@@ -133,6 +153,7 @@ struct Inner {
     deadlines: Deadlines,
     client: reqwest::Client,
     wire_limit: usize,
+    link: Link,
     running: Mutex<Option<Running>>,
 }
 
@@ -189,6 +210,7 @@ impl Chat {
                 deadlines,
                 client,
                 wire_limit: WIRE_LIMIT,
+                link: Link::default(),
                 running: Mutex::new(None),
             }),
         })
@@ -204,12 +226,24 @@ impl Chat {
         self
     }
 
+    /// Read the facts from the host `link` names; without it every answer starts with no facts.
+    /// Call it before the chat is cloned.
+    #[must_use]
+    pub fn with_link(mut self, link: Link) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.link = link;
+        }
+        self
+    }
+
     /// Run `chat-send` with `argument` (a JSON object). Every line to the client goes through
     /// `out`, which returns `false` when the client is gone.
     pub fn send(&self, argument: &str, out: &mut dyn FnMut(&str) -> bool) {
         self.inner.handle.block_on(self.send_async(argument, out));
     }
 
+    // One sequence of steps for one answer; split it when a part grows its own logic.
+    #[allow(clippy::too_many_lines)]
     async fn send_async(&self, argument: &str, out: &mut dyn FnMut(&str) -> bool) {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -257,8 +291,9 @@ impl Chat {
         // time. After a partial answer (`cut`, `timeout` after some text) the partial assistant
         // turn is the last record and stays part of the conversation, so the same text then is
         // a new message: the model sees user, partial answer, user.
+        // A `recall_facts` pair stored after that user turn does not make it another message.
         let retry = matches!(
-            history.last(),
+            history.iter().rfind(|r| !matches!(r, Record::ToolCall(_) | Record::ToolResult(_))),
             Some(Record::Turn(t)) if t.role == Role::User && t.text == request.message
         );
         let user = Record::Turn(Turn {
@@ -276,6 +311,15 @@ impl Chat {
             return;
         }
         if !out(&json!({ "event": "start", "conversation": conversation }).to_string()) {
+            return;
+        }
+        if self
+            .recall(&conversation, &history, &mut last)
+            .await
+            .is_err()
+        {
+            drop(slot);
+            out(&event_error("cannot save"));
             return;
         }
         let Ok(records) = self.read(&conversation) else {
@@ -319,6 +363,41 @@ impl Chat {
         // meet `busy`.
         drop(slot);
         out(&line);
+    }
+
+    /// Store the `recall_facts` call and its result after the user's turn when the text of the
+    /// result differs from the last one in `history` (none yet counts as no facts).
+    async fn recall(
+        &self,
+        conversation: &str,
+        history: &[Record],
+        last: &mut Option<i64>,
+    ) -> io::Result<()> {
+        let inner = &self.inner;
+        let text = if inner.settings.collection().enabled {
+            recall::facts(&inner.client, inner.link.get().as_ref()).await
+        } else {
+            recall::MEMORY_OFF.to_string()
+        };
+        if text == recall::last_result(history) {
+            return Ok(());
+        }
+        let call_id = format!("call_{}", Uuid::new_v4().simple());
+        self.store(&Record::ToolCall(ToolCall {
+            tool: SOURCE.into(),
+            session: conversation.into(),
+            time: next_time(last),
+            call_id: call_id.clone(),
+            name: recall::NAME.into(),
+            arguments: "{}".into(),
+        }))?;
+        self.store(&Record::ToolResult(ToolResult {
+            tool: SOURCE.into(),
+            session: conversation.into(),
+            time: next_time(last),
+            call_id,
+            text,
+        }))
     }
 
     /// The stored records of the conversation a request names: none for a new one, and the
@@ -501,7 +580,8 @@ impl Chat {
         }
     }
 
-    /// The JSON lines for `chat-get`, one per record, oldest first.
+    /// The JSON lines for `chat-get`, one per record, oldest first. The tool records are marked
+    /// `hidden`: the window does not show them.
     #[must_use]
     pub fn get(&self, conversation: &str) -> Vec<String> {
         let records = match valid_id(conversation).then(|| self.read(conversation)) {
@@ -520,6 +600,7 @@ impl Chat {
                 })),
                 Record::ToolCall(c) => Some(json!({
                     "kind": "toolcall",
+                    "hidden": true,
                     "time": c.time,
                     "call_id": c.call_id,
                     "name": c.name,
@@ -527,6 +608,7 @@ impl Chat {
                 })),
                 Record::ToolResult(r) => Some(json!({
                     "kind": "toolresult",
+                    "hidden": true,
                     "time": r.time,
                     "call_id": r.call_id,
                     "text": r.text,

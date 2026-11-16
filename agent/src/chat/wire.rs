@@ -125,7 +125,7 @@ fn plain<'a>(role: &'static str, content: &'a str) -> Message<'a> {
 /// Fails only when the body cannot be written as JSON.
 pub fn request_body(model: &str, records: &[Record]) -> Result<String, serde_json::Error> {
     let mut messages = vec![plain("system", INSTRUCTION)];
-    for record in records {
+    for (at, record) in records.iter().enumerate() {
         match record {
             Record::Turn(Turn { role, text, .. }) => messages.push(plain(
                 match role {
@@ -140,6 +140,14 @@ pub fn request_body(model: &str, records: &[Record]) -> Result<String, serde_jso
                 arguments,
                 ..
             }) => {
+                // A call whose result was never stored (a crash between the two writes) is not
+                // sent: the providers refuse a call with no reply.
+                if !records[at..]
+                    .iter()
+                    .any(|r| matches!(r, Record::ToolResult(t) if t.call_id == *call_id))
+                {
+                    continue;
+                }
                 let call = WireCall {
                     id: call_id,
                     r#type: "function",
@@ -242,8 +250,34 @@ mod tests {
                 arguments: "{}".into(),
             })
         };
-        let body = request_body("m", &[call("a"), call("b")]).unwrap();
+        let result = |id: &str| {
+            Record::ToolResult(ToolResult {
+                tool: SOURCE.into(),
+                session: "s".into(),
+                time: "2026-11-13T10:00:02.000Z".into(),
+                call_id: id.into(),
+                text: "r".into(),
+            })
+        };
+        let body = request_body("m", &[call("a"), call("b"), result("a"), result("b")]).unwrap();
         assert_eq!(body.matches("\"tool_calls\"").count(), 1);
         assert!(body.contains(r#""id":"a""#) && body.contains(r#""id":"b""#));
+    }
+
+    #[test]
+    fn a_call_with_no_result_is_not_sent() {
+        let call = Record::ToolCall(ToolCall {
+            tool: SOURCE.into(),
+            session: "s".into(),
+            time: "2026-11-13T10:00:01.000Z".into(),
+            call_id: "orphan".into(),
+            name: "recall_facts".into(),
+            arguments: "{}".into(),
+        });
+        let body = request_body("m", &[turn(Role::User, "hi"), call]).unwrap();
+        assert!(
+            !body.contains("orphan") && !body.contains("tool_calls"),
+            "{body}"
+        );
     }
 }

@@ -91,6 +91,7 @@ fn run() -> std::io::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    let link = construct_agent::chat::Link::default();
     let server = with_chat(
         with_settings(
             construct_agent::ipc::Server::bind(&socket)?
@@ -103,6 +104,7 @@ fn run() -> std::io::Result<()> {
         ),
         settings.as_ref(),
         rt.handle(),
+        &link,
     );
     eprintln!(
         "construct-agent {} listening on {}",
@@ -177,6 +179,9 @@ fn run() -> std::io::Result<()> {
                 return Ok(());
             }
         };
+        if let Some(host) = &host {
+            link.set(host.connection().clone());
+        }
         let watch = watch_database(database.as_ref(), &health);
         let watch_host = watch_construct(host.as_mut(), &construct_health);
         let result = tokio::select! {
@@ -233,6 +238,7 @@ fn with_chat(
     server: construct_agent::ipc::Server,
     settings: Option<&construct_agent::settings::Settings>,
     handle: &tokio::runtime::Handle,
+    link: &construct_agent::chat::Link,
 ) -> construct_agent::ipc::Server {
     use construct_agent::chat::{Chat, Deadlines};
     let Some(settings) = settings else {
@@ -242,6 +248,7 @@ fn with_chat(
         .map_err(|e| e.to_string())
         .and_then(|dir| {
             Chat::new(settings.clone(), &dir, handle.clone(), Deadlines::default())
+                .map(|chat| chat.with_link(link.clone()))
                 .map_err(|e| e.to_string())
         });
     match chat {
