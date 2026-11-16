@@ -9,6 +9,7 @@ import type { ForgeConfig } from '@electron-forge/shared-types';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    appBundleId: 'cf.construct.browser',
     // The name of the program in the package: /usr/bin/construct-browser, not the product name with a space.
     executableName: 'construct-browser',
     // The agent is its own program: it goes next to the app, outside the asar archive,

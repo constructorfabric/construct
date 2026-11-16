@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 description = "Construct agent: a background program that runs next to the Construct Browser app"
+license.workspace = true
 publish = false
 
 [lib]

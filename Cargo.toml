@@ -2,6 +2,9 @@
 resolver = "3"
 members = ["agent", "connectors"]
 
+[workspace.package]
+license = "Apache-2.0"
+
 # Deny the unwrap and expect shortcuts, forbid unsafe code, and keep clippy's pedantic group clean.
 [workspace.lints.rust]
 unsafe_code = "forbid"
