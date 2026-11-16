@@ -498,7 +498,7 @@ fn tool_records_replay_byte_for_byte() {
             session: conversation.into(),
             time: "2026-01-01T00:00:02Z".into(),
             call_id: "call_9".into(),
-            text: "memory is off".into(),
+            text: "Error: memory is off".into(),
         }),
         turn(
             "2999-01-01T00:00:03Z",
@@ -515,6 +515,10 @@ fn tool_records_replay_byte_for_byte() {
     assert_eq!(records[1]["arguments"], arguments);
     assert_eq!(records[2]["kind"], "toolresult");
 
+    // With memory off the new result is the planted one, so no new call comes after the turn.
+    env.settings
+        .apply(Update::parse(&json!({ "collection": { "enabled": false } }).to_string()).unwrap())
+        .unwrap();
     let events = env.send(conversation, "and now?").rest();
     assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
     let body = &fake.bodies()[0];
@@ -523,7 +527,7 @@ fn tool_records_replay_byte_for_byte() {
         concat!(
             r#"{{"role":"user","content":"what do you know"}},"#,
             r#"{{"role":"assistant","content":null,"tool_calls":[{{"id":"call_9","type":"function","function":{{"name":"recall_facts","arguments":{}}}}}]}},"#,
-            r#"{{"role":"tool","content":"memory is off","tool_call_id":"call_9"}},"#,
+            r#"{{"role":"tool","content":"Error: memory is off","tool_call_id":"call_9"}},"#,
             r#"{{"role":"assistant","content":"Nothing is remembered."}},"#,
             r#"{{"role":"user","content":"and now?"}}],"stream":true}}"#
         ),

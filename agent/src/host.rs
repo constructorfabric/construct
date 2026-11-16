@@ -105,6 +105,15 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// The URL of the profile read of the static identity.
+    #[must_use]
+    pub fn profile_url(&self) -> String {
+        format!(
+            "http://127.0.0.1:{}/construct/v1/subjects/{DEFAULT_SUBJECT_ID}/profile",
+            self.port
+        )
+    }
+
     /// The JSON the app reads.
     #[must_use]
     pub fn to_json(&self) -> String {
@@ -402,10 +411,7 @@ fn free_loopback_port() -> io::Result<u16> {
 /// The HTTP status of the host's answer to an authenticated profile read of the static
 /// identity, or `None` while the host does not answer.
 async fn profile_status(connection: &Connection) -> Option<u16> {
-    let url = format!(
-        "http://127.0.0.1:{}/construct/v1/subjects/{DEFAULT_SUBJECT_ID}/profile",
-        connection.port
-    );
+    let url = connection.profile_url();
     let token = connection.token.clone();
     tokio::task::spawn_blocking(move || {
         // No proxy from the environment: the probe carries the bearer token and goes to loopback.
