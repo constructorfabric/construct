@@ -729,7 +729,8 @@ impl Sink for Crashing {
 fn a_crash_in_a_long_first_scan_keeps_what_the_checkpoint_saved() {
     let s = Setup::new("checkpoint");
     let log = s.log("a.log");
-    // 10 bytes a line; the checkpoint comes after 5000 lines.
+    // 10 bytes a line. The checkpoint comes after 5000 lines, or earlier when the pass is slow
+    // enough for the timer to spend the one save: the test must hold either way.
     let lines = (0..6000)
         .map(|i| format!("line{i:05}\n"))
         .collect::<Vec<_>>()
@@ -749,7 +750,12 @@ fn a_crash_in_a_long_first_scan_keeps_what_the_checkpoint_saved() {
         .files
         .get(&log.to_string_lossy().into_owned())
         .map(|f| f.offset);
-    assert_eq!(offset, Some(5000 * 10));
+    let offset = offset.expect("the checkpoint saved nothing");
+    assert_eq!(offset % 10, 0, "the checkpoint cuts a line: {offset}");
+    assert!(
+        offset <= 5200 * 10,
+        "the checkpoint is past the crash: {offset}"
+    );
 
     let stats = Stats::default();
     s.follower(&stats).pass().unwrap();
