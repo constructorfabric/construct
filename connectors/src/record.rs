@@ -25,6 +25,20 @@ pub struct Turn {
     pub text: String,
 }
 
+impl Turn {
+    /// The mark of the minute this turn was said in.
+    #[must_use]
+    pub fn mark(&self) -> Mark {
+        Mark {
+            tool: self.tool.clone(),
+            session: self.session.clone(),
+            time: self.time.clone(),
+            folder: self.folder.clone(),
+            branch: self.branch.clone(),
+        }
+    }
+}
+
 /// A sign that a session was active at a time, without the text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mark {

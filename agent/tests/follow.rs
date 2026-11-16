@@ -484,6 +484,87 @@ fn the_real_tools_count_what_they_skip() {
     }
 }
 
+/// The minutes (`2026-11-11T10:15`) of the marks and of the turns stored for a session.
+fn stored_minutes(s: &Setup, tool: &str, session: &str) -> (Vec<String>, Vec<String>) {
+    let text = fs::read_to_string(s.data.join(format!("records/{tool}/{session}.jsonl"))).unwrap();
+    let (mut marks, mut turns) = (Vec::new(), Vec::new());
+    for line in text.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).unwrap();
+        let minute = record["time"].as_str().unwrap()[..16].to_owned();
+        match record["kind"].as_str().unwrap() {
+            "mark" => marks.push(minute),
+            _ => turns.push(minute),
+        }
+    }
+    (marks, turns)
+}
+
+fn real_registry() -> Registry {
+    Registry::new(vec![
+        Box::new(Under(ClaudeCode, ".claude/projects")),
+        Box::new(Under(Codex, ".codex/sessions")),
+    ])
+}
+
+#[test]
+fn a_claude_code_minute_with_only_a_prompt_or_a_reply_has_one_mark() {
+    let s = Setup::new("claude-turn-marks");
+    let log = s.home.join(".claude/projects/project/sess-1.jsonl");
+    fs::create_dir_all(log.parent().unwrap()).unwrap();
+    let at = |minute: &str, line: String| line.replace("10:15:30", minute);
+    let reply = r#"{"type":"assistant","timestamp":"2026-11-11T10:17:05Z","cwd":"/w","sessionId":"sess-1","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}"#;
+    append(
+        &log,
+        &format!(
+            "{}\n{reply}\n{}\n",
+            at("10:15:30", claude_user("one")),
+            at("10:16:10", claude_user("two"))
+        ),
+    );
+    let stats = Stats::default();
+    s.follower_of(real_registry(), &stats).pass().unwrap();
+    let (marks, turns) = stored_minutes(&s, "claude-code", "sess-1");
+    assert_eq!(turns.len(), 3);
+    assert_eq!(
+        marks,
+        ["2026-11-11T10:15", "2026-11-11T10:17", "2026-11-11T10:16"]
+    );
+    // A restart replays nothing twice, marks included.
+    s.follower_of(real_registry(), &stats).pass().unwrap();
+    assert_eq!(stored_minutes(&s, "claude-code", "sess-1"), (marks, turns));
+}
+
+#[test]
+fn a_codex_minute_with_only_a_prompt_or_a_reply_has_one_mark() {
+    let s = Setup::new("codex-turn-marks");
+    let id = "01a0bee2-6260-73a3-b389-43c86bb8930f";
+    let log = s.home.join(format!(
+        ".codex/sessions/2026/11/11/rollout-2026-11-11T12-00-00-{id}.jsonl"
+    ));
+    fs::create_dir_all(log.parent().unwrap()).unwrap();
+    let at = |time: &str, line: String| line.replace("10:15:30", time);
+    let reply = codex_item(
+        "response_item",
+        r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}"#,
+    );
+    append(
+        &log,
+        &format!(
+            "{}\n{}\n{}\n",
+            codex_meta(id),
+            at("12:05:03", codex_user("fix it")),
+            at("12:07:03", reply)
+        ),
+    );
+    let stats = Stats::default();
+    s.follower_of(real_registry(), &stats).pass().unwrap();
+    let (marks, turns) = stored_minutes(&s, "codex", id);
+    assert_eq!(turns, ["2026-11-11T12:05", "2026-11-11T12:07"]);
+    assert_eq!(marks, turns);
+    s.follower_of(real_registry(), &stats).pass().unwrap();
+    assert_eq!(stored_minutes(&s, "codex", id), (marks, turns));
+}
+
 /// A real tool that looks for its files under a directory of the test's home instead of
 /// the one its environment variable names; everything else is the tool's own.
 struct Under<T>(T, &'static str);
@@ -738,7 +819,8 @@ fn a_crash_in_a_long_first_scan_keeps_what_the_checkpoint_saved() {
     append(&log, &lines);
     let sink = Crashing {
         inner: FileSink::new(&s.data),
-        appends: 5200,
+        // Two appends a line: its mark, then its turn.
+        appends: 2 * 5200,
         saves: 1,
     };
     let registry = Registry::new(vec![Box::new(Fake::new(List::Files))]);
