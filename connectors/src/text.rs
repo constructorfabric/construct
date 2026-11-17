@@ -125,8 +125,7 @@ pub fn argv_command(argv: &[String]) -> Option<&str> {
         }
         // A word of a list is one program, never shell text: one with a space is a path.
         [program, ..] if !program.contains(char::is_whitespace) => Some(program),
-        [_, ..] => None,
-        [] => None,
+        [_, ..] | [] => None,
     }
 }
 
