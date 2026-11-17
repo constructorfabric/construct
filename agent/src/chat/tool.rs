@@ -14,7 +14,7 @@ use super::recall::VALUE_CUT as CUT_NOTE;
 
 /// Longest result of a call, in bytes, the note included. A longer one is cut and ends with
 /// [`CUT_NOTE`].
-const MAX_RESULT: usize = 64 * 1024;
+pub(super) const MAX_RESULT: usize = 64 * 1024;
 
 /// The line of a call to a name that is no tool of the list: the name is whatever the model wrote,
 /// so it is not shown.
