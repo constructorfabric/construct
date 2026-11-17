@@ -43,30 +43,37 @@ pub fn plain_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Str
     })
 }
 
-/// Whether a word holds anything a shell reads as quoting or substitution. The command is
-/// split on spaces without understanding such syntax, so a word that holds any of it may be
-/// only a piece of an argument.
-fn is_quoted(word: &str) -> bool {
-    word.contains(['"', '\'', '\\', '$', '`', '(', ')'])
+/// Whether every character of a word is one that a plain program name, path or setting value
+/// is made of. The command is split on spaces without understanding shell syntax, so a word
+/// with any other character (quotes, `$`, `;`, `|`, `>`, ...) may be only a piece of an
+/// argument.
+fn is_plain(word: &str) -> bool {
+    word.bytes().all(|b| {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'_' | b'.' | b'/' | b'~' | b'-' | b'+' | b':' | b'@' | b',' | b'='
+            )
+    })
 }
 
 /// The program a command line starts with: the first word without its folder, after any
 /// `NAME=value` settings. `None` when it is not a plain program name, or when a setting or the
-/// word itself uses quoting or substitution, so a piece of an argument is never kept.
+/// word itself holds anything but plain characters, so a piece of an argument is never kept.
 fn first_word(command: &str) -> Option<&str> {
     let mut words = command.split_whitespace();
     let word = loop {
         let word = words.next()?;
         match word.split_once('=') {
             Some((name, value)) if is_setting(name) => {
-                if is_quoted(value) {
+                if !is_plain(value) {
                     return None;
                 }
             }
             _ => break word,
         }
     };
-    if is_quoted(word) {
+    if !is_plain(word) || word.starts_with('-') || word.contains('=') {
         return None;
     }
     let program = word.rsplit('/').next().unwrap_or(word);
@@ -116,7 +123,9 @@ pub fn argv_command(argv: &[String]) -> Option<&str> {
         {
             Some(line)
         }
-        [program, ..] => Some(program),
+        // A word of a list is one program, never shell text: one with a space is a path.
+        [program, ..] if !program.contains(char::is_whitespace) => Some(program),
+        [_, ..] => None,
         [] => None,
     }
 }
@@ -185,5 +194,13 @@ mod tests {
         );
         assert_eq!(argv_command(&argv(&["git", "status"])), Some("git"));
         assert_eq!(argv_command(&[]), None);
+        for words in [
+            &["/Users/ann/Secret Project/run.sh", "go"][..],
+            &["C:/Program Files/x/tool.exe"],
+            &["my tool", "x"],
+        ] {
+            let argv = argv(words);
+            assert_eq!(argv_command(&argv), None, "{words:?}");
+        }
     }
 }
