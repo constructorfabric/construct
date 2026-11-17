@@ -587,6 +587,7 @@ fn write_records(stand: &Stand) {
         role: Role::User,
         author: Author::Person,
         text: "hello".into(),
+        tools: Vec::new(),
     }))
     .unwrap();
 }

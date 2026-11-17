@@ -339,6 +339,7 @@ async fn apply_in(conn: &mut PgConnection, record: &Record) -> Result<bool, Erro
             time,
             folder,
             branch,
+            ..
         }) => touch(conn, tool, session, time, folder, branch).await?,
         Record::ToolCall(_) | Record::ToolResult(_) => return Ok(false),
     }

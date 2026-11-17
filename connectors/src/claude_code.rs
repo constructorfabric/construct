@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 
-use crate::text::{join_texts, root_under};
+use crate::text::{add_tool_name, join_texts, plain_string, root_under};
 use crate::{Author, FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
 
 /// What the harness puts into user lines that the user did not type.
@@ -52,6 +52,21 @@ fn join_text(role: Role, blocks: &[Block]) -> Option<String> {
             .filter_map(|b| b.text.as_deref())
             .filter(|t| role == Role::Assistant || !has_harness_tag(t)),
     )
+}
+
+/// The names of the tools a message asked to run, from its `tool_use` blocks, in order and
+/// once each.
+fn tool_names(content: Option<&Content>) -> Vec<String> {
+    let mut tools = Vec::new();
+    if let Some(Content::Blocks(blocks)) = content {
+        for block in blocks.iter().filter(|b| b.kind == "tool_use") {
+            let command = block.command.as_deref();
+            if let Some(name) = &block.name {
+                add_tool_name(&mut tools, name, command);
+            }
+        }
+    }
+    tools
 }
 
 /// The logs of the subagents of one session: `<session>/subagents/**/agent-*.jsonl`. A
@@ -195,6 +210,12 @@ impl Tool for ClaudeCode {
         let Some(time) = line.timestamp else {
             return Parsed::Ignored;
         };
+        let content = line.message.and_then(|m| m.content);
+        let tools = if line.kind == "assistant" {
+            tool_names(content.as_ref())
+        } else {
+            Vec::new()
+        };
         let mark = || {
             Parsed::Record(Record::Mark(Mark {
                 tool: self.name().into(),
@@ -202,13 +223,13 @@ impl Tool for ClaudeCode {
                 time: time.clone(),
                 folder: state.folder.clone(),
                 branch: state.branch.clone(),
+                tools: tools.clone(),
             }))
         };
         if line.is_sidechain {
             return mark();
         }
         let typed = !line.is_meta && !line.is_compact_summary;
-        let content = line.message.and_then(|m| m.content);
         let (role, text) = match (line.kind.as_str(), content) {
             ("user", Some(Content::Text(t))) if typed && !t.is_empty() && !has_harness_tag(&t) => {
                 (Role::User, t)
@@ -242,6 +263,7 @@ impl Tool for ClaudeCode {
             role,
             author,
             text,
+            tools,
         }))
     }
 }
@@ -291,6 +313,77 @@ struct Block {
     #[serde(rename = "type", default)]
     kind: String,
     text: Option<String>,
+    /// `tool_use` blocks only: the tool's name, and the command when it is a shell tool's.
+    #[serde(default, deserialize_with = "plain_string")]
+    name: Option<String>,
+    #[serde(default, rename = "input", deserialize_with = "command_of_input")]
+    command: Option<String>,
+}
+
+/// The `command` of a tool call's input, when it is a plain string. Every other argument is
+/// skipped while parsing and never held in memory, and an input of another shape reads as no
+/// command, so it never costs the line.
+fn command_of_input<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a tool input")
+        }
+
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut command = None;
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "command" {
+                    command = map.next_value_seed(PlainString)?;
+                } else {
+                    map.next_value::<de::IgnoredAny>()?;
+                }
+            }
+            Ok(command)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+            Ok(None)
+        }
+
+        fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, _: &str) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+    d.deserialize_any(V)
+}
+
+struct PlainString;
+
+impl<'de> de::DeserializeSeed<'de> for PlainString {
+    type Value = Option<String>;
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        plain_string(d)
+    }
 }
 
 enum Content {
@@ -636,5 +729,93 @@ mod tests {
             "{:?}",
             listing.problems
         );
+    }
+
+    fn mark_tools(p: Parsed) -> Vec<String> {
+        match p {
+            Parsed::Record(Record::Mark(m)) => m.tools,
+            other => panic!("not a mark: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_names_of_the_tools_of_a_reply_are_on_its_mark_and_nothing_else_is_kept() {
+        let blocks = r#"[{"type":"tool_use","id":"a","name":"Read","input":{"file_path":"/secret/key"}},
+            {"type":"tool_use","id":"b","name":"Bash","input":{"command":"glab mr list --token hunter2","description":"d"}},
+            {"type":"tool_use","id":"c","name":"mcp__tracker__get_issue","input":{"id":"X-1"}},
+            {"type":"tool_use","id":"d","name":"Read","input":{"file_path":"/other"}}]"#;
+        let l = line("assistant", "", blocks);
+        let tools = mark_tools(parse(&l));
+        assert_eq!(tools, ["Read", "bash:glab", "mcp__tracker__get_issue"]);
+        for kept in &tools {
+            assert!(!kept.contains("secret") && !kept.contains("hunter2"));
+        }
+    }
+
+    #[test]
+    fn a_reply_with_text_and_a_tool_gives_a_turn_whose_mark_has_the_name() {
+        let blocks = r#"[{"type":"text","text":"looking"},{"type":"tool_use","name":"Bash","input":{"command":"gh pr view 3"}}]"#;
+        let t = turn(parse(&line("assistant", "", blocks)));
+        assert_eq!(
+            (t.text.as_str(), t.tools.as_slice()),
+            ("looking", ["bash:gh".to_owned()].as_slice())
+        );
+        assert_eq!(t.mark().tools, ["bash:gh"]);
+    }
+
+    #[test]
+    fn a_tool_input_of_another_shape_keeps_the_name_and_the_line() {
+        for input in [
+            r#""x""#,
+            "7",
+            "null",
+            "[1,{\"a\":2}]",
+            r#"{"command":["gh"]}"#,
+            r#"{"command":7}"#,
+        ] {
+            let blocks = format!(r#"[{{"type":"tool_use","name":"Bash","input":{input}}}]"#);
+            assert_eq!(
+                mark_tools(parse(&line("assistant", "", &blocks))),
+                ["Bash"],
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_subagent_line_and_a_user_line_give_names_only_from_tool_use_blocks() {
+        let blocks = r#"[{"type":"tool_use","name":"Grep","input":{}}]"#;
+        let side = line("assistant", r#","isSidechain":true"#, blocks);
+        assert_eq!(mark_tools(parse(&side)), ["Grep"]);
+        let result = line(
+            "user",
+            "",
+            r#"[{"type":"tool_result","tool_use_id":"a","name":"Bash","content":"gh"}]"#,
+        );
+        assert!(mark_tools(parse(&result)).is_empty());
+        // A block that is not a tool call gives no name, even when it has one.
+        let text = line(
+            "assistant",
+            "",
+            r#"[{"type":"text","name":"Bash","text":"hi"}]"#,
+        );
+        assert!(turn(parse(&text)).tools.is_empty());
+        // A line of a user is never a source of names.
+        let user = line(
+            "user",
+            "",
+            r#"[{"type":"tool_use","name":"Bash","input":{}}]"#,
+        );
+        assert!(mark_tools(parse(&user)).is_empty());
+    }
+
+    #[test]
+    fn a_tool_name_that_is_not_a_string_keeps_the_line() {
+        let l = line(
+            "assistant",
+            "",
+            r#"[{"type":"tool_use","name":7,"input":{}}]"#,
+        );
+        assert!(mark_tools(parse(&l)).is_empty());
     }
 }

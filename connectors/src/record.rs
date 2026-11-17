@@ -39,6 +39,10 @@ pub struct Turn {
     #[serde(default)]
     pub author: Author,
     pub text: String,
+    /// The names of the tools the message asked to run. Not stored on the turn: they go on
+    /// its [`Mark`], which is the sign of the minute.
+    #[serde(default, skip)]
+    pub tools: Vec<String>,
 }
 
 impl Turn {
@@ -51,6 +55,7 @@ impl Turn {
             time: self.time.clone(),
             folder: self.folder.clone(),
             branch: self.branch.clone(),
+            tools: self.tools.clone(),
         }
     }
 }
@@ -66,6 +71,11 @@ pub struct Mark {
     /// Empty when unknown.
     #[serde(default)]
     pub branch: String,
+    /// The names of the tools the session asked to run in this minute, without their
+    /// arguments or output. Records written before this field existed read as none, and none
+    /// are left out of the stored line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
 }
 
 /// A tool the model asked to run, in a chat. Written by the chat only, never by a reader.
@@ -213,6 +223,7 @@ mod tests {
             role: Role::User,
             author: Author::Person,
             text: "hi".into(),
+            tools: Vec::new(),
         });
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains(r#""kind":"turn""#) && json.contains(r#""role":"user""#));
@@ -229,5 +240,55 @@ mod tests {
         assert_eq!(t.author, Author::Unknown);
         assert_eq!((t.role, t.text.as_str()), (Role::User, "hi"));
         assert_eq!(t.time, "2026-11-11T10:00:00Z");
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+
+    #[test]
+    fn a_mark_without_tools_is_stored_without_the_field_and_old_ones_read_the_same() {
+        let old = r#"{"kind":"mark","tool":"t","session":"s","time":"2026-11-11T10:00:00Z","folder":"/f"}"#;
+        let Record::Mark(m) = serde_json::from_str::<Record>(old).unwrap() else {
+            panic!("not a mark")
+        };
+        assert!(m.tools.is_empty() && m.branch.is_empty());
+        assert!(
+            !serde_json::to_string(&Record::Mark(m.clone()))
+                .unwrap()
+                .contains("tools")
+        );
+        let with = Mark {
+            tools: vec!["Bash".into(), "bash:gh".into()],
+            ..m
+        };
+        let json = serde_json::to_string(&Record::Mark(with.clone())).unwrap();
+        assert!(json.contains(r#""tools":["Bash","bash:gh"]"#));
+        assert_eq!(
+            serde_json::from_str::<Record>(&json).unwrap(),
+            Record::Mark(with)
+        );
+    }
+
+    #[test]
+    fn the_mark_of_a_turn_carries_its_tool_names_but_the_turn_does_not_store_them() {
+        let turn = Turn {
+            tool: "t".into(),
+            session: "s".into(),
+            time: "2026-11-11T10:00:00Z".into(),
+            folder: "/f".into(),
+            branch: String::new(),
+            role: Role::Assistant,
+            author: Author::Unknown,
+            text: "x".into(),
+            tools: vec!["Read".into()],
+        };
+        assert_eq!(turn.mark().tools, ["Read"]);
+        assert!(
+            !serde_json::to_string(&Record::Turn(turn))
+                .unwrap()
+                .contains("Read")
+        );
     }
 }

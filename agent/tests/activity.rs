@@ -92,6 +92,7 @@ fn turn(
         role,
         author,
         text: format!("secret words at {time}"),
+        tools: Vec::new(),
     })
 }
 
@@ -102,6 +103,7 @@ fn mark(session: &str, time: &str, folder: &str, branch: &str) -> Record {
         time: time.into(),
         folder: folder.into(),
         branch: branch.into(),
+        tools: Vec::new(),
     })
 }
 

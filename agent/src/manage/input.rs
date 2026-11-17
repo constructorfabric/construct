@@ -59,6 +59,7 @@ mod tests {
             role,
             author: Author::Unknown,
             text: text.into(),
+            tools: Vec::new(),
         }
     }
 

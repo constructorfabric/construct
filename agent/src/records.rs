@@ -61,9 +61,10 @@ pub struct SessionInfo {
 
 /// What the readers write to and the rest of the agent reads from.
 pub trait Sink {
-    /// Adds a record. A mark is dropped when its session already has one in the same minute,
-    /// and a turn when the same turn (time, role, text) is stored already, so a replay after
-    /// a crash adds nothing. The record is on the disk once `save_progress` returned.
+    /// Adds a record. A session keeps one mark per minute: a mark in a minute that has one adds
+    /// only the tool names the first lacks, and is dropped when it adds none. A turn is
+    /// dropped when the same turn (time, role, text) is stored already, so a replay after a
+    /// crash adds nothing. The record is on the disk once `save_progress` returned.
     /// Returns whether the record was stored, `false` for a dropped one.
     ///
     /// # Errors
@@ -98,8 +99,8 @@ pub trait Sink {
 
 /// What is known about one session file after it was first touched in this run.
 struct SessionFile {
-    /// The minutes that have a mark.
-    marked: HashSet<String>,
+    /// The minutes that have a mark, with the tool names the marks of each name.
+    marked: HashMap<String, HashSet<String>>,
     /// Keys of the stored turns and tool records.
     turns: HashSet<u64>,
 }
@@ -107,17 +108,37 @@ struct SessionFile {
 impl SessionFile {
     fn has(&self, record: &Record) -> bool {
         match record {
-            Record::Mark(m) => self.marked.contains(minute_of(&m.time)),
+            Record::Mark(m) => self
+                .marked
+                .get(minute_of(&m.time))
+                .is_some_and(|known| m.tools.iter().all(|t| known.contains(t))),
             Record::Turn(t) => self.turns.contains(&turn_key(t)),
             Record::ToolCall(c) => self.turns.contains(&tool_key(record, &c.call_id)),
             Record::ToolResult(r) => self.turns.contains(&tool_key(record, &r.call_id)),
         }
     }
 
+    /// A mark without the tool names its minute has already; any other record as it is.
+    fn without_known_tools(&self, record: &Record) -> Record {
+        match record {
+            Record::Mark(m) => {
+                let mut m = m.clone();
+                if let Some(known) = self.marked.get(minute_of(&m.time)) {
+                    m.tools.retain(|t| !known.contains(t));
+                }
+                Record::Mark(m)
+            }
+            other => other.clone(),
+        }
+    }
+
     fn note(&mut self, record: &Record) {
         match record {
             Record::Mark(m) => {
-                self.marked.insert(minute_of(&m.time).to_owned());
+                self.marked
+                    .entry(minute_of(&m.time).to_owned())
+                    .or_default()
+                    .extend(m.tools.iter().cloned());
             }
             Record::Turn(t) => {
                 self.turns.insert(turn_key(t));
@@ -392,10 +413,34 @@ pub(crate) fn read_records(path: &Path) -> io::Result<Vec<Record>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
-    Ok(text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Record>(l).ok())
-        .collect())
+    Ok(merge_marks(
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<Record>(l).ok()),
+    ))
+}
+
+/// The records with the marks of one minute as one mark: the first, with the tool names of
+/// the others added after its own.
+fn merge_marks(records: impl Iterator<Item = Record>) -> Vec<Record> {
+    let mut merged: Vec<Record> = Vec::new();
+    let mut first: HashMap<String, usize> = HashMap::new();
+    for record in records {
+        if let Record::Mark(m) = &record {
+            if let Some(&at) = first.get(minute_of(&m.time)) {
+                if let Record::Mark(kept) = &mut merged[at] {
+                    for tool in &m.tools {
+                        if !kept.tools.contains(tool) {
+                            kept.tools.push(tool.clone());
+                        }
+                    }
+                }
+                continue;
+            }
+            first.insert(minute_of(&m.time).to_owned(), merged.len());
+        }
+        merged.push(record);
+    }
+    merged
 }
 
 /// Whether a file is empty or ends with a newline.
@@ -455,7 +500,7 @@ impl Sink for FileSink {
         let path = self.session_path(record.tool(), record.session());
         if !self.sessions.contains_key(&path) {
             let mut known = SessionFile {
-                marked: HashSet::new(),
+                marked: HashMap::new(),
                 turns: HashSet::new(),
             };
             for r in read_records(&path)? {
@@ -468,6 +513,12 @@ impl Sink for FileSink {
         if self.sessions.get(&path).is_some_and(|k| k.has(record)) {
             return Ok(false);
         }
+        // A mark in a minute that has one is stored as the names it adds; reading merges it
+        // into the first.
+        let record = &self
+            .sessions
+            .get(&path)
+            .map_or_else(|| record.clone(), |known| known.without_known_tools(record));
         if let Some(parent) = path.parent() {
             private_dirs(&self.dir, parent)?;
         }
@@ -567,6 +618,7 @@ mod tests {
             role: Role::User,
             author: Author::Person,
             text: text.into(),
+            tools: Vec::new(),
         })
     }
 
@@ -588,6 +640,7 @@ mod tests {
             time: time.into(),
             folder: "/work".into(),
             branch: "main".into(),
+            tools: Vec::new(),
         })
     }
 
@@ -641,6 +694,126 @@ mod tests {
             ["c"]
         );
         assert!(sink.turns_before("codex", "s2", end, 9).unwrap().is_empty());
+    }
+
+    fn mark_with(session: &str, time: &str, tools: &[&str]) -> Record {
+        let Record::Mark(m) = mark("claude", session, time) else {
+            unreachable!()
+        };
+        Record::Mark(Mark {
+            tools: tools.iter().map(|t| (*t).to_owned()).collect(),
+            ..m
+        })
+    }
+
+    fn marks_of(sink: &FileSink, session: &str) -> Vec<(String, Vec<String>)> {
+        sink.read_session("claude", session)
+            .unwrap()
+            .into_iter()
+            .filter_map(|r| match r {
+                Record::Mark(m) => Some((m.time, m.tools)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_marks_of_a_minute_end_as_one_mark_with_both_names() {
+        let dir = temp("mark-tools");
+        let mut sink = FileSink::new(&dir);
+        let first = mark_with("s1", "2026-11-11T10:00:05Z", &["Read"]);
+        assert!(sink.append(&first).unwrap());
+        assert!(
+            sink.append(&mark_with(
+                "s1",
+                "2026-11-11T10:00:20Z",
+                &["Read", "bash:gh"]
+            ))
+            .unwrap()
+        );
+        assert!(
+            sink.append(&mark_with("s1", "2026-11-11T10:00:40Z", &["bash:glab"]))
+                .unwrap()
+        );
+        assert!(
+            sink.append(&mark_with("s1", "2026-11-11T10:01:00Z", &["Grep"]))
+                .unwrap()
+        );
+        // The second and third mark are stored as only the names they add.
+        let raw = fs::read_to_string(dir.join("records/claude/s1.jsonl")).unwrap();
+        let ends: Vec<&str> = raw
+            .lines()
+            .map(|l| l.rsplit(r#""tools":"#).next().unwrap_or(l))
+            .collect();
+        assert_eq!(
+            ends,
+            [
+                r#"["Read"]}"#,
+                r#"["bash:gh"]}"#,
+                r#"["bash:glab"]}"#,
+                r#"["Grep"]}"#
+            ]
+        );
+        let expected = vec![
+            (
+                "2026-11-11T10:00:05Z".to_owned(),
+                vec![
+                    "Read".to_owned(),
+                    "bash:gh".to_owned(),
+                    "bash:glab".to_owned(),
+                ],
+            ),
+            ("2026-11-11T10:01:00Z".to_owned(), vec!["Grep".to_owned()]),
+        ];
+        assert_eq!(marks_of(&sink, "s1"), expected);
+        // A restart reads the same marks, and a replay of the names adds nothing.
+        let mut reopened = FileSink::new(&dir);
+        assert_eq!(marks_of(&reopened, "s1"), expected);
+        assert!(!reopened.append(&first).unwrap());
+        assert!(
+            !reopened
+                .append(&mark_with(
+                    "s1",
+                    "2026-11-11T10:00:50Z",
+                    &["bash:gh", "Read"]
+                ))
+                .unwrap()
+        );
+        assert!(
+            !reopened
+                .append(&mark_with("s1", "2026-11-11T10:00:51Z", &[]))
+                .unwrap()
+        );
+        assert_eq!(marks_of(&reopened, "s1"), expected);
+    }
+
+    #[test]
+    fn a_mark_stored_without_the_field_keeps_its_identity_and_takes_names_later() {
+        let dir = temp("mark-old");
+        let path = dir.join("records/claude/s1.jsonl");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = r#"{"kind":"mark","tool":"claude","session":"s1","time":"2026-11-11T10:00:05Z","folder":"/work","branch":"main"}"#;
+        fs::write(&path, format!("{old}\n")).unwrap();
+        let mut sink = FileSink::new(&dir);
+        assert!(
+            !sink
+                .append(&mark("claude", "s1", "2026-11-11T10:00:30Z"))
+                .unwrap()
+        );
+        assert_eq!(
+            marks_of(&sink, "s1"),
+            [("2026-11-11T10:00:05Z".to_owned(), Vec::new())]
+        );
+        assert!(
+            sink.append(&mark_with("s1", "2026-11-11T10:00:30Z", &["Read"]))
+                .unwrap()
+        );
+        assert_eq!(
+            marks_of(&sink, "s1"),
+            [("2026-11-11T10:00:05Z".to_owned(), vec!["Read".to_owned()])]
+        );
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(stored.lines().next().unwrap() == old && !stored.contains(r#""tools":[]"#));
     }
 
     #[test]

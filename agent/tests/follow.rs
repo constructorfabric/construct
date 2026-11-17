@@ -114,6 +114,7 @@ impl Tool for Fake {
             role: Role::User,
             author: Author::Unknown,
             text: line.into(),
+            tools: Vec::new(),
         }))
     }
 }
