@@ -6,6 +6,14 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+/// The file name PostgreSQL loads the library by (its `DLSUFFIX`); `build.rs` writes the same name.
+#[cfg(target_os = "macos")]
+const LIBRARY_NAME: &str = "vector.dylib";
+#[cfg(not(target_os = "macos"))]
+const LIBRARY_NAME: &str = "vector.so";
+#[cfg(target_os = "macos")]
+const LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pgvector/vector.dylib"));
+#[cfg(not(target_os = "macos"))]
 const LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pgvector/vector.so"));
 const CONTROL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pgvector/vector.control"));
 const SQL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pgvector/vector.sql"));
@@ -49,7 +57,7 @@ pub fn install(install_dir: &Path, pg_version: &str) -> io::Result<()> {
     let extension_dir = install_dir.join("share").join("extension");
     fs::create_dir_all(&extension_dir)?;
     fs::create_dir_all(install_dir.join("lib"))?;
-    write_if_changed(&install_dir.join("lib").join("vector.so"), LIBRARY)?;
+    write_if_changed(&install_dir.join("lib").join(LIBRARY_NAME), LIBRARY)?;
     write_if_changed(&extension_dir.join("vector.control"), CONTROL)?;
     write_if_changed(&extension_dir.join(format!("vector--{version}.sql")), SQL)
 }
@@ -111,7 +119,10 @@ mod tests {
         install(&dir, &pg).unwrap();
         install(&dir, &pg).unwrap();
         let version = version().unwrap();
-        assert_eq!(fs::read(dir.join("lib/vector.so")).unwrap(), LIBRARY);
+        assert_eq!(
+            fs::read(dir.join("lib").join(LIBRARY_NAME)).unwrap(),
+            LIBRARY
+        );
         assert_eq!(
             fs::read(dir.join("share/extension/vector.control")).unwrap(),
             CONTROL
