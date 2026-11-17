@@ -24,8 +24,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use connectors::minute_of;
+
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+
+use super::assign;
 
 /// The longest pause, in silent minutes, that still joins two active minutes into one block.
 pub const MAX_PAUSE: i64 = 5;
@@ -47,9 +50,11 @@ pub enum Kind {
 /// What a report is split by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Grouping {
-    /// The working folder of a session.
+    /// The project of a session: its working folder without a worktree ending, named by its
+    /// last parts (see [`assign::project_labels`]).
     Project,
-    /// The ticket named in the branch of a session; sessions without one share the empty key.
+    /// The ticket of a session, by the rules in [`assign`]; sessions without one are grouped
+    /// as [`assign::NO_TICKET`].
     Ticket,
     /// The tool that wrote a session.
     Tool,
@@ -62,8 +67,10 @@ pub enum Grouping {
 pub struct SessionMinutes {
     pub tool: String,
     pub session: String,
-    pub folder: String,
-    pub branch: String,
+    /// The project kept in the store: the working folder without a worktree ending.
+    pub project: String,
+    /// The ticket kept in the store, empty when the session has none.
+    pub ticket: String,
     /// True when every prompt of the session came from a script. A session with a prompt by a
     /// person, or by an author that is not known, counts as the user's own.
     pub unattended: bool,
@@ -84,7 +91,7 @@ pub struct Day {
 /// What a report holds for one group.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
-    /// The folder, the ticket, the tool or the label of the day.
+    /// The project, the ticket, the tool or the label of the day.
     pub key: String,
     /// The time of the group, in [`PARTS_PER_MINUTE`]th of a minute.
     pub parts: u64,
@@ -139,26 +146,6 @@ pub fn minute_number(time: &str) -> Option<i64> {
 #[must_use]
 pub fn is_unattended(person_prompts: i64, unattended_prompts: i64, unknown_prompts: i64) -> bool {
     unattended_prompts > 0 && person_prompts == 0 && unknown_prompts == 0
-}
-
-/// The ticket a branch names, such as `PROJ-123` in `feature/proj-123-fix-it`: letters or digits (starting with a letter), a dash
-/// and digits at the start of a part of the name. Empty when the branch names none.
-#[must_use]
-pub fn ticket_of(branch: &str) -> String {
-    for part in branch.split(['/', '_', ' ']) {
-        let letters = part.chars().take_while(char::is_ascii_alphanumeric).count();
-        let (name, rest) = part.split_at(letters);
-        let Some(digits) = rest.strip_prefix('-') else {
-            continue;
-        };
-        let count = digits.chars().take_while(char::is_ascii_digit).count();
-        let (number, tail) = digits.split_at(count);
-        let starts_with_letter = name.starts_with(|c: char| c.is_ascii_alphabetic());
-        if starts_with_letter && count > 0 && (tail.is_empty() || tail.starts_with('-')) {
-            return format!("{}-{number}", name.to_ascii_uppercase());
-        }
-    }
-    String::new()
 }
 
 /// The blocks of one session, as `(first, last)` minutes, both counted.
@@ -230,6 +217,8 @@ pub fn calculate(
             groups.insert(day.label.clone(), (position, 0, BTreeSet::new()));
         }
     }
+    // Named over all the sessions given, so that a project keeps its name whatever the period.
+    let project_names = assign::project_labels(sessions.iter().map(|s| s.project.as_str()));
     let mut total_parts = 0;
     let mut counted_sessions = BTreeSet::new();
     for (minute, active) in &timeline {
@@ -255,8 +244,11 @@ pub fn calculate(
         let mut by_key: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for index in winners {
             let key = match grouping {
-                Grouping::Project => sessions[index].folder.clone(),
-                Grouping::Ticket => ticket_of(&sessions[index].branch),
+                Grouping::Project => project_names[&sessions[index].project].clone(),
+                Grouping::Ticket if sessions[index].ticket.is_empty() => {
+                    assign::NO_TICKET.to_owned()
+                }
+                Grouping::Ticket => sessions[index].ticket.clone(),
                 Grouping::Tool => sessions[index].tool.clone(),
                 Grouping::Day => day.label.clone(),
             };
@@ -324,17 +316,6 @@ mod tests {
         assert_eq!(minute_number("2026-13-11T10:15"), None);
         assert_eq!(minute_number("2026-11-11 10:15"), None);
         assert_eq!(minute_number("soon"), None);
-    }
-
-    #[test]
-    fn a_ticket_is_named_at_the_start_of_a_part_of_the_branch() {
-        assert_eq!(ticket_of("feature/proj-123-fix-it"), "PROJ-123");
-        assert_eq!(ticket_of("AB2-7"), "AB2-7");
-        assert_eq!(ticket_of("fix_ab-9"), "AB-9");
-        assert_eq!(ticket_of("main"), "");
-        assert_eq!(ticket_of(""), "");
-        assert_eq!(ticket_of("x-12abc"), "");
-        assert_eq!(ticket_of("2026-11"), "");
     }
 
     #[test]
