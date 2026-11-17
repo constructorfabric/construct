@@ -40,6 +40,9 @@ toolkit-security = { package = "cf-gears-toolkit-security", version = "=0.13.0" 
 toolkit-db = { package = "cf-gears-toolkit-db", version = "=0.17.4" }
 oagw-sdk = { package = "cf-gears-oagw-sdk", version = "=0.5.18" }
 toolkit-canonical-errors = { package = "cf-gears-toolkit-canonical-errors", version = "=0.10.1" }
+# The agent's own SQL (the activity store), over the socket. The version is the one the gear
+# crates already build, so there is one copy.
+sqlx = { version = "=0.9.0", default-features = false, features = ["postgres", "runtime-tokio"] }
 anyhow = "1"
 async-trait = "0.1"
 bytes = "1"

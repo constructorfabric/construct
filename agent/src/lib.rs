@@ -1,6 +1,8 @@
 //! Construct agent: an own program that keeps running after the app
 //! window is closed. It answers a `status` call on a user-only Unix socket.
 
+#[cfg(unix)]
+pub mod activity;
 pub mod autostart;
 #[cfg(unix)]
 pub mod chat;

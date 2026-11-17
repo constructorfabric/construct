@@ -98,10 +98,22 @@ impl Stand {
 
     /// Run one SQL statement as `postgres` over the socket; returns the output.
     fn sql(&self, statement: &str) -> String {
+        self.sql_in("postgres", statement)
+    }
+
+    /// The same in the database `database`.
+    fn sql_in(&self, database: &str, statement: &str) -> String {
         let out = Command::new(self.psql_path())
             .args(["-h"])
             .arg(self.pg_socket_dir())
-            .args(["-U", "postgres", "-Atc", statement])
+            .args([
+                "-U",
+                construct_agent::database::SUPERUSER,
+                "-d",
+                database,
+                "-Atc",
+                statement,
+            ])
             .output()
             .unwrap();
         assert!(
@@ -542,4 +554,113 @@ fn a_signal_while_the_host_starts_stops_it_before_the_database() {
     );
     assert!(wait_gone(postmaster), "PostgreSQL still runs");
     assert!(!stand.connection_file().exists());
+}
+
+/// The fixture session in the store. The agent's readers may add sessions of their own from
+/// the logs of the user running the tests, so the count is of this one.
+const SESSION_COUNT: &str =
+    "select count(*) from activity.sessions where tool = 'claude' and session = 's'";
+
+/// One session with one turn on disk, where the agent keeps its records.
+fn write_records(stand: &Stand) {
+    use connectors::{Author, Record, Role, Turn};
+    use construct_agent::records::{FileSink, Sink};
+    let mut sink = FileSink::new(&stand.root.join("data/construct"));
+    sink.append(&Record::Turn(Turn {
+        tool: "claude".into(),
+        session: "s".into(),
+        time: "2026-11-11T10:00:05Z".into(),
+        folder: "/w".into(),
+        branch: "m".into(),
+        role: Role::User,
+        author: Author::Person,
+        text: "hello".into(),
+    }))
+    .unwrap();
+}
+
+/// Wait until the activity store holds the session of `write_records`, which is also when its
+/// rebuild has finished.
+fn wait_activity_session(stand: &Stand) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let present = stand.sql("select count(*) from pg_database where datname = 'activity'")
+            == "1"
+            && stand.sql_in("activity", "select to_regclass('activity.sessions')::text")
+                == "activity.sessions"
+            && stand.sql_in("activity", SESSION_COUNT) == "1";
+        if present {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the activity store did not fill");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn status_is_ready(stand: &Stand) {
+    let v: serde_json::Value =
+        serde_json::from_str(&query_status(&stand.agent_socket()).unwrap()).unwrap();
+    assert_eq!(v["database"], "ready");
+}
+
+#[test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+fn the_agent_answers_status_after_the_activity_schema_is_dropped() {
+    let stand = Stand::new("act");
+    write_records(&stand);
+    let mut agent = stand.agent();
+    stand.wait_ready();
+    wait_activity_session(&stand);
+    stand.sql_in("activity", "drop schema activity cascade");
+    agent.terminate();
+
+    let mut agent = stand.agent();
+    stand.wait_ready();
+    status_is_ready(&stand);
+    // The restart made the schema again and filled it from the records on disk.
+    wait_activity_session(&stand);
+    agent.terminate();
+}
+
+#[test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+fn the_agent_runs_on_when_the_activity_store_cannot_be_opened() {
+    let stand = Stand::new("actoff");
+    write_records(&stand);
+    let mut agent = stand.agent();
+    stand.wait_ready();
+    wait_activity_session(&stand);
+    // A rules table that cannot be read: the store is off, and it is not dropped.
+    stand.sql_in(
+        "activity",
+        "alter table activity.rules alter column version type text using version::text",
+    );
+    stand.sql_in("activity", "update activity.rules set version = 'x'");
+    agent.terminate();
+
+    // This time the agent's log is kept, to know that the store was tried before reading.
+    let log = stand.root.join("agent.log");
+    let mut command = stand.command();
+    command.stderr(std::fs::File::create(&log).unwrap());
+    let mut agent = Agent(command.spawn().unwrap());
+    stand.wait_ready();
+    stand.wait_construct("ready");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !std::fs::read_to_string(&log)
+        .unwrap()
+        .contains("activity store off")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the store was never reported off"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    status_is_ready(&stand);
+    assert_eq!(
+        stand.sql_in("activity", "select version from activity.rules"),
+        "x"
+    );
+    assert_eq!(stand.sql_in("activity", SESSION_COUNT), "1");
+    agent.terminate();
 }
