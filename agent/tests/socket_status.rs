@@ -147,7 +147,7 @@ fn a_socket_path_without_a_parent_directory_is_refused() {
 
 #[test]
 fn status_reports_the_database_and_construct_states_each_on_its_own() {
-    use construct_agent::database::{Health, State};
+    use construct_agent::database::{Health, State, reason};
 
     let path = temp_socket("database");
     let database = Health::default();
@@ -161,8 +161,8 @@ fn status_reports_the_database_and_construct_states_each_on_its_own() {
     let states = |path: &std::path::Path| {
         let v: serde_json::Value = serde_json::from_str(&query_status(path).unwrap()).unwrap();
         (
-            v["database"].as_str().unwrap().to_string(),
-            v["construct"].as_str().unwrap().to_string(),
+            v["database"]["state"].as_str().unwrap().to_string(),
+            v["construct"]["state"].as_str().unwrap().to_string(),
         )
     };
     let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
@@ -176,6 +176,25 @@ fn status_reports_the_database_and_construct_states_each_on_its_own() {
     database.set(State::Failed);
     construct.set(State::Ready);
     assert_eq!(states(&path), pair("failed", "ready"));
+
+    // A part that is not ready tells why; a ready one does not.
+    database.fail(reason::PGVECTOR_MISSING);
+    construct.fail(reason::NO_DATABASE);
+    let v: serde_json::Value = serde_json::from_str(&query_status(&path).unwrap()).unwrap();
+    assert_eq!(
+        v["database"],
+        serde_json::json!({
+            "state": "failed",
+            "reason": "pgvector is not built for this platform yet"
+        })
+    );
+    assert_eq!(
+        v["construct"],
+        serde_json::json!({ "state": "failed", "reason": "the database is not running" })
+    );
+    database.set(State::Ready);
+    let v: serde_json::Value = serde_json::from_str(&query_status(&path).unwrap()).unwrap();
+    assert_eq!(v["database"], serde_json::json!({ "state": "ready" }));
     let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
 }
 

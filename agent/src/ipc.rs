@@ -4,7 +4,8 @@
 //!
 //! Protocol: the client sends one line, the agent answers one JSON line. Commands:
 //! `status` (the reply has `service`: `registered` or `not_registered`, whether the login
-//! service of the agent is registered, and no `service` when that cannot be told),
+//! service of the agent is registered, and no `service` when that cannot be told; `database`
+//! and `construct` are each `{"state": ..., "reason": ...}`, see [`status_response`]),
 //! `settings-get`, `settings-set <JSON object>` (the fields to change; see `settings`), and
 //! `settings-test [JSON object]` (one ping to the model; see `model_test`).
 //! `backfill [JSON object]` sends the prompts of the past to Construct (see `manage`).
@@ -19,13 +20,18 @@ use std::path::PathBuf;
 pub const SOCKET_NAME: &str = "agent.sock";
 
 /// The JSON line the agent answers to `status`.
+///
+/// `database` and `construct` are objects: `state` is `starting`, `ready` or `failed`, and
+/// `reason`, only when the part is not ready, is a fixed short text of the agent (see
+/// `database::reason`), never a path, a secret or the text of an error. Agents before this
+/// sent the state alone as a plain string; the app reads both.
 #[must_use]
 // One argument per field of the reply; a struct would only move the list.
 #[allow(clippy::too_many_arguments)]
 pub fn status_response(
     pid: u32,
-    database: &str,
-    construct: &str,
+    database: &serde_json::Value,
+    construct: &serde_json::Value,
     connectors: &serde_json::Value,
     model: &str,
     model_state: &str,
@@ -454,8 +460,8 @@ mod unix {
         match (command, settings) {
             ("status", _) if argument.is_empty() => status_response(
                 std::process::id(),
-                shared.database.get().as_str(),
-                shared.construct.get().as_str(),
+                &shared.database.to_json(),
+                &shared.construct.to_json(),
                 &shared.connectors.to_json(),
                 &model_name,
                 model_state.as_str(),
@@ -596,5 +602,57 @@ mod unix {
 
     fn ask_status(path: &Path) -> io::Result<String> {
         request(path, "status", QUERY_TIMEOUT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_carries_the_state_and_the_reason_of_the_database_and_construct() {
+        let database = serde_json::json!({
+            "state": "failed",
+            "reason": "pgvector is not built for this platform yet"
+        });
+        let construct =
+            serde_json::json!({ "state": "failed", "reason": "the database is not running" });
+        let line = status_response(
+            7,
+            &database,
+            &construct,
+            &serde_json::json!({}),
+            "not set",
+            "not_configured",
+            None,
+            None,
+        );
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["status"], "running");
+        assert_eq!(v["pid"], 7);
+        assert_eq!(v["database"], database);
+        assert_eq!(v["construct"], construct);
+        assert!(v.get("service").is_none());
+        assert!(v.get("facts").is_none());
+    }
+
+    #[test]
+    fn a_ready_part_has_no_reason() {
+        let ready = serde_json::json!({ "state": "ready" });
+        let line = status_response(
+            1,
+            &ready,
+            &ready,
+            &serde_json::json!({}),
+            "m",
+            "configured",
+            Some(true),
+            None,
+        );
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["database"], serde_json::json!({ "state": "ready" }));
+        assert_eq!(v["construct"]["state"], "ready");
+        assert!(v["construct"].get("reason").is_none());
+        assert_eq!(v["service"], "registered");
     }
 }

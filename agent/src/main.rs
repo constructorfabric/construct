@@ -86,6 +86,7 @@ fn run() -> std::io::Result<()> {
     let paths = database::Paths::from_env()?;
     let host_paths = host::Paths::from_env()?;
     let (health, construct_health) = (Health::default(), Health::default());
+    construct_health.wait(database::reason::WAITING_FOR_DATABASE);
     let connectors = Stats::default();
     let model_state = construct_agent::model::ModelState::default();
     let settings = open_settings();
@@ -161,7 +162,7 @@ fn run() -> std::io::Result<()> {
                 Some(db)
             }
             Ok(Err(e)) => {
-                health.set(State::Failed);
+                health.fail(e.reason());
                 eprintln!("database failed: {e}");
                 None
             }
@@ -368,12 +369,13 @@ async fn start_construct_until_stopped<S>(
 where
     S: std::future::Future<Output = &'static str> + Unpin,
 {
-    use construct_agent::database::State;
+    use construct_agent::database::{State, reason};
 
     let Some(db) = db else {
-        construct_health.set(State::Failed);
+        construct_health.fail(reason::NO_DATABASE);
         return Ok(None);
     };
+    construct_health.set(State::Starting);
     let abort = tokio_util::sync::CancellationToken::new();
     let start = start_construct(db, paths, construct_health, model, &abort);
     tokio::pin!(start);
@@ -388,7 +390,7 @@ where
         () = watch_database(Some(db), health) => {
             abort.cancel();
             stop_all(start.await, None).await;
-            construct_health.set(State::Failed);
+            construct_health.fail(reason::NO_DATABASE);
             Ok(None)
         }
     }
@@ -407,21 +409,22 @@ async fn start_construct(
     )>,
     abort: &tokio_util::sync::CancellationToken,
 ) -> Option<construct_agent::host::Host> {
-    use construct_agent::database::State;
+    use construct_agent::database::{State, reason};
     use construct_agent::host::{GRAPH_DBNAME, Host};
 
-    let started = async {
-        db.ensure_database(GRAPH_DBNAME).await?;
-        Host::start(paths, db.paths(), model, abort).await
-    };
-    match started.await {
+    if let Err(e) = db.ensure_database(GRAPH_DBNAME).await {
+        health.fail(reason::GRAPH_DATABASE);
+        eprintln!("construct failed: {e}");
+        return None;
+    }
+    match Host::start(paths, db.paths(), model, abort).await {
         Ok(host) => {
             health.set(State::Ready);
             eprintln!("construct ready on 127.0.0.1:{}", host.connection().port);
             Some(host)
         }
         Err(e) => {
-            health.set(State::Failed);
+            health.fail(reason::GEAR_START);
             eprintln!("construct failed: {e:#}");
             None
         }
@@ -483,10 +486,10 @@ async fn watch_database(
     database: Option<&construct_agent::database::Database>,
     health: &construct_agent::database::Health,
 ) {
-    use construct_agent::database::State;
+    use construct_agent::database::reason;
     if let Some(db) = database {
         db.watch().await;
-        health.set(State::Failed);
+        health.fail(reason::STOPPED_ANSWERING);
         eprintln!("database failed: PostgreSQL stopped answering");
     }
     std::future::pending::<()>().await;
@@ -498,10 +501,10 @@ async fn watch_construct(
     host: Option<&mut construct_agent::host::Host>,
     health: &construct_agent::database::Health,
 ) {
-    use construct_agent::database::State;
+    use construct_agent::database::reason;
     if let Some(host) = host {
         let res = host.stopped().await;
-        health.set(State::Failed);
+        health.fail(reason::GEAR_STOPPED);
         match res {
             Ok(()) => eprintln!("construct failed: the host stopped"),
             Err(e) => eprintln!("construct failed: {e:#}"),

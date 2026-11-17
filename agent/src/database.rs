@@ -57,24 +57,81 @@ impl State {
     }
 }
 
-/// The database state, shared between the starting task and the socket threads.
+/// Why a part is not ready, as `status` tells it. The reasons are fixed texts of the agent, so
+/// none can carry a path, a secret or the text of an error.
+pub mod reason {
+    /// The agent has no pgvector for this system (macOS for now).
+    pub const PGVECTOR_MISSING: &str = "pgvector is not built for this platform yet";
+    /// The PostgreSQL that runs offers another pgvector than the one the agent carries.
+    pub const PGVECTOR_MISMATCH: &str = "PostgreSQL does not offer the pgvector the agent carries";
+    pub const PGVECTOR_INSTALL: &str = "pgvector cannot be copied into PostgreSQL";
+    pub const DATA_DIRECTORY: &str = "the database directories cannot be prepared";
+    pub const UNPACK: &str = "PostgreSQL cannot be unpacked";
+    pub const OLD_POSTGRES: &str = "a PostgreSQL left by an earlier agent cannot be stopped";
+    pub const START: &str = "PostgreSQL does not start";
+    /// Running PostgreSQL stopped accepting connections.
+    pub const STOPPED_ANSWERING: &str = "PostgreSQL stopped answering";
+    /// The Construct gear waits for the database to start.
+    pub const WAITING_FOR_DATABASE: &str = "waiting for the database";
+    /// The Construct gear does not start without a database.
+    pub const NO_DATABASE: &str = "the database is not running";
+    pub const GRAPH_DATABASE: &str = "the graph database cannot be created";
+    pub const GEAR_START: &str = "the Construct gear did not start; the agent log has the details";
+    pub const GEAR_STOPPED: &str = "the Construct gear stopped; the agent log has the details";
+}
+
+/// A state and, when the part is not ready, why.
+type Reported = (State, Option<&'static str>);
+
+/// The state of the database or of the Construct gear, shared between the task that starts it
+/// and the socket threads.
 #[derive(Clone, Debug)]
-pub struct Health(Arc<Mutex<State>>);
+pub struct Health(Arc<Mutex<Reported>>);
 
 impl Default for Health {
     fn default() -> Self {
-        Self(Arc::new(Mutex::new(State::Starting)))
+        Self(Arc::new(Mutex::new((State::Starting, None))))
     }
 }
 
 impl Health {
     #[must_use]
     pub fn get(&self) -> State {
-        *crate::sync::lock(&self.0)
+        crate::sync::lock(&self.0).0
     }
 
+    /// Why the part is not ready; `None` when it is ready or no reason is known.
+    #[must_use]
+    pub fn reason(&self) -> Option<&'static str> {
+        let (state, reason) = *crate::sync::lock(&self.0);
+        if state == State::Ready { None } else { reason }
+    }
+
+    /// Set the state and forget the reason of the one before.
     pub fn set(&self, state: State) {
-        *crate::sync::lock(&self.0) = state;
+        *crate::sync::lock(&self.0) = (state, None);
+    }
+
+    /// Still starting, for this reason.
+    pub fn wait(&self, reason: &'static str) {
+        *crate::sync::lock(&self.0) = (State::Starting, Some(reason));
+    }
+
+    /// Failed, for this reason.
+    pub fn fail(&self, reason: &'static str) {
+        *crate::sync::lock(&self.0) = (State::Failed, Some(reason));
+    }
+
+    /// The part of the `status` reply: `{"state": "...", "reason": "..."}`, with no `reason`
+    /// when the part is ready or none is known.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        let state = self.get();
+        let mut part = serde_json::json!({ "state": state.as_str() });
+        if let Some(reason) = self.reason() {
+            part["reason"] = reason.into();
+        }
+        part
     }
 }
 
@@ -119,19 +176,49 @@ impl Paths {
     }
 }
 
+/// A failed step: the full message for the log, and a fixed reason for `status`.
 #[derive(Debug)]
-pub struct Error(String);
+pub struct Error {
+    message: String,
+    reason: &'static str,
+}
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
 impl std::error::Error for Error {}
 
+impl Error {
+    /// The fixed text `status` tells (see [`reason`]); never the message, which can hold a path.
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    #[must_use]
+    fn because(mut self, reason: &'static str) -> Self {
+        self.reason = reason;
+        self
+    }
+}
+
 pub(crate) fn err(context: &str, e: impl fmt::Display) -> Error {
-    Error(format!("{context}: {e}"))
+    Error {
+        message: format!("{context}: {e}"),
+        reason: reason::START,
+    }
+}
+
+/// The reason of a failed pgvector step: missing on this platform, or `otherwise`.
+fn pgvector_reason(e: &io::Error, otherwise: &'static str) -> &'static str {
+    if e.kind() == io::ErrorKind::Unsupported {
+        reason::PGVECTOR_MISSING
+    } else {
+        otherwise
+    }
 }
 
 /// A running PostgreSQL. Call [`Database::stop`] before the agent exits.
@@ -218,18 +305,23 @@ impl Database {
     /// # Errors
     /// Fails when a step cannot be done; the message names the step.
     pub async fn start(paths: Paths) -> Result<Self, Error> {
-        create_private_dir(&paths.socket_dir).map_err(|e| err("socket directory", e))?;
+        create_private_dir(&paths.socket_dir)
+            .map_err(|e| err("socket directory", e).because(reason::DATA_DIRECTORY))?;
         if let Some(parent) = paths.data_dir.parent() {
-            create_private_dir(parent).map_err(|e| err("data directory", e))?;
+            create_private_dir(parent)
+                .map_err(|e| err("data directory", e).because(reason::DATA_DIRECTORY))?;
         }
-        discard_partial_setup(&paths).map_err(|e| err("discard a partial first run", e))?;
+        discard_partial_setup(&paths)
+            .map_err(|e| err("discard a partial first run", e).because(reason::DATA_DIRECTORY))?;
         let mut postgres = PostgreSQL::new(settings(&paths)?);
         if let Err(e) = postgres.setup().await {
             discard_failed_unpack(&paths);
-            return Err(err("set up PostgreSQL", e));
+            return Err(err("set up PostgreSQL", e).because(reason::UNPACK));
         }
-        fs::write(paths.install_dir.join(INSTALL_DONE), "").map_err(|e| err("mark install", e))?;
-        write_hba(&paths.data_dir).map_err(|e| err("write pg_hba.conf", e))?;
+        fs::write(paths.install_dir.join(INSTALL_DONE), "")
+            .map_err(|e| err("mark install", e).because(reason::UNPACK))?;
+        write_hba(&paths.data_dir)
+            .map_err(|e| err("write pg_hba.conf", e).because(reason::DATA_DIRECTORY))?;
         let _ = fs::remove_file(paths.socket_dir.join("initdb.pw"));
 
         let installation = postgres.settings().installation_dir.clone();
@@ -237,23 +329,26 @@ impl Database {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        crate::pgvector::install(&installation, &release)
-            .map_err(|e| err("install pgvector", e))?;
+        crate::pgvector::install(&installation, &release).map_err(|e| {
+            let why = pgvector_reason(&e, reason::PGVECTOR_INSTALL);
+            err("install pgvector", e).because(why)
+        })?;
 
         // A `postmaster.pid` of a running PostgreSQL means its agent was killed outside
         // systemd. It is stopped first, so this agent owns the process. A stale file is
         // cleaned up by PostgreSQL itself.
         if let Some(pid) = running_postmaster(&paths.data_dir) {
-            postgres
-                .stop()
-                .await
-                .map_err(|e| err(&format!("stop the old PostgreSQL (pid {pid})"), e))?;
+            postgres.stop().await.map_err(|e| {
+                err(&format!("stop the old PostgreSQL (pid {pid})"), e)
+                    .because(reason::OLD_POSTGRES)
+            })?;
         }
         postgres
             .start()
             .await
             .map_err(|e| err("start PostgreSQL", e))?;
-        fs::write(paths.data_dir.join(DATA_STARTED), "").map_err(|e| err("mark data", e))?;
+        fs::write(paths.data_dir.join(DATA_STARTED), "")
+            .map_err(|e| err("mark data", e).because(reason::DATA_DIRECTORY))?;
         let database = Self { postgres, paths };
         database.check_pgvector().await?;
         Ok(database)
@@ -267,7 +362,10 @@ impl Database {
     /// Ask PostgreSQL, over the socket, for the pgvector it offers; it must be the
     /// version the agent carries.
     async fn check_pgvector(&self) -> Result<(), Error> {
-        let want = crate::pgvector::version().map_err(|e| err("pgvector", e))?;
+        let want = crate::pgvector::version().map_err(|e| {
+            let why = pgvector_reason(&e, reason::PGVECTOR_MISMATCH);
+            err("pgvector", e).because(why)
+        })?;
         let out = tokio::process::Command::new(self.postgres.settings().binary_dir().join("psql"))
             .arg("-h")
             .arg(&self.paths.socket_dir)
@@ -276,15 +374,18 @@ impl Database {
             .kill_on_drop(true)
             .output()
             .await
-            .map_err(|e| err("run psql", e))?;
+            .map_err(|e| err("run psql", e).because(reason::PGVECTOR_MISMATCH))?;
         let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if out.status.success() && got == want {
             Ok(())
         } else {
-            Err(Error(format!(
-                "pgvector check: wanted {want}, got '{got}' {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )))
+            Err(Error {
+                message: format!(
+                    "pgvector check: wanted {want}, got '{got}' {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+                reason: reason::PGVECTOR_MISMATCH,
+            })
         }
     }
 
@@ -451,6 +552,74 @@ mod tests {
         discard_partial_setup(&paths).unwrap();
         assert!(paths.data_dir.join("base").exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn health_tells_the_reason_only_when_the_part_is_not_ready() {
+        let health = Health::default();
+        assert_eq!(health.to_json(), serde_json::json!({ "state": "starting" }));
+        health.wait(reason::WAITING_FOR_DATABASE);
+        assert_eq!(
+            health.to_json(),
+            serde_json::json!({ "state": "starting", "reason": "waiting for the database" })
+        );
+        health.fail(reason::PGVECTOR_MISSING);
+        assert_eq!(health.get(), State::Failed);
+        assert_eq!(
+            health.to_json(),
+            serde_json::json!({
+                "state": "failed",
+                "reason": "pgvector is not built for this platform yet"
+            })
+        );
+        // A new state drops the reason of the old one.
+        health.set(State::Ready);
+        assert_eq!(health.reason(), None);
+        assert_eq!(health.to_json(), serde_json::json!({ "state": "ready" }));
+    }
+
+    #[test]
+    fn an_error_tells_its_fixed_reason_and_logs_the_whole_message() {
+        let e = err("set up PostgreSQL", "/home/someone/secret: denied");
+        assert_eq!(e.reason(), reason::START);
+        let e = e.because(reason::UNPACK);
+        assert_eq!(e.reason(), "PostgreSQL cannot be unpacked");
+        assert_eq!(
+            e.to_string(),
+            "set up PostgreSQL: /home/someone/secret: denied"
+        );
+        let missing = io::Error::new(io::ErrorKind::Unsupported, "no build");
+        assert_eq!(
+            pgvector_reason(&missing, reason::PGVECTOR_INSTALL),
+            reason::PGVECTOR_MISSING
+        );
+        let other = io::Error::other("disk full");
+        assert_eq!(
+            pgvector_reason(&other, reason::PGVECTOR_INSTALL),
+            reason::PGVECTOR_INSTALL
+        );
+    }
+
+    #[test]
+    fn no_reason_holds_a_path_or_a_line_break() {
+        for text in [
+            reason::PGVECTOR_MISSING,
+            reason::PGVECTOR_MISMATCH,
+            reason::PGVECTOR_INSTALL,
+            reason::DATA_DIRECTORY,
+            reason::UNPACK,
+            reason::OLD_POSTGRES,
+            reason::START,
+            reason::STOPPED_ANSWERING,
+            reason::WAITING_FOR_DATABASE,
+            reason::NO_DATABASE,
+            reason::GRAPH_DATABASE,
+            reason::GEAR_START,
+            reason::GEAR_STOPPED,
+        ] {
+            assert!(!text.is_empty() && text.len() <= 80, "{text}");
+            assert!(!text.contains(['/', '\\', '\n']), "{text}");
+        }
     }
 
     #[test]

@@ -15,6 +15,11 @@
   "StatusPage.StartAtLogin.not_registered": "not registered",
   "StatusPage.StartAtLogin.unknown": "unknown",
   "StatusPage.StartAtLogin.not_supported": "not supported",
+  "StatusPage.Database": "Database",
+  "StatusPage.Construct": "Construct gear",
+  "StatusPage.Part.ready": "ready",
+  "StatusPage.Part.starting": "starting",
+  "StatusPage.Part.failed": "failed",
   "SettingsPage.Title": "Settings",
   "SettingsPage.Loading": "Loading the settings",
   "SettingsPage.Unavailable": "The settings are not available: {{reason}}",
@@ -81,6 +86,7 @@
   "ChatReason.Status": "The provider answered with status {{status}}.",
   "ChatReason.Other": "The answer failed: {{reason}}.",
   "NoModel.Text": "No model is set yet. Set one in Settings to chat.",
+  "NoProfile.Text": "Profile is not available: the Construct gear is not running",
   "Markdown.Image": "Image",
   "Thread.ToEnd": "Scroll to the newest message"
 }

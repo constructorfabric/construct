@@ -130,8 +130,8 @@ impl Stand {
         while Instant::now() < deadline {
             if let Ok(line) = query_status(&self.agent_socket()) {
                 let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-                assert_ne!(v["database"], "failed", "{line}");
-                if v["database"] == "ready" {
+                assert_ne!(v["database"]["state"], "failed", "{line}");
+                if v["database"]["state"] == "ready" {
                     return;
                 }
             }
@@ -147,13 +147,13 @@ impl Stand {
         while Instant::now() < deadline {
             if let Ok(line) = query_status(&self.agent_socket()) {
                 let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-                if v["construct"] == want {
+                if v["construct"]["state"] == want {
                     return;
                 }
                 assert!(
-                    v["construct"] == "starting",
+                    v["construct"]["state"] == "starting",
                     "construct is {} while waiting for {want}: {line}",
-                    v["construct"]
+                    v["construct"]["state"]
                 );
             }
             std::thread::sleep(Duration::from_millis(500));
@@ -288,7 +288,7 @@ fn starts_with_pgvector_on_a_socket_only_and_stops_with_the_agent() {
     let v: serde_json::Value = serde_json::from_str(&first).unwrap();
     assert_eq!(v["status"], "running");
     assert!(
-        v["database"] == "starting" || v["database"] == "ready",
+        v["database"]["state"] == "starting" || v["database"]["state"] == "ready",
         "{first}"
     );
 
@@ -362,7 +362,7 @@ fn a_second_agent_leaves_the_first_ones_database_alone() {
     assert_eq!(stand.sql("select 1"), "1");
     let v: serde_json::Value =
         serde_json::from_str(&query_status(&stand.agent_socket()).unwrap()).unwrap();
-    assert_eq!(v["database"], "ready");
+    assert_eq!(v["database"]["state"], "ready");
     first.terminate();
 }
 
@@ -382,10 +382,15 @@ fn status_turns_failed_when_the_postmaster_is_killed() {
     loop {
         let v: serde_json::Value =
             serde_json::from_str(&query_status(&stand.agent_socket()).unwrap()).unwrap();
-        if v["database"] == "failed" {
+        if v["database"]["state"] == "failed" {
+            assert_eq!(v["database"]["reason"], "PostgreSQL stopped answering");
             break;
         }
-        assert!(Instant::now() < deadline, "status stayed {}", v["database"]);
+        assert!(
+            Instant::now() < deadline,
+            "status stayed {}",
+            v["database"]["state"]
+        );
         std::thread::sleep(Duration::from_millis(500));
     }
     agent.terminate();
@@ -416,11 +421,11 @@ fn the_host_answers_only_with_the_token_and_leaves_nothing_behind() {
     loop {
         let line = query_status(&stand.agent_socket()).unwrap_or_default();
         let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
-        assert_ne!(v["construct"], "failed", "{line}");
-        if v["construct"] == "ready" {
+        assert_ne!(v["construct"]["state"], "failed", "{line}");
+        if v["construct"]["state"] == "ready" {
             break;
         }
-        if v["database"] == "ready" {
+        if v["database"]["state"] == "ready" {
             let since = *database_ready.get_or_insert_with(Instant::now);
             if since.elapsed() > Duration::from_millis(1500) {
                 assert!(
@@ -497,6 +502,13 @@ fn a_host_that_fails_leaves_the_database_up_and_no_connection_file() {
     stand.wait_ready();
     assert_eq!(stand.sql("select 1"), "1");
     assert!(!stand.connection_file().exists());
+    let v: serde_json::Value =
+        serde_json::from_str(&query_status(&stand.agent_socket()).unwrap()).unwrap();
+    assert_eq!(
+        v["construct"]["reason"],
+        "the Construct gear did not start; the agent log has the details"
+    );
+    assert!(v["database"].get("reason").is_none(), "{v}");
 }
 
 #[test]
@@ -600,7 +612,7 @@ fn wait_activity_session(stand: &Stand) {
 fn status_is_ready(stand: &Stand) {
     let v: serde_json::Value =
         serde_json::from_str(&query_status(&stand.agent_socket()).unwrap()).unwrap();
-    assert_eq!(v["database"], "ready");
+    assert_eq!(v["database"]["state"], "ready");
 }
 
 #[test]

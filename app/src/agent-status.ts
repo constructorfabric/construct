@@ -8,6 +8,17 @@ import type { ExternalApi } from './external';
  */
 export type StartAtLogin = 'registered' | 'not_registered' | 'unknown' | 'not_supported';
 
+/** The state of a part the agent runs: its database or the Construct gear. */
+export type PartState = 'ready' | 'starting' | 'failed';
+
+export const partStates: readonly PartState[] = ['ready', 'starting', 'failed'];
+
+export interface Part {
+  readonly state: PartState;
+  /** Why the part is not ready, a short fixed text of the agent; never sent for a ready one. */
+  readonly reason?: string;
+}
+
 export type AgentStatus =
   | {
       readonly state: 'running';
@@ -16,6 +27,9 @@ export type AgentStatus =
       /** The model's name as the agent sends it (`not set` when none is configured). */
       readonly model?: string;
       readonly startAtLogin: StartAtLogin;
+      /** Absent when the agent does not tell it, or tells it in a way the window does not know. */
+      readonly database?: Part;
+      readonly construct?: Part;
     }
   /** The socket answered "nobody here": no socket file, or nothing listening on it. */
   | { readonly state: 'stopped'; readonly reason: string; readonly startAtLogin: StartAtLogin }
@@ -49,19 +63,47 @@ export function parseStatusReply(line: string): AgentStatus {
     throw new Error('the agent reply has no pid');
   }
   const startAtLogin = parseService(reply);
-  if (!('model' in reply)) {
-    return { state: 'running', version: reply.version, pid: reply.pid, startAtLogin };
-  }
-  if (typeof reply.model !== 'string') {
+  if ('model' in reply && typeof reply.model !== 'string') {
     throw new Error('the agent reply has a model that is not text');
   }
+  const database = 'database' in reply ? parsePart(reply.database) : undefined;
+  const construct = 'construct' in reply ? parsePart(reply.construct) : undefined;
   return {
     state: 'running',
     version: reply.version,
     pid: reply.pid,
-    model: reply.model,
+    ...('model' in reply && typeof reply.model === 'string' ? { model: reply.model } : {}),
     startAtLogin,
+    ...(database === undefined ? {} : { database }),
+    ...(construct === undefined ? {} : { construct }),
   };
+}
+
+function isPartState(value: unknown): value is PartState {
+  return partStates.some((state) => state === value);
+}
+
+/**
+ * The `database` or `construct` field: `{"state": ..., "reason": ...}`, or the plain state string
+ * an older agent sends. What the window does not know (another state, another shape) is skipped,
+ * not an error: the rest of the status still shows. A reason is kept only for a part that is not
+ * ready.
+ */
+export function parsePart(value: unknown): Part | undefined {
+  if (isPartState(value)) {
+    return { state: value };
+  }
+  if (typeof value !== 'object' || value === null || !('state' in value)) {
+    return undefined;
+  }
+  if (!isPartState(value.state)) {
+    return undefined;
+  }
+  if (value.state === 'ready' || !('reason' in value) || typeof value.reason !== 'string') {
+    return { state: value.state };
+  }
+  const reason = value.reason.trim();
+  return reason === '' ? { state: value.state } : { state: value.state, reason };
 }
 
 /** The optional `service` field: an agent that does not send it is older, not wrong. */

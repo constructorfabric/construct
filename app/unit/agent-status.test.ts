@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseStatusReply } from '../src/agent-status';
+import { parsePart, parseStatusReply } from '../src/agent-status';
 
 describe('parseStatusReply', () => {
   it('turns a running reply into a running status and drops unknown fields', () => {
@@ -34,6 +34,85 @@ describe('parseStatusReply', () => {
       startAtLogin: 'unknown',
     });
   });
+
+  it('carries the state and the reason of the database and the Construct gear', () => {
+    expect(
+      parseStatusReply(
+        JSON.stringify({
+          status: 'running',
+          version: '0.1.0',
+          pid: 42,
+          database: { state: 'failed', reason: 'pgvector is not built for this platform yet' },
+          construct: { state: 'failed', reason: 'the database is not running' },
+        }),
+      ),
+    ).toEqual({
+      state: 'running',
+      version: '0.1.0',
+      pid: 42,
+      startAtLogin: 'unknown',
+      database: { state: 'failed', reason: 'pgvector is not built for this platform yet' },
+      construct: { state: 'failed', reason: 'the database is not running' },
+    });
+  });
+
+  it('reads the plain state strings of an older agent', () => {
+    expect(
+      parseStatusReply(
+        '{"status":"running","version":"0.1.0","pid":42,"database":"failed","construct":"starting"}',
+      ),
+    ).toEqual({
+      state: 'running',
+      version: '0.1.0',
+      pid: 42,
+      startAtLogin: 'unknown',
+      database: { state: 'failed' },
+      construct: { state: 'starting' },
+    });
+  });
+
+  it('skips a part it does not know and still reads the rest of the reply', () => {
+    expect(
+      parseStatusReply(
+        JSON.stringify({
+          status: 'running',
+          version: '0.1.0',
+          pid: 42,
+          model: 'm',
+          database: { state: 'sleeping', reason: 'x' },
+          construct: 7,
+        }),
+      ),
+    ).toEqual({ state: 'running', version: '0.1.0', pid: 42, model: 'm', startAtLogin: 'unknown' });
+  });
+
+  it.each([
+    ['ready', { state: 'ready' }],
+    ['starting', { state: 'starting' }],
+    [{ state: 'ready' }, { state: 'ready' }],
+    // A ready part has no reason to show, whatever the agent sends.
+    [{ state: 'ready', reason: 'old text' }, { state: 'ready' }],
+    [
+      { state: 'starting', reason: 'waiting for the database' },
+      { state: 'starting', reason: 'waiting for the database' },
+    ],
+    [
+      { state: 'failed', reason: '  PostgreSQL does not start ' },
+      { state: 'failed', reason: 'PostgreSQL does not start' },
+    ],
+    [{ state: 'failed', reason: '' }, { state: 'failed' }],
+    [{ state: 'failed', reason: 3 }, { state: 'failed' }],
+    [{ state: 'failed' }, { state: 'failed' }],
+  ])('reads the part %j', (value, part) => {
+    expect(parsePart(value)).toEqual(part);
+  });
+
+  it.each([['unknown'], [''], [null], [7], [[]], [{}], [{ state: 'Ready' }], [{ state: 1 }]])(
+    'skips the part %j',
+    (value) => {
+      expect(parsePart(value)).toBeUndefined();
+    },
+  );
 
   it.each([
     ['not JSON', 'running', /JSON/],
