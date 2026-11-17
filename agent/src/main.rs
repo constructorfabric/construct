@@ -171,6 +171,12 @@ fn run() -> std::io::Result<()> {
                 return Ok(());
             }
         };
+        // The activity store is a copy of the records, made in a task of its own: the host does
+        // not wait for it and a stop signal cancels it. Without it the agent still runs.
+        let activity = match database.as_ref() {
+            Some(db) => start_activity(db).await,
+            None => None,
+        };
         // The Construct host needs the database; without one it does not start.
         let started = start_construct_until_stopped(
             database.as_ref(),
@@ -184,6 +190,7 @@ fn run() -> std::io::Result<()> {
             Ok(host) => host,
             Err(sig) => {
                 eprintln!("{sig} while the Construct host was starting; stopped");
+                stop_activity(activity).await;
                 stop_all(None, database.as_ref()).await;
                 return Ok(());
             }
@@ -205,6 +212,7 @@ fn run() -> std::io::Result<()> {
             () = watch => Ok(()),
             () = watch_host => Ok(()),
         };
+        stop_activity(activity).await;
         stop_all(host, database.as_ref()).await;
         result
     });
@@ -416,6 +424,54 @@ async fn start_construct(
             health.set(State::Failed);
             eprintln!("construct failed: {e:#}");
             None
+        }
+    }
+}
+
+/// Make the activity database, then open the store and bring it up to date with the record
+/// files in a task of its own. A failure is only logged: the store is a copy and the agent does
+/// not need it.
+#[cfg(unix)]
+async fn start_activity(
+    db: &construct_agent::database::Database,
+) -> Option<tokio::task::JoinHandle<()>> {
+    use construct_agent::activity::{DBNAME, Store};
+    use construct_agent::records::{self, FileSink};
+
+    if let Err(e) = db.ensure_database(DBNAME).await {
+        eprintln!("activity store off: {e}");
+        return None;
+    }
+    let socket_dir = db.paths().socket_dir.clone();
+    Some(tokio::spawn(async move {
+        let made = async {
+            let store = Store::open(&socket_dir).await.map_err(|e| e.to_string())?;
+            let data_dir = records::data_dir().map_err(|e| e.to_string())?;
+            let applied = store
+                .rebuild(&FileSink::new(&data_dir))
+                .await
+                .map_err(|e| e.to_string());
+            store.close().await;
+            applied
+        };
+        match made.await {
+            Ok(applied) => eprintln!("activity store ready: {applied} records applied"),
+            Err(e) => eprintln!("activity store off: {e}"),
+        }
+    }))
+}
+
+/// Cancel the activity task when it still runs, before PostgreSQL is stopped. What the dropped
+/// pool leaves open is closed by PostgreSQL's fast shutdown, which ends every session; a rebuild
+/// that was cut off is rolled back.
+#[cfg(unix)]
+async fn stop_activity(task: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(task) = task {
+        task.abort();
+        if let Err(e) = task.await
+            && e.is_panic()
+        {
+            eprintln!("activity store off: its task panicked");
         }
     }
 }

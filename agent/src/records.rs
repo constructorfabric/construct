@@ -196,17 +196,9 @@ impl FileSink {
     /// # Errors
     /// Fails when the directory or a file cannot be read.
     pub fn list_sessions(&self, tool: &str) -> io::Result<Vec<SessionInfo>> {
-        let entries = match fs::read_dir(self.source_dir(tool)) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e),
-        };
+        let files = jsonl_files(&self.source_dir(tool))?;
         let mut sessions = Vec::new();
-        for entry in entries {
-            let path = entry?.path();
-            if path.extension().is_none_or(|e| e != "jsonl") {
-                continue;
-            }
+        for path in files {
             let records = read_records(&path)?;
             let Some(first) = records.first() else {
                 continue;
@@ -236,17 +228,9 @@ impl FileSink {
     /// # Errors
     /// Fails when the directory or a file cannot be read.
     pub fn user_turns(&self, tool: &str) -> io::Result<Vec<Turn>> {
-        let entries = match fs::read_dir(self.source_dir(tool)) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e),
-        };
+        let files = jsonl_files(&self.source_dir(tool))?;
         let mut turns = Vec::new();
-        for entry in entries {
-            let path = entry?.path();
-            if path.extension().is_none_or(|e| e != "jsonl") {
-                continue;
-            }
+        for path in files {
             for record in read_records(&path)? {
                 if let Record::Turn(turn) = record
                     && turn.role == Role::User
@@ -265,6 +249,26 @@ impl FileSink {
     /// Fails when the file cannot be read.
     pub fn read_session(&self, tool: &str, session: &str) -> io::Result<Vec<Record>> {
         read_records(&self.session_path(tool, session))
+    }
+
+    /// Every session file of every source, in no particular order.
+    ///
+    /// # Errors
+    /// Fails when a directory cannot be read.
+    pub fn session_files(&self) -> io::Result<Vec<PathBuf>> {
+        let sources = match fs::read_dir(self.dir.join("records")) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut files = Vec::new();
+        for source in sources {
+            let source = source?.path();
+            if source.is_dir() {
+                files.extend(jsonl_files(&source)?);
+            }
+        }
+        Ok(files)
     }
 
     /// Removes a session, and what this sink remembers of it, so a conversation that reuses
@@ -342,7 +346,7 @@ fn file_name(id: &str) -> String {
 }
 
 /// The identity of a stored turn, for dropping a replayed one.
-fn turn_key(t: &Turn) -> u64 {
+pub(crate) fn turn_key(t: &Turn) -> u64 {
     let role = match t.role {
         Role::User => "user",
         Role::Assistant => "assistant",
@@ -359,8 +363,25 @@ fn tool_key(record: &Record, call_id: &str) -> u64 {
     fnv(&[record.time(), kind, call_id])
 }
 
+/// The `.jsonl` files of a directory; none when the directory is not there.
+fn jsonl_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().is_some_and(|e| e == "jsonl") {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
 /// The records of a file; a line that does not parse (a torn last line) is skipped.
-fn read_records(path: &Path) -> io::Result<Vec<Record>> {
+pub(crate) fn read_records(path: &Path) -> io::Result<Vec<Record>> {
     let mut text = String::new();
     match File::open(path) {
         Ok(mut f) => {

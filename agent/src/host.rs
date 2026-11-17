@@ -35,7 +35,7 @@ use toolkit::bootstrap::AppConfig;
 use toolkit::runtime::{ClientRegistration, DbOptions, RunOptions, ShutdownOptions};
 use toolkit_security::constants::DEFAULT_SUBJECT_ID;
 
-use crate::database::{Paths as DatabasePaths, SOCKET_PORT};
+use crate::database::{Paths as DatabasePaths, SOCKET_PORT, SUPERUSER};
 use crate::ipc::{absolute_env_path, create_private_dir, runtime_dir};
 use crate::model::{ModelGateway, ModelState, construct_section};
 use crate::settings::Settings;
@@ -305,7 +305,7 @@ pub fn build_config(
                     "engine": "postgres",
                     "host": socket_dir,
                     "port": SOCKET_PORT,
-                    "user": "postgres",
+                    "user": SUPERUSER,
                 },
             },
         },

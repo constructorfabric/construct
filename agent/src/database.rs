@@ -21,6 +21,8 @@ use crate::ipc::{absolute_env_path, create_private_dir};
 const POSTGRESQL_VERSION: &str = env!("POSTGRESQL_VERSION");
 /// Port number used only to name the socket file (`.s.PGSQL.5432`); nothing listens on TCP.
 pub const SOCKET_PORT: u16 = 5432;
+/// The user everything connects as over the socket (see `PG_HBA`).
+pub const SUPERUSER: &str = "postgres";
 /// Only the local socket is reachable, and only by the user (the socket directory is `0700`):
 /// the user connects as the superuser `postgres` without a password.
 const PG_HBA: &str = "local all all trust\n";
@@ -128,7 +130,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-fn err(context: &str, e: impl fmt::Display) -> Error {
+pub(crate) fn err(context: &str, e: impl fmt::Display) -> Error {
     Error(format!("{context}: {e}"))
 }
 
@@ -269,7 +271,7 @@ impl Database {
         let out = tokio::process::Command::new(self.postgres.settings().binary_dir().join("psql"))
             .arg("-h")
             .arg(&self.paths.socket_dir)
-            .args(["-U", "postgres", "-d", "postgres", "-Atc"])
+            .args(["-U", SUPERUSER, "-d", "postgres", "-Atc"])
             .arg("select default_version from pg_available_extensions where name = 'vector'")
             .kill_on_drop(true)
             .output()
