@@ -32,6 +32,15 @@ describe('parseChatEvent', () => {
     });
   });
 
+  it('reads the line of a tool call', () => {
+    expect(parseChatEvent('{"event":"tool","line":"Wrote notes.txt"}')).toEqual({
+      event: 'tool',
+      line: 'Wrote notes.txt',
+    });
+    expect(() => parseChatEvent('{"event":"tool"}')).toThrow();
+    expect(() => parseChatEvent('{"event":"tool","line":3}')).toThrow();
+  });
+
   it('refuses what is not an event', () => {
     expect(() => parseChatEvent('{"event":"delta"}')).toThrow();
     expect(() => parseChatEvent('{"event":5}')).toThrow();
@@ -40,7 +49,6 @@ describe('parseChatEvent', () => {
   });
 
   it('skips an event it does not know', () => {
-    expect(parseChatEvent('{"event":"tool","line":"Read notes.txt"}')).toBeNull();
     expect(parseChatEvent('{"event":"other"}')).toBeNull();
   });
 });
@@ -107,10 +115,27 @@ describe('the replies', () => {
     });
   });
 
+  it('keeps the lines of tool calls in order with the turns', () => {
+    const lines = [
+      '{"kind":"turn","role":"user","time":"1","text":"hi"}',
+      '{"kind":"toolcall","hidden":true,"time":"2","call_id":"c","name":"Read","arguments":"{}"}',
+      '{"kind":"turn","role":"tool","time":"2","text":"Read notes.txt"}',
+      '{"kind":"toolresult","hidden":true,"time":"3","call_id":"c","text":"secret"}',
+      '{"kind":"turn","role":"assistant","time":"4","text":"hello"}',
+    ];
+    expect(parseGetLines(lines)).toEqual({
+      ok: true,
+      messages: [
+        { role: 'user', text: 'hi' },
+        { role: 'tool', text: 'Read notes.txt' },
+        { role: 'assistant', text: 'hello' },
+      ],
+    });
+  });
+
   it('skips a turn of a role it does not know', () => {
     const lines = [
       '{"kind":"turn","role":"user","time":"1","text":"hi"}',
-      '{"kind":"turn","role":"tool","time":"2","text":"Read notes.txt"}',
       '{"kind":"turn","role":"other","time":"3","text":"x"}',
       '{"kind":"turn","role":"assistant","time":"4","text":"hello"}',
     ];

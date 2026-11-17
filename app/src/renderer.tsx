@@ -1,5 +1,6 @@
 import '@gears-frontx/ui-kit/theme.css';
 import '@gears-frontx/ui-kit/typeset.css';
+import '@gears-frontx/ui-kit/utilities.css';
 import { CSPProvider } from '@base-ui/react/csp-provider';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

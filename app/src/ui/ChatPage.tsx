@@ -10,6 +10,8 @@ import {
   InputGroup,
   InputGroupAddon,
   InputGroupTextarea,
+  Marker,
+  MarkerContent,
   Message,
   MessageContent,
   MessageScroller,
@@ -53,11 +55,13 @@ export function ChatPage({
   readonly onOpenSettings: () => void;
 }): ReactNode {
   const { messages, running, streaming, failure, loading, loadError, active } = chat.state;
+  const last = messages.at(-1);
   const noModelFailure = failure?.kind === 'reason' && failure.reason === 'no model';
   const empty = messages.length === 0 && !loading && loadError === null && failure === null;
   // What follows the messages in the thread; the last of them is what the thread follows down.
   const trailing: { readonly id: string; readonly node: ReactNode }[] = [];
-  if (running && !streaming) {
+  // A tool line that shimmers already says that the agent works.
+  if (running && !streaming && last?.role !== 'tool') {
     trailing.push({
       id: 'waiting',
       node: <Spinner id="chat-waiting" aria-label={t('Thread.Waiting')} />,
@@ -81,7 +85,6 @@ export function ChatPage({
     });
   }
   const lastId = trailing.at(-1)?.id ?? `message-${messages.length - 1}`;
-  const last = messages.at(-1);
   // Whether the reader is at the bottom: only then does a growing answer pull the thread down.
   const atBottom = useRef(true);
 
@@ -109,31 +112,39 @@ export function ChatPage({
                   messageId={`message-${index}`}
                   scrollAnchor={`message-${index}` === lastId}
                 >
-                  <Message
-                    align={message.role === 'user' ? 'end' : 'start'}
-                    data-role={message.role}
-                  >
-                    <MessageContent>
-                      <Bubble
-                        variant={message.role === 'user' ? 'outline' : 'ghost'}
-                        align={message.role === 'user' ? 'end' : 'start'}
-                      >
-                        {message.role === 'user' ? (
-                          <BubbleContent className={styles.messageText}>
-                            {message.text}
-                          </BubbleContent>
-                        ) : (
-                          <BubbleContent className={styles.answerText}>
-                            <Markdown
-                              text={message.text}
-                              onOpenLink={openLink}
-                              imageLabel={t('Markdown.Image')}
-                            />
-                          </BubbleContent>
-                        )}
-                      </Bubble>
-                    </MessageContent>
-                  </Message>
+                  {message.role === 'tool' ? (
+                    // Only the newest line of a running answer moves; the rest are still.
+                    <ToolLine
+                      text={message.text}
+                      moving={running && index === messages.length - 1}
+                    />
+                  ) : (
+                    <Message
+                      align={message.role === 'user' ? 'end' : 'start'}
+                      data-role={message.role}
+                    >
+                      <MessageContent>
+                        <Bubble
+                          variant={message.role === 'user' ? 'outline' : 'ghost'}
+                          align={message.role === 'user' ? 'end' : 'start'}
+                        >
+                          {message.role === 'user' ? (
+                            <BubbleContent className={styles.messageText}>
+                              {message.text}
+                            </BubbleContent>
+                          ) : (
+                            <BubbleContent className={styles.answerText}>
+                              <Markdown
+                                text={message.text}
+                                onOpenLink={openLink}
+                                imageLabel={t('Markdown.Image')}
+                              />
+                            </BubbleContent>
+                          )}
+                        </Bubble>
+                      </MessageContent>
+                    </Message>
+                  )}
                 </MessageScrollerItem>
               ))}
               {trailing.map((item) => (
@@ -171,6 +182,21 @@ export function ChatPage({
         <Composer chat={chat} />
       </div>
     </div>
+  );
+}
+
+/** The quiet status line of one tool call; the text comes from the agent. */
+function ToolLine({
+  text,
+  moving,
+}: {
+  readonly text: string;
+  readonly moving: boolean;
+}): ReactNode {
+  return (
+    <Marker role="status" data-role="tool">
+      <MarkerContent className={moving ? 'shimmer' : undefined}>{text}</MarkerContent>
+    </Marker>
   );
 }
 

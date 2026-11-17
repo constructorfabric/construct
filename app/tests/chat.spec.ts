@@ -17,6 +17,10 @@ const stopDeadlineMs = 2000;
 
 const user = (page: Page) => page.locator('[data-role=user]');
 const turns = (page: Page) => page.locator('[data-role]');
+/** The role of each turn and tool line of the thread, in the order it is shown. */
+const roles = (page: Page) =>
+  turns(page).evaluateAll((all) => all.map((element) => element.getAttribute('data-role')));
+const toolLines = (page: Page) => page.locator('[data-role=tool]');
 const rows = (page: Page) => page.locator('#chat-conversations li');
 
 async function atBottom(page: Page): Promise<boolean> {
@@ -504,4 +508,91 @@ test('screenshots of a conversation in the light and the dark theme', async ({
   await expect(assistant(page)).toContainText('small, local tools');
   await expect(rows(page)).toHaveCount(2);
   await screenshotBothThemes(page, 'chat-streamed');
+});
+
+test('a line for each tool call stands between the messages, and stays after a restart', async ({
+  session,
+  provider,
+}) => {
+  const secret = 'violet-ledger-7731';
+  provider.calls = [
+    { name: 'Write', arguments: { file_path: 'notes/plan.txt', content: `alpha ${secret}` } },
+    {
+      name: 'Edit',
+      arguments: { file_path: 'notes/plan.txt', old_string: 'alpha', new_string: 'omega-0042' },
+    },
+  ];
+  // The final answer waits before its first piece, so the thread can be read with both lines in.
+  provider.script = { chunks: ['I ', 'saved the plan.'], pauseMs: 0, holdAt: 0 };
+  const first = await openApp(session);
+  try {
+    await configure(first.page, { address: provider.url });
+    await ask(first.page, 'save my plan');
+    await expect(toolLines(first.page)).toHaveText([
+      'Wrote notes/plan.txt',
+      'Changed notes/plan.txt',
+    ]);
+    await expect(toolLines(first.page).first()).toHaveAttribute('role', 'status');
+    // Only the newest line moves, and the waiting spinner gives way to it.
+    const newest = toolLines(first.page).last().locator('.shimmer');
+    await expect(newest).toHaveCount(1);
+    // The class does something only with the kit's utilities loaded: the sweep runs.
+    await expect(newest).toHaveCSS('animation-name', 'shimmer-sweep');
+    await expect(toolLines(first.page).first().locator('.shimmer')).toHaveCount(0);
+    await expect(first.page.locator('#chat-waiting')).toHaveCount(0);
+    await expect(assistant(first.page)).toHaveCount(0);
+
+    // The held answer is the third request; releasing earlier would open the gate of the second.
+    await expect.poll(() => provider.seen.length).toBe(3);
+    provider.release();
+    await expect(assistant(first.page)).toHaveText('I saved the plan.');
+    await expect(first.page.locator('#chat-stop-button')).toHaveCount(0);
+    await expect(first.page.locator('.shimmer')).toHaveCount(0);
+    // The lines are in order with the messages: the question, the two calls, the answer.
+    expect(await roles(first.page)).toEqual(['user', 'tool', 'tool', 'assistant']);
+    await screenshotBothThemes(first.page, 'chat-tool-lines');
+    const text = await windowText(first.page);
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain('alpha');
+    expect(text).not.toContain('omega-0042');
+    await expectNoPolicyViolations(first.page);
+  } finally {
+    await first.app.close();
+  }
+  await session.stopAgent();
+  await session.startAgent();
+
+  const second = await openApp(session);
+  try {
+    await rows(second.page).first().getByRole('button').first().click();
+    await expect(assistant(second.page)).toHaveText('I saved the plan.');
+    expect(await roles(second.page)).toEqual(['user', 'tool', 'tool', 'assistant']);
+    await expect(toolLines(second.page)).toHaveText([
+      'Wrote notes/plan.txt',
+      'Changed notes/plan.txt',
+    ]);
+    await expect(second.page.locator('.shimmer')).toHaveCount(0);
+    expect(await windowText(second.page)).not.toContain(secret);
+    await expectNoPolicyViolations(second.page);
+  } finally {
+    await second.app.close();
+  }
+});
+
+test('a thread that ends on a tool line stops shimmering when the answer is stopped', async ({
+  page,
+  provider,
+}) => {
+  provider.calls = [{ name: 'Write', arguments: { file_path: 'notes/plan.txt', content: 'x' } }];
+  // The next request is never answered, so the answer stays on the tool line until Stop.
+  provider.script = { chunks: ['never'], pauseMs: 0, holdAt: 0, forever: true };
+  await configure(page, { address: provider.url });
+  await ask(page, 'save my plan');
+  await expect(toolLines(page)).toHaveText(['Wrote notes/plan.txt']);
+  await expect(toolLines(page).last().locator('.shimmer')).toHaveCount(1);
+
+  await page.locator('#chat-stop-button').click();
+  await expect(page.locator('#chat-failure')).toContainText('Stopped');
+  expect(await roles(page)).toEqual(['user', 'tool']);
+  await expect(page.locator('.shimmer')).toHaveCount(0);
 });
