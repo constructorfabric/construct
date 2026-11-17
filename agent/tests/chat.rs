@@ -1380,58 +1380,120 @@ fn an_unknown_name_is_a_result_even_when_the_chat_has_tools() {
 }
 
 #[test]
-fn the_ninth_call_is_not_run_and_the_answer_says_so() {
-    // The model asks for one more call in every turn.
+fn thirty_calls_in_a_row_all_run_in_order_and_the_answer_ends_normally() {
+    // The model asks for one call in each of its first thirty turns, then answers.
     let fake = Fake::start(Arc::new(|n, s| {
         head(s);
-        for data in whole_call(&format!("call_{n}"), "lookup", "{}") {
-            raw_chunk(s, &data);
+        if n < 30 {
+            for data in whole_call(&format!("call_{n}"), "lookup", &format!(r#"{{"q":"{n}"}}"#)) {
+                raw_chunk(s, &data);
+            }
+        } else {
+            raw_chunk(s, &text_chunk("All done."));
+            raw_chunk(s, &finish("stop"));
         }
         done(s);
     }));
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let env = Env::with_tools("ninth", &fake.url(), noting(&seen));
+    let env = Env::with_tools("thirty", &fake.url(), noting(&seen));
     let events = env.send("", MESSAGE).rest();
     let (conversation, text, last) = summary(&events);
     assert_eq!(last, json!({ "event": "done" }), "{events:?}");
-    assert_eq!(text, "I stopped after 8 tool calls.");
-    assert_eq!(seen.lock().unwrap().len(), 8);
-    assert_eq!(fake.bodies().len(), 9);
+    assert_eq!(text, "All done.");
+    let expected: Vec<String> = (0..30)
+        .map(|n| format!(r#"lookup {{"q":"{n}"}}"#))
+        .collect();
+    assert_eq!(*seen.lock().unwrap(), expected);
+    assert_eq!(fake.bodies().len(), 31);
     let records = env.get(&conversation);
     assert_eq!(
         records.iter().filter(|r| r["kind"] == "toolcall").count(),
-        8
+        30
     );
     assert_eq!(
         records.iter().filter(|r| r["kind"] == "toolresult").count(),
-        8
+        30
     );
-    assert_eq!(
-        assistant_text(&records).as_deref(),
-        Some("I stopped after 8 tool calls.")
-    );
+    assert_eq!(assistant_text(&records).as_deref(), Some("All done."));
+}
 
-    // Ten calls in one turn: the first eight run, and the model is not asked again.
-    let fake = Fake::start(turns(vec![{
-        let mut chunks: Vec<Value> = (0..10)
-            .map(|i| call_chunk(i, Some(&format!("c{i}")), Some("lookup"), "{}"))
-            .collect();
-        chunks.push(finish("tool_calls"));
-        chunks
-    }]));
+#[test]
+fn ten_calls_in_one_turn_all_run() {
+    let fake = Fake::start(turns(vec![
+        {
+            let mut chunks: Vec<Value> = (0..10)
+                .map(|i| call_chunk(i, Some(&format!("c{i}")), Some("lookup"), "{}"))
+                .collect();
+            chunks.push(finish("tool_calls"));
+            chunks
+        },
+        vec![text_chunk("Done."), finish("stop")],
+    ]));
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let env = Env::with_tools("ninth-at-once", &fake.url(), noting(&seen));
+    let env = Env::with_tools("ten-at-once", &fake.url(), noting(&seen));
     let events = env.send("", MESSAGE).rest();
-    let (conversation, text, last) = summary(&events);
+    let (_, text, last) = summary(&events);
     assert_eq!(last, json!({ "event": "done" }), "{events:?}");
-    assert_eq!(text, "I stopped after 8 tool calls.");
-    assert_eq!(seen.lock().unwrap().len(), 8);
-    assert_eq!(fake.bodies().len(), 1);
+    assert_eq!(text, "Done.");
+    assert_eq!(seen.lock().unwrap().len(), 10);
+    assert_eq!(fake.bodies().len(), 2);
+}
+
+#[test]
+fn stop_during_the_twenty_fifth_call_ends_within_two_seconds_and_answers_every_call() {
+    // One quick call in each of the first 24 turns, a slow one in the 25th, then an answer.
+    let fake = Fake::start(Arc::new(|n, s| {
+        head(s);
+        if n < 25 {
+            let name = if n == 24 { "slow" } else { "lookup" };
+            for data in whole_call(&format!("call_{n}"), name, "{}") {
+                raw_chunk(s, &data);
+            }
+        } else {
+            raw_chunk(s, &text_chunk("after the stop"));
+            raw_chunk(s, &finish("stop"));
+        }
+        done(s);
+    }));
+    let (runner, started_rx, release_tx) = blocking(Some("slow"));
+    let env = Env::with_tools("stop-25th", &fake.url(), runner);
+    let mut lines = env.send("", MESSAGE);
+    let conversation = lines.next().unwrap()["conversation"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    let at = Instant::now();
+    let stopped = env.connect(&format!("chat-stop {conversation}")).rest();
+    assert_eq!(stopped, vec![json!({ "stopped": true })]);
+    let rest = lines.rest();
+    assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+    assert_eq!(
+        rest.last().unwrap(),
+        &json!({ "event": "done", "stopped": true })
+    );
+    let _ = release_tx.send(());
+
     let records = env.get(&conversation);
     assert_eq!(
         records.iter().filter(|r| r["kind"] == "toolcall").count(),
-        8
+        25
     );
+    let results: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "toolresult")
+        .collect();
+    assert_eq!(results.len(), 25);
+    assert_eq!(results[24]["text"], "stopped by the user");
+
+    // The next request has a result for every call.
+    let events = env.send(&conversation, "and then?").rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    let bodies = fake.bodies();
+    let sent = messages(bodies.last().unwrap());
+    let answers = sent.iter().filter(|m| m["role"] == "tool").count();
+    assert_eq!(answers, 25);
 }
 
 #[test]
@@ -1486,43 +1548,6 @@ fn stop_while_a_call_runs_answers_every_call_and_ends_within_two_seconds() {
         answers
             .iter()
             .all(|m| m["content"] == "stopped by the user")
-    );
-}
-
-#[test]
-fn the_limit_counts_calls_across_turns_and_a_turn_may_hold_text_too() {
-    let fake = Fake::start(Arc::new(|n, s| {
-        head(s);
-        if n == 0 {
-            raw_chunk(s, &text_chunk("Let me look."));
-        }
-        for i in 0..5 {
-            raw_chunk(
-                s,
-                &call_chunk(i, Some(&format!("c{n}_{i}")), Some("lookup"), "{}"),
-            );
-        }
-        raw_chunk(s, &finish("tool_calls"));
-        done(s);
-    }));
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let env = Env::with_tools("across-turns", &fake.url(), noting(&seen));
-    let events = env.send("", MESSAGE).rest();
-    let (conversation, text, last) = summary(&events);
-    assert_eq!(last, json!({ "event": "done" }), "{events:?}");
-    assert_eq!(text, "Let me look.I stopped after 8 tool calls.");
-    // Five calls in the first turn, three of the five in the second.
-    assert_eq!(seen.lock().unwrap().len(), 8);
-    assert_eq!(fake.bodies().len(), 2);
-    let records = env.get(&conversation);
-    assert_eq!(records[1]["text"], "Let me look.");
-    assert_eq!(
-        records.iter().filter(|r| r["kind"] == "toolcall").count(),
-        8
-    );
-    assert_eq!(
-        records.iter().filter(|r| r["kind"] == "toolresult").count(),
-        8
     );
 }
 
