@@ -1,7 +1,7 @@
-#![cfg(unix)]
-#![allow(clippy::unwrap_used)] // helpers outside #[test] functions use it too
 //! The facts of the person as a `recall_facts` call in the conversation, against a fake Construct
 //! (a local port with a canned profile) and a fake provider that records its requests.
+#![cfg(unix)]
+#![allow(clippy::unwrap_used)] // helpers outside #[test] functions use it too
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
