@@ -16,8 +16,21 @@ export async function screenshotInTheme(
   await cdp.send('Emulation.setEmulatedMedia', {
     features: [{ name: 'prefers-color-scheme', value: scheme }],
   });
-  // The kit eases colours between themes; a screenshot taken mid-way shows a mix of both.
-  await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)));
+  // The kit eases colours between themes; a screenshot taken mid-way shows a mix of both. Only
+  // animations that end are waited for: a shimmer repeats, and a scroll-driven one follows the
+  // scroll position, so neither ever finishes.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter(
+          (a) =>
+            a.timeline instanceof DocumentTimeline &&
+            Number.isFinite(a.effect?.getComputedTiming().endTime),
+        )
+        .map((a) => a.finished),
+    ),
+  );
   await page.screenshot({ path: path.join(screenshotDir, `${name}-${scheme}.png`) });
 }
 

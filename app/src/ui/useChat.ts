@@ -46,6 +46,9 @@ export function useChat(visible: boolean): Chat {
         case 'delta':
           dispatch({ type: 'delta', text: event.text });
           break;
+        case 'tool':
+          dispatch({ type: 'tool', line: event.line });
+          break;
         case 'done':
           dispatch({ type: 'done', stopped: event.stopped });
           void refresh();
