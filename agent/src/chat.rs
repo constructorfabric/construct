@@ -287,6 +287,20 @@ impl Chat {
         self
     }
 
+    /// Tell `recorder` of every record the chat stores, after it is stored. Call it before the
+    /// chat is cloned.
+    #[must_use]
+    pub fn with_recorder(mut self, recorder: crate::records::Recorder) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner
+                .sink
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .set_recorder(recorder);
+        }
+        self
+    }
+
     /// Offer `tools` to the model and run its calls; without any, no list is sent and every call is
     /// answered with an unknown-tool error. Call it before the chat is cloned.
     ///

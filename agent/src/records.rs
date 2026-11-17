@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 use crate::follow::Observer;
 use crate::ipc::absolute_env_path;
 
+/// Called with every record a sink stores for the first time, on the writer's thread, after the
+/// record is written. It must not block. Unlike an [`Observer`](crate::follow::Observer), which
+/// hears of user turns, it hears of every kind of record.
+pub type Recorder = std::sync::Arc<dyn Fn(&Record) + Send + Sync>;
+
 const PROGRESS_FILE: &str = "connectors-progress.json";
 const MAX_PLAIN_NAME: usize = 64;
 const HASH_PREFIX: &str = "h-";
@@ -161,6 +166,8 @@ pub struct FileSink {
     unsynced: HashSet<PathBuf>,
     /// Told of every user turn this sink stores for the first time.
     observer: Option<Observer>,
+    /// Told of every record this sink stores for the first time.
+    recorder: Option<Recorder>,
 }
 
 impl FileSink {
@@ -172,7 +179,21 @@ impl FileSink {
             sessions: HashMap::new(),
             unsynced: HashSet::new(),
             observer: None,
+            recorder: None,
         }
+    }
+
+    /// Tell `recorder` of every record this sink stores for the first time, whatever its
+    /// kind, after it is written.
+    #[must_use]
+    pub fn with_recorder(mut self, recorder: Recorder) -> Self {
+        self.set_recorder(recorder);
+        self
+    }
+
+    /// Like [`FileSink::with_recorder`], for a sink that is built already.
+    pub fn set_recorder(&mut self, recorder: Recorder) {
+        self.recorder = Some(recorder);
     }
 
     /// Tell `observer` of every user turn this sink stores for the first time, whatever its
@@ -539,6 +560,9 @@ impl Sink for FileSink {
         self.unsynced.insert(path.clone());
         if let Some(known) = self.sessions.get_mut(&path) {
             known.note(record);
+        }
+        if let Some(recorder) = &self.recorder {
+            recorder(record);
         }
         if let (Record::Turn(turn), Some(observer)) = (record, &self.observer)
             && turn.role == Role::User

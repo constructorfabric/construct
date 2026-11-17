@@ -5,8 +5,8 @@
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -92,6 +92,8 @@ struct Stand {
     host: FakeHost,
     manager: Manager,
     socket: PathBuf,
+    /// Every record the chat told its recorder of.
+    recorded: Arc<Mutex<Vec<connectors::Record>>>,
     _rt: tokio::runtime::Runtime,
 }
 
@@ -125,13 +127,19 @@ impl Stand {
             .build()
             .unwrap();
         let deadlines = deadlines();
+        let recorded: Arc<Mutex<Vec<connectors::Record>>> = Arc::default();
+        let tell: construct_agent::records::Recorder = {
+            let seen = recorded.clone();
+            Arc::new(move |record| seen.lock().unwrap().push(record.clone()))
+        };
         // The chat has the link the shipped one has, for its facts tool; its own loop sends nothing
         // to the route that takes prompts.
         let chat = Chat::new(settings.clone(), &data, rt.handle().clone(), deadlines)
             .unwrap()
             .with_link(link.clone())
             .with_tools(ChatTools::new(vec![Arc::new(Lookup)]).unwrap())
-            .with_observer(manager.observer());
+            .with_observer(manager.observer())
+            .with_recorder(tell);
         let server = Server::bind(&socket)
             .unwrap()
             .with_settings(settings.clone())
@@ -145,6 +153,7 @@ impl Stand {
             host,
             manager,
             socket,
+            recorded,
             _rt: rt,
         }
     }
@@ -297,6 +306,30 @@ fn a_host_that_fails_changes_nothing_in_the_chat() {
     let after = stand.records(&conversation);
     assert_eq!(after[..before.len()], before[..]);
     assert!(after.len() > before.len());
+}
+
+#[test]
+fn the_chat_tells_its_recorder_of_each_record_it_stores() {
+    let stand = Stand::new();
+    stand.send("", "I mostly write Rust");
+    stand.wait_for_calls(1);
+    let recorded = stand.recorded.lock().unwrap().clone();
+    // The user's message, the tool call and its result, and the answer; the chat's own view of
+    // the conversation adds a line for the tool that is no record.
+    let kinds_recorded: Vec<&str> = recorded
+        .iter()
+        .map(|r| match r {
+            connectors::Record::Turn(t) if t.role == connectors::Role::User => "user",
+            connectors::Record::Turn(_) => "assistant",
+            connectors::Record::Mark(_) => "mark",
+            connectors::Record::ToolCall(_) => "tool_call",
+            connectors::Record::ToolResult(_) => "tool_result",
+        })
+        .collect();
+    assert_eq!(
+        kinds_recorded,
+        ["user", "tool_call", "tool_result", "assistant"]
+    );
 }
 
 fn kinds(records: &[Value]) -> Vec<&str> {

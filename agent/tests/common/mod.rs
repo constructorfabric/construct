@@ -17,6 +17,8 @@ use std::time::Duration;
 #[cfg(unix)]
 pub mod fake_host;
 #[cfg(unix)]
+pub mod pg_stand;
+#[cfg(unix)]
 pub mod stand;
 
 use construct_agent::autostart::{CommandRunner, linux, macos};

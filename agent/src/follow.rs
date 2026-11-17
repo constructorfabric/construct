@@ -18,12 +18,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use connectors::{FileState, Line, Parsed, Record, Registry, Tool, Turn, for_each_line};
 
-use crate::records::{FileProgress, FileSink, Progress, Sink};
+use crate::records::{FileProgress, FileSink, Progress, Recorder, Sink};
 
 /// A file that was never read is ignored when it was last changed longer ago than this.
 const FIRST_SCAN_AGE: Duration = Duration::from_hours(30 * 24);
 /// Pause between two passes.
-pub const POLL_INTERVAL: Duration = Duration::from_secs(10);
+pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Lines read before the progress is saved in the middle of a file.
 const SAVE_EVERY_LINES: u32 = 5000;
 /// The longest the progress stays unsaved while a pass is running.
@@ -166,11 +166,12 @@ pub type Observer = Arc<dyn Fn(&Turn) + Send + Sync>;
 /// unreadable progress file), the reason is in the status of every tool.
 #[must_use]
 pub fn spawn(tools: Registry, paths: io::Result<(PathBuf, PathBuf)>, stats: &Stats) -> Sender<()> {
-    spawn_observed(tools, paths, stats, None, None)
+    spawn_observed(tools, paths, stats, None, None, None)
 }
 
-/// Like [`spawn`], with a [`Switch`] that decides per tool whether its sessions are stored, and an
-/// [`Observer`] that is told of every new turn.
+/// Like [`spawn`], with a [`Switch`] that decides per tool whether its sessions are stored, an
+/// [`Observer`] that is told of every new turn and a [`Recorder`] that is told of every new
+/// record.
 #[must_use]
 pub fn spawn_observed(
     tools: Registry,
@@ -178,15 +179,19 @@ pub fn spawn_observed(
     stats: &Stats,
     switch: Option<Switch>,
     observer: Option<Observer>,
+    recorder: Option<Recorder>,
 ) -> Sender<()> {
     let (alive, stop) = mpsc::channel::<()>();
     let names: Vec<&'static str> = tools.iter().map(Tool::name).collect();
     let follower = paths
         .and_then(|(home, data)| {
-            let sink = match observer {
-                Some(observer) => FileSink::new(&data).with_observer(observer),
-                None => FileSink::new(&data),
-            };
+            let mut sink = FileSink::new(&data);
+            if let Some(observer) = observer {
+                sink = sink.with_observer(observer);
+            }
+            if let Some(recorder) = recorder {
+                sink = sink.with_recorder(recorder);
+            }
             Follower::new(tools, &home, sink, stats.clone())
         })
         .map(|follower| match switch {

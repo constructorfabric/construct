@@ -38,6 +38,7 @@ pub fn status_response(
     model_state: &str,
     service_registered: Option<bool>,
     facts: Option<serde_json::Value>,
+    activity: Option<serde_json::Value>,
 ) -> String {
     let mut reply = serde_json::json!({
         "status": "running",
@@ -51,6 +52,9 @@ pub fn status_response(
     });
     if let Some(facts) = facts {
         reply["facts"] = facts;
+    }
+    if let Some(activity) = activity {
+        reply["activity"] = activity;
     }
     if let Some(registered) = service_registered {
         reply["service"] = if registered {
@@ -142,6 +146,7 @@ mod unix {
     use std::time::Duration;
 
     use super::{MAX_REQUEST, error_response, status_response, unknown_command_response};
+    use crate::activity::Feed;
     use crate::chat::{self, Chat};
     use crate::database::Health;
     use crate::follow::Stats;
@@ -184,6 +189,7 @@ mod unix {
         settings: Option<Settings>,
         chat: Option<Chat>,
         manage: Option<Manager>,
+        activity: Option<Feed>,
     }
 
     impl Server {
@@ -218,6 +224,7 @@ mod unix {
                 settings: None,
                 chat: None,
                 manage: None,
+                activity: None,
             })
         }
 
@@ -284,6 +291,13 @@ mod unix {
             self
         }
 
+        /// Report the activity store in `status` as `activity`.
+        #[must_use]
+        pub fn with_activity(mut self, activity: Feed) -> Self {
+            self.activity = Some(activity);
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -305,6 +319,7 @@ mod unix {
                         let settings = self.settings.clone();
                         let chat = self.chat.clone();
                         let manage = self.manage.clone();
+                        let activity = self.activity.clone();
                         thread::spawn(move || {
                             let shared = Shared {
                                 database: &database,
@@ -315,6 +330,7 @@ mod unix {
                                 settings: settings.as_ref(),
                                 chat: chat.as_ref(),
                                 manage: manage.as_ref(),
+                                activity: activity.as_ref(),
                             };
                             if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
@@ -436,6 +452,7 @@ mod unix {
         settings: Option<&'a Settings>,
         chat: Option<&'a Chat>,
         manage: Option<&'a Manager>,
+        activity: Option<&'a Feed>,
     }
 
     /// Never log, or return in an error, any part of `line`: it can hold a key.
@@ -468,6 +485,7 @@ mod unix {
                 model_state.as_str(),
                 (shared.service)(),
                 shared.manage.map(Manager::status),
+                shared.activity.map(Feed::to_json),
             ),
             ("backfill", _) => shared.manage.map_or_else(
                 || error_response("backfill is not available"),
@@ -661,6 +679,7 @@ mod tests {
             "not_configured",
             None,
             None,
+            None,
         );
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["status"], "running");
@@ -682,6 +701,7 @@ mod tests {
             "m",
             "configured",
             Some(true),
+            None,
             None,
         );
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
