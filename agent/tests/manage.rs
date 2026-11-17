@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use connectors::{Record, Role, Turn};
+use connectors::{Author, Record, Role, Turn};
 use construct_agent::chat::Link;
 use construct_agent::host::Connection;
 use construct_agent::manage::{CONTEXT_TURNS, Manager, Timing};
@@ -203,6 +203,7 @@ fn turn(tool: &str, session: &str, time: &str, role: Role, text: &str) -> Turn {
         folder: String::new(),
         branch: String::new(),
         role,
+        author: Author::Unknown,
         text: text.into(),
     }
 }

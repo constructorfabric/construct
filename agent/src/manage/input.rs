@@ -47,6 +47,7 @@ pub fn input(prompt: &str, before: &[Turn]) -> (String, String) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use connectors::Author;
 
     fn turn(role: Role, text: &str) -> Turn {
         Turn {
@@ -56,6 +57,7 @@ mod tests {
             folder: String::new(),
             branch: String::new(),
             role,
+            author: Author::Unknown,
             text: text.into(),
         }
     }
