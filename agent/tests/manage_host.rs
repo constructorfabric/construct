@@ -27,8 +27,11 @@ use common::Agent;
 const LANGUAGE_AND_REPOSITORY: &str =
     "I write Rust, and my code lives in the gears-rust repository";
 
-/// A model server that answers the planner: a prompt that names a repository gets two facts, any
-/// other prompt gets "nothing changed". It counts the conversations the planner started.
+const REMEMBER_CATS: &str = "remember that I love cats";
+
+/// A model server that answers the planner: a prompt that names a repository gets two facts, a
+/// request to remember something gets a note, any other prompt gets "nothing changed". It counts
+/// the conversations the planner started.
 struct FakeModel {
     url: String,
     conversations: Arc<AtomicUsize>,
@@ -70,7 +73,17 @@ impl FakeModel {
                         counter.fetch_add(1, Ordering::SeqCst);
                     }
                     thread::sleep(*held.lock().unwrap());
-                    let message = if body.contains("gears-rust") && !answered_tools {
+                    let message = if body.contains(REMEMBER_CATS) && !answered_tools {
+                        json!({
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": [call("call_1", "add", &json!({
+                                "property": "remembered_notes",
+                                "value": "The person loves cats",
+                                "confidence": 0.9,
+                            }))],
+                        })
+                    } else if body.contains("gears-rust") && !answered_tools {
                         json!({
                             "role": "assistant",
                             "content": null,
@@ -479,6 +492,19 @@ fn a_kill_9_during_a_call_does_not_send_that_prompt_again() {
     );
 }
 
+/// A chat message through the real agent: the planner is asked once and one message is stored.
+fn send_chat_message(stand: &Stand, model: &FakeModel, message: &str) {
+    let line = format!(
+        "chat-send {}",
+        json!({ "conversation": "", "message": message })
+    );
+    let reply = request(&stand.socket(), &line, Duration::from_secs(60)).unwrap();
+    // The first line of the answer; the chat goes on by itself.
+    assert!(reply.contains(r#""event":"start""#), "{reply}");
+    stand.wait("the chat message", |s| s["facts"]["live"]["stored"] == 1);
+    assert_eq!(model.conversations(), 1, "one conversation of the planner");
+}
+
 /// SIGKILL, then wait for the exit.
 fn kill_9(agent: &mut Agent) {
     agent.0.kill().unwrap();
@@ -494,17 +520,34 @@ fn a_chat_message_in_the_real_agent_becomes_a_prompt_for_the_facts_route() {
     stand.set_model(&model.url);
     stand.wait_ready();
 
-    let line = format!(
-        "chat-send {}",
-        json!({ "conversation": "", "message": LANGUAGE_AND_REPOSITORY })
-    );
-    let reply = request(&stand.socket(), &line, Duration::from_secs(60)).unwrap();
-    // The first line of the answer; the chat goes on by itself.
-    assert!(reply.contains(r#""event":"start""#), "{reply}");
-    stand.wait("the chat message", |s| s["facts"]["live"]["stored"] == 1);
-    assert_eq!(model.conversations(), 1, "one conversation of the planner");
+    send_chat_message(&stand, &model, LANGUAGE_AND_REPOSITORY);
     assert_eq!(
         values_of(&stand.profile(), "repositories"),
         [json!("gears-rust")]
     );
+}
+
+#[test]
+#[ignore = "starts PostgreSQL and the Construct host; run with --ignored"]
+fn a_request_to_remember_lands_in_the_remembered_notes_property() {
+    let stand = Stand::new("mf-notes");
+    let model = FakeModel::start();
+    let _agent = stand.agent();
+    stand.set_model(&model.url);
+    stand.wait_ready();
+
+    send_chat_message(&stand, &model, REMEMBER_CATS);
+    let profile = stand.profile();
+    assert_eq!(
+        values_of(&profile, "remembered_notes"),
+        [json!("The person loves cats")]
+    );
+    // The note is the only fact the message produced.
+    let facts: usize = profile["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["facts"].as_array().unwrap().len())
+        .sum();
+    assert_eq!(facts, 1, "{profile}");
 }
