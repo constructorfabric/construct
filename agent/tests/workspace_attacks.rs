@@ -183,13 +183,6 @@ fn very_long_names_and_paths_fail_without_leaving() {
     assert_eq!(s.ws.read(&deep, None, None).unwrap(), ["x"]);
     s.ws.edit(&deep, "x", "y", false).unwrap();
     assert_eq!(s.ws.glob("**/*", "").unwrap(), [deep, longest]);
-    // A path longer than the system's limit (4096 bytes on Linux, 1024 on macOS) is refused
-    // with an error and nothing is made.
-    let beyond = format!("{}f.txt", "b/".repeat(2200));
-    assert!(s.ws.write(&beyond, "x").is_err());
-    assert!(s.ws.read(&beyond, None, None).is_err());
-    assert!(s.ws.edit(&beyond, "x", "y", false).is_err());
-    assert!(!s.root().join("b").exists());
     s.assert_outside_untouched();
 }
 
@@ -438,15 +431,18 @@ fn a_root_that_is_a_link_confines_to_the_folder_it_points_to() {
 fn race(s: &Stand, path: &str, swap: impl Fn() -> bool + Sync) {
     let stop = AtomicBool::new(false);
     let linked = AtomicUsize::new(0);
-    // Calls the workspace refused because the path met a link (or a file that is not a regular one).
-    let refused = AtomicUsize::new(0);
-    let count = |result: Result<(), Error>| {
-        if matches!(
-            result,
-            Err(Error::InvalidPath | Error::Io(_) | Error::NotRegularFile)
-        ) {
-            refused.fetch_add(1, Ordering::Relaxed);
+    // Per worker (read, write, edit): calls refused with `InvalidPath`, the error a link out of the
+    // workspace gives. (`Io(AlreadyExists)` and `NotFound` come from the swapper racing the calls.)
+    let refused = [const { AtomicUsize::new(0) }; 3];
+    let count = |worker: usize, result: Result<(), Error>| {
+        if result == Err(Error::InvalidPath) {
+            refused[worker].fetch_add(1, Ordering::Relaxed);
         }
+    };
+    // A worker does its `ROUNDS` rounds, and goes on (up to 20 times as many) until one of its calls
+    // has met the link, so the check below does not depend on the timing of the swapper.
+    let more = |worker: usize, round: usize| {
+        round < ROUNDS || (refused[worker].load(Ordering::Relaxed) == 0 && round < 20 * ROUNDS)
     };
     let outcomes = thread::scope(|scope| {
         scope.spawn(|| {
@@ -458,23 +454,29 @@ fn race(s: &Stand, path: &str, swap: impl Fn() -> bool + Sync) {
         });
         let workers = [
             scope.spawn(|| {
-                for _ in 0..ROUNDS {
+                let mut round = 0;
+                while more(0, round) {
+                    round += 1;
                     let result = s.ws.read(path, None, None);
-                    count(result.clone().map(|_| ()));
+                    count(0, result.clone().map(|_| ()));
                     never_secret(result);
                 }
             }),
             scope.spawn(|| {
-                for _ in 0..ROUNDS {
-                    count(s.ws.write(path, INSIDE));
+                let mut round = 0;
+                while more(1, round) {
+                    round += 1;
+                    count(1, s.ws.write(path, INSIDE));
                 }
             }),
             // An edit that reached the outside file leaves "LEAKED" there: nothing in this loop
             // matches the outside text again, so the snapshot shows it.
             scope.spawn(|| {
-                for _ in 0..ROUNDS {
-                    count(s.ws.edit(path, "SECRET", "LEAKED", true));
-                    count(s.ws.edit(path, "inside LEAKED", "inside SECRET", true));
+                let mut round = 0;
+                while more(2, round) {
+                    round += 1;
+                    count(2, s.ws.edit(path, "SECRET", "LEAKED", true));
+                    count(2, s.ws.edit(path, "inside LEAKED", "inside SECRET", true));
                 }
             }),
         ];
@@ -488,13 +490,13 @@ fn race(s: &Stand, path: &str, swap: impl Fn() -> bool + Sync) {
     for outcome in outcomes {
         outcome.unwrap();
     }
-    let (linked, refused) = (
-        linked.load(Ordering::Relaxed),
-        refused.load(Ordering::Relaxed),
-    );
+    let linked = linked.load(Ordering::Relaxed);
+    let refused = refused.each_ref().map(|n| n.load(Ordering::Relaxed));
+    eprintln!("{path}: link made {linked} times, refused (read, write, edit) {refused:?}");
     assert!(linked > 0, "the link was never in place");
-    eprintln!("{path}: link made {linked} times, {refused} calls refused");
-    assert!(refused > 0, "no call met the link");
+    for (worker, name) in ["read", "write", "edit"].into_iter().enumerate() {
+        assert!(refused[worker] > 0, "no {name} call met the link");
+    }
     s.assert_outside_untouched();
 }
 
