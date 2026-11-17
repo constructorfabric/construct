@@ -7,6 +7,7 @@
 //! service of the agent is registered, and no `service` when that cannot be told),
 //! `settings-get`, `settings-set <JSON object>` (the fields to change; see `settings`), and
 //! `settings-test [JSON object]` (one ping to the model; see `model_test`).
+//! `backfill [JSON object]` sends the prompts of the past to Construct (see `manage`).
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
 //! `MAX_REQUEST` bytes, and a `chat-send` line at most `chat::MAX_REQUEST`.
@@ -19,6 +20,8 @@ pub const SOCKET_NAME: &str = "agent.sock";
 
 /// The JSON line the agent answers to `status`.
 #[must_use]
+// One argument per field of the reply; a struct would only move the list.
+#[allow(clippy::too_many_arguments)]
 pub fn status_response(
     pid: u32,
     database: &str,
@@ -27,6 +30,7 @@ pub fn status_response(
     model: &str,
     model_state: &str,
     service_registered: Option<bool>,
+    facts: Option<serde_json::Value>,
 ) -> String {
     let mut reply = serde_json::json!({
         "status": "running",
@@ -38,6 +42,9 @@ pub fn status_response(
         "model": model,
         "model_state": model_state,
     });
+    if let Some(facts) = facts {
+        reply["facts"] = facts;
+    }
     if let Some(registered) = service_registered {
         reply["service"] = if registered {
             "registered"
@@ -114,7 +121,7 @@ pub fn socket_path() -> io::Result<PathBuf> {
 }
 
 #[cfg(unix)]
-pub use unix::{Server, create_private_dir, query_status};
+pub use unix::{Server, create_private_dir, query_status, request};
 
 #[cfg(unix)]
 mod unix {
@@ -131,6 +138,7 @@ mod unix {
     use crate::chat::{self, Chat};
     use crate::database::Health;
     use crate::follow::Stats;
+    use crate::manage::Manager;
     use crate::model::{ModelHealth, ModelState};
     use crate::settings::{Settings, Update};
 
@@ -168,6 +176,7 @@ mod unix {
         service: Arc<dyn Fn() -> Option<bool> + Send + Sync>,
         settings: Option<Settings>,
         chat: Option<Chat>,
+        manage: Option<Manager>,
     }
 
     impl Server {
@@ -201,6 +210,7 @@ mod unix {
                 service: Arc::new(|| None),
                 settings: None,
                 chat: None,
+                manage: None,
             })
         }
 
@@ -260,6 +270,13 @@ mod unix {
             self
         }
 
+        /// Serve `backfill` from this manager and report it in `status` as `facts`.
+        #[must_use]
+        pub fn with_manage(mut self, manage: Manager) -> Self {
+            self.manage = Some(manage);
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -280,6 +297,7 @@ mod unix {
                         let service = Arc::clone(&self.service);
                         let settings = self.settings.clone();
                         let chat = self.chat.clone();
+                        let manage = self.manage.clone();
                         thread::spawn(move || {
                             let shared = Shared {
                                 database: &database,
@@ -289,6 +307,7 @@ mod unix {
                                 service: service.as_ref(),
                                 settings: settings.as_ref(),
                                 chat: chat.as_ref(),
+                                manage: manage.as_ref(),
                             };
                             if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
@@ -409,6 +428,7 @@ mod unix {
         service: &'a (dyn Fn() -> Option<bool> + Send + Sync),
         settings: Option<&'a Settings>,
         chat: Option<&'a Chat>,
+        manage: Option<&'a Manager>,
     }
 
     /// Never log, or return in an error, any part of `line`: it can hold a key.
@@ -437,6 +457,11 @@ mod unix {
                 &model_name,
                 model_state.as_str(),
                 (shared.service)(),
+                shared.manage.map(Manager::status),
+            ),
+            ("backfill", _) => shared.manage.map_or_else(
+                || error_response("backfill is not available"),
+                |manage| manage.backfill(argument),
             ),
             ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
             ("settings-set", Some(s)) => {
@@ -545,11 +570,17 @@ mod unix {
         })
     }
 
-    fn ask_status(path: &Path) -> io::Result<String> {
+    /// Send one request line to the agent on `path` and return its one JSON line. The agent
+    /// gets `timeout` to answer.
+    ///
+    /// # Errors
+    /// Fails when nothing listens on `path`, the agent does not answer in time, or it
+    /// sends an empty reply.
+    pub fn request(path: &Path, line: &str, timeout: Duration) -> io::Result<String> {
         let mut stream = UnixStream::connect(path)?;
-        stream.set_read_timeout(Some(QUERY_TIMEOUT))?;
+        stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(QUERY_TIMEOUT))?;
-        stream.write_all(b"status\n")?;
+        writeln!(stream, "{line}")?;
         let mut reply = String::new();
         if BufReader::new(stream).read_line(&mut reply)? == 0 {
             return Err(io::Error::new(
@@ -558,5 +589,9 @@ mod unix {
             ));
         }
         Ok(reply.trim().to_string())
+    }
+
+    fn ask_status(path: &Path) -> io::Result<String> {
+        request(path, "status", QUERY_TIMEOUT)
     }
 }

@@ -9,6 +9,8 @@ commands:
   ensure-service     install-service, unless it is installed for this binary already
   uninstall-service  stop the agent and remove it from login
   status             ask the running agent for its status
+  backfill           send the prompts already collected to Construct (costs a model call each):
+                     backfill [--days N] [--limit N] [--dry-run]
   run                run the agent in the foreground (the service runs this)";
 
 fn main() -> ExitCode {
@@ -18,6 +20,7 @@ fn main() -> ExitCode {
         Some("ensure-service") => ensure(),
         Some("uninstall-service") => uninstall(),
         Some("status") => return status(),
+        Some("backfill") => return backfill(&std::env::args().skip(2).collect::<Vec<_>>()),
         Some("run") => run(),
         Some("-h" | "--help" | "help") => {
             println!("{USAGE}");
@@ -92,6 +95,7 @@ fn run() -> std::io::Result<()> {
         .enable_all()
         .build()?;
     let link = construct_agent::chat::Link::default();
+    let manage = open_manage(settings.as_ref(), &link);
     let server = with_chat(
         with_settings(
             construct_agent::ipc::Server::bind(&socket)?
@@ -111,6 +115,10 @@ fn run() -> std::io::Result<()> {
         env!("CARGO_PKG_VERSION"),
         server.path().display()
     );
+    let server = match &manage {
+        Some(manage) => server.with_manage(manage.clone()),
+        None => server,
+    };
     let (served_tx, served_rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let _ = served_tx.send(server.serve());
@@ -119,7 +127,7 @@ fn run() -> std::io::Result<()> {
     // The log readers need no database: they scan on a thread of their own, so neither the
     // first scan nor a slow disk holds up `status`. The thread stops when `follow_alive` is
     // dropped, so it is kept until the agent stops (see the end of this function).
-    let follow_alive = spawn_follower(&connectors, settings.as_ref());
+    let follow_alive = spawn_follower(&connectors, settings.as_ref(), manage.as_ref());
 
     let (mut term, mut int) = rt.block_on(async {
         Ok::<_, std::io::Error>((
@@ -272,11 +280,36 @@ fn with_settings(
     }
 }
 
+/// The sender of prompts to Construct, started on a thread of its own. Without settings (the model
+/// comes from them) or a data directory there is none, and `backfill` answers an error.
+#[cfg(unix)]
+fn open_manage(
+    settings: Option<&construct_agent::settings::Settings>,
+    link: &construct_agent::chat::Link,
+) -> Option<construct_agent::manage::Manager> {
+    let settings = settings?;
+    let opened = construct_agent::records::data_dir().and_then(|dir| {
+        construct_agent::manage::Manager::open(&dir, settings.clone(), link.clone())
+    });
+    match opened {
+        Ok(manage) => {
+            manage.spawn();
+            Some(manage)
+        }
+        Err(e) => {
+            eprintln!("sending prompts to construct unavailable: {e}");
+            None
+        }
+    }
+}
+
 /// Starts the follower of the session files of every known tool, on the agent's data directory.
+/// New user prompts go to `manage`.
 #[cfg(unix)]
 fn spawn_follower(
     stats: &construct_agent::follow::Stats,
     settings: Option<&construct_agent::settings::Settings>,
+    manage: Option<&construct_agent::manage::Manager>,
 ) -> std::sync::mpsc::Sender<()> {
     let tools = connectors::Registry::builtin();
     let Some(settings) = settings else {
@@ -292,7 +325,13 @@ fn spawn_follower(
     let settings = settings.clone();
     let switch: construct_agent::follow::Switch =
         std::sync::Arc::new(move |tool| settings.collects(tool));
-    construct_agent::follow::spawn_switched(tools, paths, stats, Some(switch))
+    construct_agent::follow::spawn_observed(
+        tools,
+        paths,
+        stats,
+        Some(switch),
+        manage.map(construct_agent::manage::Manager::observer),
+    )
 }
 
 /// [`start_construct`] (no host without a database) until it ends, or until `stop_signal` fires (`Err` with the signal's
@@ -452,6 +491,75 @@ fn status() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `backfill [--days N] [--limit N] [--dry-run]`: ask the running agent to send the prompts it has
+/// already collected. A dry run only counts them. The answer line is printed; the exit code is 1
+/// when it is an error.
+#[cfg(unix)]
+fn backfill(args: &[String]) -> ExitCode {
+    let request = match backfill_request(args) {
+        Ok(request) => request,
+        Err(e) => {
+            eprintln!("error: {e}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    // Counting the history reads every record file, which takes a while on a big one.
+    let reply = construct_agent::ipc::socket_path().and_then(|path| {
+        construct_agent::ipc::request(
+            &path,
+            &format!("backfill {request}"),
+            std::time::Duration::from_secs(300),
+        )
+    });
+    match reply {
+        Ok(line) => {
+            println!("{line}");
+            let failed = serde_json::from_str::<serde_json::Value>(&line)
+                .map_or(true, |v| v.get("error").is_some());
+            if failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("error: the agent did not answer: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn backfill(_: &[String]) -> ExitCode {
+    eprintln!("error: unsupported platform");
+    ExitCode::FAILURE
+}
+
+/// The JSON of the `backfill` command from its command-line flags.
+#[cfg(unix)]
+fn backfill_request(args: &[String]) -> Result<String, String> {
+    let mut request = serde_json::Map::new();
+    let mut args = args.iter();
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--dry-run" => {
+                request.insert("dry_run".into(), true.into());
+            }
+            "--days" | "--limit" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("{flag} needs a number"))?;
+                let number: u32 = value
+                    .parse()
+                    .map_err(|_| format!("{flag} needs a whole number, not {value}"))?;
+                request.insert(flag.trim_start_matches("--").into(), number.into());
+            }
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    Ok(serde_json::Value::Object(request).to_string())
 }
 
 #[cfg(not(unix))]

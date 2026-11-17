@@ -213,6 +213,35 @@ impl FileSink {
         Ok(sessions)
     }
 
+    /// The user turns of every session of a source, oldest first (equal times in the order
+    /// the files are listed).
+    ///
+    /// # Errors
+    /// Fails when the directory or a file cannot be read.
+    pub fn user_turns(&self, tool: &str) -> io::Result<Vec<Turn>> {
+        let entries = match fs::read_dir(self.source_dir(tool)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut turns = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "jsonl") {
+                continue;
+            }
+            for record in read_records(&path)? {
+                if let Record::Turn(turn) = record
+                    && turn.role == Role::User
+                {
+                    turns.push(turn);
+                }
+            }
+        }
+        turns.sort_by(|a, b| compare_times(&a.time, &b.time));
+        Ok(turns)
+    }
+
     /// Every record of a session in the order written; empty for an unknown session.
     ///
     /// # Errors
@@ -269,7 +298,7 @@ impl FileSink {
 }
 
 /// FNV-1a: fixed by definition, unlike the standard hasher, so names and keys stay stable.
-fn fnv(parts: &[&str]) -> u64 {
+pub(crate) fn fnv(parts: &[&str]) -> u64 {
     parts
         .iter()
         .flat_map(|p| p.bytes().chain(std::iter::once(0)))
