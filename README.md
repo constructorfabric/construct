@@ -18,7 +18,7 @@ configure yourself.
 - **Reads your coding tools.** The agent follows the session logs of Claude Code and Codex and turns every
   prompt and answer into a record, within seconds. Log files are only opened for reading.
 - **Keeps the records on your computer.** The agent stores the records as plain files in its data directory.
-- **Runs the Construct gear.** On Linux x86_64 the agent starts the Construct gear inside itself, next to an
+- **Runs the Construct gear.** On Linux x86_64 and on macOS (Apple Silicon) the agent starts the Construct gear inside itself, next to an
   embedded PostgreSQL database with pgvector that serves graph storage. Nothing listens beyond your machine:
   the agent socket and the database socket are open to your user only, and the gear's REST interface is on the
   loopback address and needs a token that only your user can read.
@@ -75,23 +75,26 @@ on if the computer can be lost or shared.
 
 ## What works on each system
 
-| Part                                                         | Linux x86_64         | macOS (Apple Silicon)                       | Windows                                                                |
-| ------------------------------------------------------------ | -------------------- | ------------------------------------------- | ---------------------------------------------------------------------- |
-| Window, Status, Settings and Chat pages                      | yes                  | yes                                         | the window opens; Status says `unknown`, Settings says "not available" |
-| Agent socket and `status`                                    | yes                  | yes                                         | no: the agent stops with "not implemented on this platform"            |
-| Start at login                                               | systemd user service | LaunchAgent                                 | no: "not implemented on Windows yet"                                   |
-| Log readers (Claude Code, Codex), settings, model test, chat | yes                  | yes (no database needed)                    | no: the agent does not start                                           |
-| Embedded PostgreSQL with pgvector                            | yes                  | no: pgvector is built for Linux x86_64 only | no                                                                     |
-| Construct gear                                               | yes                  | no: it needs the database                   | no                                                                     |
+| Part                                                         | Linux x86_64         | macOS (Apple Silicon)    | Windows                                                                |
+| ------------------------------------------------------------ | -------------------- | ------------------------ | ---------------------------------------------------------------------- |
+| Window, Status, Settings and Chat pages                      | yes                  | yes                      | the window opens; Status says `unknown`, Settings says "not available" |
+| Agent socket and `status`                                    | yes                  | yes                      | no: the agent stops with "not implemented on this platform"            |
+| Start at login                                               | systemd user service | LaunchAgent              | no: "not implemented on Windows yet"                                   |
+| Log readers (Claude Code, Codex), settings, model test, chat | yes                  | yes (no database needed) | no: the agent does not start                                           |
+| Embedded PostgreSQL with pgvector                            | yes                  | yes                      | no                                                                     |
+| Construct gear                                               | yes                  | yes                      | no                                                                     |
 
 `make smoke` installs the Linux package in a clean Ubuntu 24.04 container and starts it there. Tested on Linux x86_64 (Ubuntu 24.04).
+
+The macOS cells for the database and the Construct gear rest on a manual run on an Apple Silicon Mac (macOS 27.2): the packaged agent reported the database and the gear `ready`, and `create extension vector` with the `<->` operator worked. The integration test that starts PostgreSQL (`agent/tests/database.rs`) runs on Linux only. On macOS the agent does not yet recognise a PostgreSQL left running by an agent that was killed outside launchd (it looks the process up in `/proc`), so that case is untested there.
 
 ## Build and test
 
 You need Rust (the toolchain in `rust-toolchain.toml` is installed by `rustup`), Node.js 22.13 or newer (22 or 24) with npm, and
 `protoc` with the protobuf headers (Debian and Ubuntu: `protobuf-compiler` and `libprotobuf-dev`; macOS:
-`brew install protobuf`). On Linux the build also needs `curl`, `tar`, `make` and `gcc`, which build pgvector,
-and `make test` needs `xvfb-run` for the Electron window, so it runs on Linux. `make smoke` and the Linux package (`npm run make`) also need `dpkg` and `fakeroot`.
+`brew install protobuf`). The agent build (`make build`, and so `make package`) also builds pgvector against the
+bundled PostgreSQL; for that it needs `curl` and `tar`, and on Linux `make` and `gcc`, on macOS the Xcode command
+line tools for `make` and `clang` (`xcode-select --install`). `make test` needs `xvfb-run` for the Electron window, so it runs on Linux. `make smoke` and the Linux package (`npm run make`) also need `dpkg` and `fakeroot`.
 
 ```bash
 make build    # build the agent: target/release/construct-agent
@@ -140,8 +143,6 @@ hdiutil create -volname "Construct Browser" -srcfolder app/out/dmg -ov -format U
 ```
 
 Open `app/out/Construct Browser.dmg` and drag **Construct Browser** onto **Applications**.
-
-On macOS the agent runs without the database and the Construct gear (see the table above).
 
 ### Windows
 
