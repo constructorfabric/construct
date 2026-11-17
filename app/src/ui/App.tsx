@@ -41,6 +41,11 @@ export function App(): ReactNode {
   }, [page, refresh]);
   // Only an agent that says so has no model; one that cannot be reached is not "without a model".
   const modelSet = status?.state !== 'running' || status.model !== 'not set';
+  // Only an agent that tells the gear's state and says it is not ready has no profile to give.
+  const profileAvailable =
+    status?.state !== 'running' ||
+    status.construct === undefined ||
+    status.construct.state === 'ready';
   const [needsMove, setNeedsMove] = useState(false);
   useEffect(() => {
     void window.constructAgent.getNeedsMove().then(setNeedsMove);
@@ -131,6 +136,7 @@ export function App(): ReactNode {
           <ChatPage
             chat={chat}
             modelSet={modelSet}
+            profileAvailable={profileAvailable}
             onOpenSettings={() => {
               setPage('settings');
             }}

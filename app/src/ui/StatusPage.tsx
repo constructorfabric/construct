@@ -12,7 +12,7 @@ import {
   VisuallyHidden,
 } from '@gears-frontx/ui-kit';
 import type { ReactNode } from 'react';
-import type { AgentStatus } from '../agent-status';
+import type { AgentStatus, Part } from '../agent-status';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { tones } from './state-tones';
@@ -25,6 +25,41 @@ const loginVariants = {
 } as const;
 
 const variants = { running: 'success', stopped: 'danger', unknown: 'secondary' } as const;
+
+const partVariants = { ready: 'success', starting: 'secondary', failed: 'danger' } as const;
+const partTones = { ready: 'success', starting: 'neutral', failed: 'danger' } as const;
+
+/** One part the agent runs: its name, its state and, when it is not ready, why. */
+function PartCard({
+  id,
+  title,
+  part,
+}: {
+  readonly id: string;
+  readonly title: string;
+  readonly part: Part;
+}): ReactNode {
+  return (
+    <Card className={styles.card}>
+      <CardHeader>
+        <CardTitle render={<h2 />}>{title}</CardTitle>
+        <CardAction className={styles.state}>
+          <StatusDot tone={partTones[part.state]} />
+          <Badge id={`${id}-state`} variant={partVariants[part.state]} data-state={part.state}>
+            {t(`StatusPage.Part.${part.state}`)}
+          </Badge>
+        </CardAction>
+      </CardHeader>
+      {part.state !== 'ready' && part.reason !== undefined && (
+        <CardContent>
+          <Text id={`${id}-reason`} tone="muted" className={styles.detail}>
+            {part.reason}
+          </Text>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
 
 export function StatusPage({ status }: { readonly status: AgentStatus | null }): ReactNode {
   return (
@@ -67,6 +102,12 @@ export function StatusPage({ status }: { readonly status: AgentStatus | null }):
           )}
         </CardContent>
       </Card>
+      {status?.state === 'running' && status.database !== undefined && (
+        <PartCard id="database" title={t('StatusPage.Database')} part={status.database} />
+      )}
+      {status?.state === 'running' && status.construct !== undefined && (
+        <PartCard id="construct" title={t('StatusPage.Construct')} part={status.construct} />
+      )}
       {status !== null && (
         <Card className={styles.card}>
           <CardHeader>

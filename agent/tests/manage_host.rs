@@ -204,7 +204,7 @@ impl Stand {
     }
 
     fn wait_ready(&self) {
-        self.wait("construct", |s| s["construct"] == "ready");
+        self.wait("construct", |s| s["construct"]["state"] == "ready");
     }
 
     fn set_model(&self, url: &str) {

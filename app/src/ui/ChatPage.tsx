@@ -45,11 +45,14 @@ const exampleKeys = ['EmptyChat.ExampleKnow', 'EmptyChat.ExampleRust'] as const;
 export function ChatPage({
   chat,
   modelSet,
+  profileAvailable,
   onOpenSettings,
 }: {
   readonly chat: Chat;
   /** Whether the agent has a model; `false` only when it says so. */
   readonly modelSet: boolean;
+  /** Whether the Construct gear can give the profile; `false` only when the agent says so. */
+  readonly profileAvailable: boolean;
   readonly onOpenSettings: () => void;
 }): ReactNode {
   const { messages, running, streaming, failure, loading, loadError, active } = chat.state;
@@ -158,6 +161,11 @@ export function ChatPage({
         </MessageScroller>
       </MessageScrollerProvider>
       <div className={styles.composerArea}>
+        {profileAvailable ? null : (
+          <Alert id="chat-no-profile" role="status">
+            {t('NoProfile.Text')}
+          </Alert>
+        )}
         {!modelSet && !noModelFailure ? (
           <Alert id="chat-no-model">
             <span className={styles.alertContent}>

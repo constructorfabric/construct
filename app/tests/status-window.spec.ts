@@ -79,33 +79,160 @@ test('the Status page shows stopped, with its reason, when no agent runs', async
   await expect(page.locator('#agent-model')).toHaveCount(0);
 });
 
-test('the Status page shows unknown, with its reason, when the agent answers wrongly', async ({
-  session,
-}) => {
-  // A stand-in that listens on the agent's socket and answers a line the app cannot read.
+/**
+ * Stops the real agent, puts a stand-in on its socket that answers every request with `reply`,
+ * and runs `check` on a new window; any `securitypolicyviolation` of the page fails the check.
+ */
+async function withStandIn(
+  session: Session,
+  reply: string,
+  check: (page: Page) => Promise<void>,
+): Promise<void> {
   const socketPath = agentSocketPath(session.env, process.platform);
   const socketDir = path.dirname(socketPath);
   session.agent.kill('SIGTERM');
-  await new Promise((resolve) => session.agent.once('exit', resolve));
+  if (session.agent.exitCode === null && session.agent.signalCode === null) {
+    await new Promise((resolve) => session.agent.once('exit', resolve));
+  }
   mkdirSync(socketDir, { recursive: true });
   rmSync(socketPath, { force: true });
   const server = net.createServer((socket) => {
     socket.on('error', () => undefined);
-    socket.end('{"status":"confused"}\n');
+    socket.end(`${reply}\n`);
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   const { app, page } = await openApp(session);
   try {
-    await page.getByRole('button', { name: 'Status', exact: true }).click();
-    const badge = page.locator('#agent-status');
-    await expect(badge).toHaveText('unknown');
-    await expect(badge).toHaveAttribute('data-state', 'unknown');
-    await expect(page.locator('#agent-detail')).toContainText('did not report running');
+    await check(page);
     await expectNoPolicyViolations(page);
   } finally {
     await app.close();
     server.close();
   }
+}
+
+function runningReply(fields: Record<string, unknown>): string {
+  return JSON.stringify({
+    status: 'running',
+    version: '0.1.0',
+    pid: 42,
+    model: 'example-model',
+    ...fields,
+  });
+}
+
+test('the Status page shows unknown, with its reason, when the agent answers wrongly', async ({
+  session,
+}) => {
+  // A stand-in that answers a line the app cannot read.
+  await withStandIn(session, '{"status":"confused"}', async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    const badge = page.locator('#agent-status');
+    await expect(badge).toHaveText('unknown');
+    await expect(badge).toHaveAttribute('data-state', 'unknown');
+    await expect(page.locator('#agent-detail')).toContainText('did not report running');
+  });
+});
+
+test('the Status page shows the database and the Construct gear of the real agent', async ({
+  page,
+}) => {
+  // The first start unpacks PostgreSQL, which is longer than the default test timeout.
+  test.setTimeout(150_000);
+  await expect(page.locator('#agent-status')).toHaveText('running');
+  await expect(page.getByRole('heading', { name: 'Database', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Construct gear', exact: true })).toBeVisible();
+  for (const part of ['database', 'construct']) {
+    await expect(page.locator(`#${part}-state`)).toHaveAttribute(
+      'data-state',
+      /^(ready|starting|failed)$/,
+    );
+  }
+  if (process.platform === 'darwin') {
+    // The agent has no pgvector for macOS yet: neither the database nor the gear can run.
+    await expect(page.locator('#database-state')).toHaveText('failed', {
+      timeout: refreshDeadlineMs,
+    });
+    await expect(page.locator('#database-reason')).toHaveText(
+      'pgvector is not built for this platform yet',
+    );
+    await expect(page.locator('#construct-state')).toHaveText('failed');
+    await expect(page.locator('#construct-reason')).toHaveText('the database is not running');
+  } else {
+    // Only the database is waited for: the gear's own start is covered by the Rust tests.
+    await expect(page.locator('#database-state')).toHaveText('ready', { timeout: 120_000 });
+    await expect(page.locator('#database-reason')).toHaveCount(0);
+  }
+  // A reason never shows a path.
+  for (const reason of await page.locator('[id$="-reason"]').allTextContents()) {
+    expect(reason).not.toMatch(/[/\\]/);
+  }
+  await screenshotBothThemes(page, 'status-parts');
+});
+
+test('the Status page shows each part with its state and, when it is not ready, why', async ({
+  session,
+}) => {
+  const reply = runningReply({
+    database: { state: 'ready', reason: 'never shown' },
+    construct: {
+      state: 'failed',
+      reason: 'the Construct gear did not start; the agent log has the details',
+    },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#database-state')).toHaveText('ready');
+    await expect(page.locator('#database-state')).toHaveAttribute('data-state', 'ready');
+    await expect(page.locator('#database-reason')).toHaveCount(0);
+    await expect(page.locator('#construct-state')).toHaveText('failed');
+    await expect(page.locator('#construct-state')).toHaveAttribute('data-state', 'failed');
+    await expect(page.locator('#construct-reason')).toHaveText(
+      'the Construct gear did not start; the agent log has the details',
+    );
+    await screenshotBothThemes(page, 'status-parts-construct-failed');
+  });
+});
+
+test('the Status page reads the plain states of an older agent and skips what it does not know', async ({
+  session,
+}) => {
+  const reply = runningReply({ database: 'starting', construct: { state: 'asleep' } });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#agent-status')).toHaveText('running');
+    await expect(page.locator('#database-state')).toHaveText('starting');
+    await expect(page.locator('#database-reason')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Construct gear' })).toHaveCount(0);
+    await expect(page.locator('#construct-state')).toHaveCount(0);
+    // An agent that does not tell the gear's state gives the Chat page no reason for a notice.
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
+    await expect(page.locator('#chat-input')).toBeVisible();
+    await expect(page.locator('#chat-no-profile')).toHaveCount(0);
+  });
+});
+
+test('the Chat page says in one line that the profile is not available while the gear is not ready', async ({
+  session,
+}) => {
+  const line = 'Profile is not available: the Construct gear is not running';
+  await withStandIn(
+    session,
+    runningReply({ construct: { state: 'starting', reason: 'waiting for the database' } }),
+    async (page) => {
+      await expect(page.locator('#chat-input')).toBeVisible();
+      const notice = page.locator('#chat-no-profile');
+      await expect(notice).toHaveText(line);
+      await expect(notice).toHaveAttribute('role', 'status');
+      await screenshotBothThemes(page, 'chat-no-profile');
+    },
+  );
+  await session.startAgent();
+  await withStandIn(session, runningReply({ construct: { state: 'ready' } }), async (page) => {
+    await expect(page.locator('#chat-input')).toBeVisible();
+    await expect(page.locator('#sidebar-agent-state')).toHaveAttribute('data-state', 'running');
+    await expect(page.locator('#chat-no-profile')).toHaveCount(0);
+  });
 });
 
 test('a second launch exits at once and opens no window of its own', async ({ page, session }) => {

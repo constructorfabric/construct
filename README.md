@@ -30,7 +30,10 @@ configure yourself.
   systemd user service on Linux and a LaunchAgent on macOS.
 - **Shows what the agent is doing.** The Status page shows whether the agent is running, its version, its
   process id, the model in use (`not set` until the address, the name and the key are all saved, and again
-  after the key is removed) and whether it starts at login.
+  after the key is removed) and whether it starts at login. It also shows the database and the Construct gear,
+  each `ready`, `starting` or `failed`, with a short reason when it is not ready (for example
+  `pgvector is not built for this platform yet` on macOS). While the gear is not ready, the Chat page says that
+  the profile is not available, so an answer without facts about you is not taken for a fault of the model.
 - **Talks to the model you choose.** The Settings page takes the address, the name and the API key of a model,
   can test the call, and can remove the key. The key is never written to a log or shown in the status. A
   change applies to the next call, with no restart.
