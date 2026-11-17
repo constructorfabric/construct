@@ -13,3 +13,48 @@ unsafe_code = "forbid"
 pedantic = { level = "deny", priority = -1 }
 expect_used = "deny"
 unwrap_used = "deny"
+
+# Temporary: the gear crates with the manage-facts route are not published yet. One revision for
+# every gear crate, so no git crate meets a published one of another generation. Remove this block
+# when the crates are released.
+[patch.crates-io]
+cf-gears-api-gateway = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-authn-resolver = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-authn-resolver-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-authz-resolver = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-authz-resolver-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-construct = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-construct-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-graph-storage = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-graph-storage-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-grpc-hub = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-oagw-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-settings-service-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-static-authn-plugin = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-static-authz-plugin = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-system-sdk-directory = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-system-sdks = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-tenant-resolver-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-canonical-errors = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-canonical-errors-macro = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-contract = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-contract-macros = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-db = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-db-macros = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-gateway = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-gts = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-gts-macros = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-http = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-http-middleware = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-macros = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-odata = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-odata-macros = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-security = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-taskward = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-trace-context = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-transport-grpc = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-toolkit-utils = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-types-registry = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }
+cf-gears-types-registry-sdk = { git = "https://github.com/constructorfabric/gears-rust", rev = "296dc92fc9aeae442d3f9ecb04bb713ade606ca8" }

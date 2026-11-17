@@ -22,6 +22,10 @@ configure yourself.
   embedded PostgreSQL database with pgvector that serves graph storage. Nothing listens beyond your machine:
   the agent socket and the database socket are open to your user only, and the gear's REST interface is on the
   loopback address and needs a token that only your user can read.
+- **Builds your profile from what you type.** Every new prompt in Claude Code or Codex goes to the
+  Construct gear with the ten turns before it as context, and the gear turns it into facts about you.
+  Prompts from before the first start go out only when you ask for them (see
+  [Your profile from past prompts](#your-profile-from-past-prompts)).
 - **Keeps working after you close the window.** The installed app registers the agent to start at login, as a
   systemd user service on Linux and a LaunchAgent on macOS.
 - **Shows what the agent is doing.** The Status page shows whether the agent is running, its version, its
@@ -34,6 +38,40 @@ configure yourself.
   conversations on your computer.
 
 The window follows the light or dark theme of your system.
+
+## Your profile from past prompts
+
+The agent sends every prompt you type after its first start to the Construct gear by itself. The history it
+found in the logs of the last 30 days is not sent by itself, because every prompt costs one model call.
+`backfill` sends it when you ask, oldest first, headless sessions included:
+
+```bash
+construct-agent backfill --dry-run     # count the prompts per tool, send nothing
+construct-agent backfill --limit 50    # a small first run: the 50 oldest prompts
+construct-agent backfill               # everything that is left (--days N changes the 30)
+construct-agent status                 # the "facts" part shows the progress
+```
+
+The agent remembers which prompts it sent, so a prompt is never sent twice: not by a second `backfill`, not
+after a restart or a crash, and not when a prompt is both in the history and new. A prompt goes out with the
+turns before it in the same session, cut to the limits of the gear (4,000 characters for the prompt, 16,000 for
+the context, the oldest turns first). Prompts go one at a time, and a new prompt goes before the rest of a
+`backfill`. A `backfill` stops with its reason in `status` when the gear refuses it or the model does not answer.
+Prompt text is never written to a log or to the status.
+
+## Size and memory
+
+Measured on Linux x86_64 with the release build (`make build`): the agent is one 118 MB file, with the
+database inside it. With the database and the gear ready and nothing to do, the agent holds about 57 MB and
+PostgreSQL about 35 MB (proportional set size, so shared memory counts once), 92 MB together. The first start,
+which creates the database, takes about 100 MB for the agent.
+
+## Where your data lives and who can read it
+
+The records, the profile and the database are plain files under your user's data directory
+(`~/.local/share/construct` on Linux), readable by your user only. The agent does not encrypt them: it relies on
+the disk encryption of your operating system (FileVault on macOS, BitLocker on Windows, LUKS on Linux). Turn it
+on if the computer can be lost or shared.
 
 ## What works on each system
 

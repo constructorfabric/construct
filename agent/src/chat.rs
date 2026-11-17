@@ -151,7 +151,7 @@ impl Link {
         *lock(&self.0) = Some(connection);
     }
 
-    fn get(&self) -> Option<Connection> {
+    pub(crate) fn get(&self) -> Option<Connection> {
         lock(&self.0).clone()
     }
 }

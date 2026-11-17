@@ -11,6 +11,8 @@ pub mod follow;
 pub mod host;
 pub mod ipc;
 #[cfg(unix)]
+pub mod manage;
+#[cfg(unix)]
 pub mod model;
 #[cfg(unix)]
 pub mod model_test;

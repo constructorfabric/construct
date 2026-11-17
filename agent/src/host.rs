@@ -114,6 +114,15 @@ impl Connection {
         )
     }
 
+    /// The URL of the manage-facts call of the static identity.
+    #[must_use]
+    pub fn manage_url(&self) -> String {
+        format!(
+            "http://127.0.0.1:{}/construct/v1/subjects/{DEFAULT_SUBJECT_ID}/facts/manage",
+            self.port
+        )
+    }
+
     /// The JSON the app reads.
     #[must_use]
     pub fn to_json(&self) -> String {
@@ -408,20 +417,24 @@ fn free_loopback_port() -> io::Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
+/// An HTTP client for the host's loopback port. It takes no proxy from the environment, because
+/// its calls carry the bearer token, and it hands back a 4xx or 5xx as an answer, not an error.
+pub(crate) fn loopback_agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
 /// The HTTP status of the host's answer to an authenticated profile read of the static
 /// identity, or `None` while the host does not answer.
 async fn profile_status(connection: &Connection) -> Option<u16> {
     let url = connection.profile_url();
     let token = connection.token.clone();
     tokio::task::spawn_blocking(move || {
-        // No proxy from the environment: the probe carries the bearer token and goes to loopback.
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .proxy(None)
-            .timeout_global(Some(Duration::from_secs(5)))
-            .http_status_as_error(false)
-            .build()
-            .into();
-        agent
+        loopback_agent(Duration::from_secs(5))
             .get(&url)
             .header("Authorization", format!("Bearer {token}"))
             .call()
