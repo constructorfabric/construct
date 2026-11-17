@@ -169,7 +169,8 @@ impl Workspace {
     ///
     /// # Errors
     /// The file cannot be read, `old` is empty, equals `new`, is not found, or occurs more than
-    /// once while `replace_all` is not set.
+    /// once while `replace_all` is not set, or the file changed while it was edited
+    /// ([`Error::Changed`]).
     pub fn edit(&self, path: &str, old: &str, new: &str, replace_all: bool) -> Result<(), Error> {
         self.edit_with(path, old, new, replace_all, || {})
     }
@@ -481,7 +482,7 @@ mod tests {
             "alpha beta, changed by another program"
         );
 
-        // The file is removed, or replaced by a folder, in that time.
+        // The file is removed in that time.
         let result = ws.edit_with("e.txt", "beta", "gamma", false, || {
             fs::remove_file(&file).unwrap();
         });

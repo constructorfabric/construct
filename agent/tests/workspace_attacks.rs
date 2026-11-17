@@ -12,7 +12,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -72,6 +72,15 @@ impl Stand {
 impl Drop for Stand {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.base);
+    }
+}
+
+/// Removes a folder when dropped, also after a failed assertion.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -167,11 +176,13 @@ fn very_long_names_and_paths_fail_without_leaving() {
         let text = format!("{result} {result:?}");
         assert!(!text.contains('/') && !text.contains("nnnn"), "{text}");
     }
-    // A path of many short parts is handled one part at a time.
-    let deep = "a/".repeat(1500);
-    let _ = s.ws.write(&format!("{deep}f.txt"), "x");
-    let _ = s.ws.read(&format!("{deep}f.txt"), None, None);
-    let _ = s.ws.glob("**/*", "");
+    // A path of many short parts is handled one part at a time, so it works although the whole
+    // path is longer than the system's limit.
+    let deep = format!("{}f.txt", "a/".repeat(1500));
+    s.ws.write(&deep, "x").unwrap();
+    assert_eq!(s.ws.read(&deep, None, None).unwrap(), ["x"]);
+    s.ws.edit(&deep, "x", "y", false).unwrap();
+    assert_eq!(s.ws.glob("**/*", "").unwrap(), [deep, longest]);
     s.assert_outside_untouched();
 }
 
@@ -189,6 +200,11 @@ fn unicode_names_stay_inside_and_round_trip() {
         "...",
         "emoji-🙂.txt",
     ];
+    // APFS folds the two spellings of "é" into one file, so only one of them is made there.
+    let names: Vec<_> = names
+        .into_iter()
+        .filter(|name| !(cfg!(target_os = "macos") && *name == "e\u{301}.txt"))
+        .collect();
     for (i, name) in names.iter().enumerate() {
         let text = format!("content {i}");
         s.ws.write(name, &text).unwrap();
@@ -361,6 +377,7 @@ fn a_root_that_is_a_link_confines_to_the_folder_it_points_to() {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    let _cleanup = RemoveOnDrop(base.clone());
     fs::create_dir_all(base.join("data")).unwrap();
     fs::create_dir_all(base.join("elsewhere/real-root")).unwrap();
     fs::create_dir_all(base.join("elsewhere/outside")).unwrap();
@@ -404,19 +421,22 @@ fn a_root_that_is_a_link_confines_to_the_folder_it_points_to() {
     symlink(base.join("elsewhere/missing-root"), dangling.join(DIR_NAME)).unwrap();
     assert!(Workspace::open(&dangling).is_err());
     assert!(!base.join("elsewhere/missing-root").exists());
-    fs::remove_dir_all(&base).unwrap();
 }
 
 // Races
 
 /// Three threads (read, write, edit) run `ROUNDS` rounds each on `path` while `swap` runs in a loop
-/// on a fourth thread.
-fn race(s: &Stand, path: &str, swap: impl Fn() + Sync) {
+/// on a fourth thread. `swap` returns whether the link to the outside was in place. The swapper is
+/// stopped before a worker's panic is raised, so a leak fails the test and does not hang it.
+fn race(s: &Stand, path: &str, swap: impl Fn() -> bool + Sync) {
     let stop = AtomicBool::new(false);
-    thread::scope(|scope| {
+    let linked = AtomicUsize::new(0);
+    let outcomes = thread::scope(|scope| {
         scope.spawn(|| {
             while !stop.load(Ordering::Relaxed) {
-                swap();
+                if swap() {
+                    linked.fetch_add(1, Ordering::Relaxed);
+                }
             }
         });
         let workers = [
@@ -430,19 +450,29 @@ fn race(s: &Stand, path: &str, swap: impl Fn() + Sync) {
                     let _ = s.ws.write(path, INSIDE);
                 }
             }),
+            // An edit that reached the outside file leaves "LEAKED" there: nothing in this loop
+            // matches the outside text again, so the snapshot shows it.
             scope.spawn(|| {
                 for _ in 0..ROUNDS {
-                    let _ = s.ws.edit(path, "SECRET", "SECRET", true);
-                    let _ = s.ws.edit(path, "SECRET", "changed", true);
-                    let _ = s.ws.edit(path, "changed", "SECRET", true);
+                    let _ = s.ws.edit(path, "SECRET", "LEAKED", true);
+                    let _ = s.ws.edit(path, "inside LEAKED", "inside SECRET", true);
                 }
             }),
         ];
-        for worker in workers {
-            worker.join().unwrap();
-        }
+        let outcomes: Vec<_> = workers
+            .into_iter()
+            .map(thread::ScopedJoinHandle::join)
+            .collect();
         stop.store(true, Ordering::Relaxed);
+        outcomes
     });
+    for outcome in outcomes {
+        outcome.unwrap();
+    }
+    assert!(
+        linked.load(Ordering::Relaxed) > 0,
+        "the link was never in place"
+    );
     s.assert_outside_untouched();
 }
 
@@ -453,10 +483,11 @@ fn a_folder_swapped_for_a_link_while_the_calls_run() {
     let target = s.outside().join("dir");
     race(&s, "d/f.txt", || {
         let _ = fs::remove_dir_all(&folder);
-        let _ = symlink(&target, &folder);
+        let linked = symlink(&target, &folder).is_ok();
         let _ = fs::remove_file(&folder);
         let _ = fs::create_dir(&folder);
         let _ = fs::write(folder.join("f.txt"), INSIDE);
+        linked
     });
 }
 
@@ -469,9 +500,10 @@ fn a_file_swapped_for_a_link_while_the_calls_run() {
     race(&s, "f.txt", || {
         let _ = fs::remove_file(&temp);
         let _ = symlink(&target, &temp);
-        let _ = fs::rename(&temp, &file);
+        let linked = fs::rename(&temp, &file).is_ok();
         let _ = fs::write(&temp, INSIDE);
         let _ = fs::rename(&temp, &file);
+        linked
     });
 }
 
@@ -482,10 +514,11 @@ fn a_folder_in_the_middle_swapped_for_a_link_while_the_calls_run() {
     let target = s.outside().join("dir");
     race(&s, "a/b/f.txt", || {
         let _ = fs::remove_dir_all(&folder);
-        let _ = symlink(&target, &folder);
+        let linked = symlink(&target, &folder).is_ok();
         let _ = fs::remove_file(&folder);
         let _ = fs::create_dir_all(&folder);
         let _ = fs::write(folder.join("f.txt"), INSIDE);
+        linked
     });
 }
 
@@ -527,6 +560,8 @@ fn a_socket_is_refused() {
     });
 }
 
+/// Covers the refusal of a link that points outside to a device. A device node inside the
+/// workspace needs root to make, so the `NotRegularFile` path for devices is not reached here.
 #[test]
 fn a_link_to_a_device_is_refused_and_does_not_hang() {
     let s = Stand::new();
@@ -567,18 +602,29 @@ fn a_file_that_grows_while_it_is_read_gives_whole_text() {
     let s = Stand::new();
     s.ws.write("grow.txt", "line 0\n").unwrap();
     let path = s.root().join("grow.txt");
-    let writer = thread::spawn(move || {
-        let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
-        for i in 1..=3000 {
-            file.write_all(format!("line {i}\n").as_bytes()).unwrap();
+    let done = AtomicBool::new(false);
+    let mut sizes = std::collections::BTreeSet::new();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+            for i in 1..=3000 {
+                file.write_all(format!("line {i}\n").as_bytes()).unwrap();
+                if i % 50 == 0 {
+                    thread::sleep(Duration::from_micros(200));
+                }
+            }
+            done.store(true, Ordering::Relaxed);
+        });
+        // Read until the writer is done, so the reads overlap the appends.
+        while !done.load(Ordering::Relaxed) {
+            let lines = s.ws.read("grow.txt", None, None).unwrap();
+            for (i, line) in lines.iter().enumerate() {
+                assert_eq!(line, &format!("line {i}"));
+            }
+            sizes.insert(lines.len());
         }
     });
-    for _ in 0..300 {
-        for line in s.ws.read("grow.txt", None, None).unwrap() {
-            assert!(line.starts_with("line "), "{line}");
-        }
-    }
-    writer.join().unwrap();
+    assert!(sizes.len() > 1, "no read saw the file grow: {sizes:?}");
     assert_eq!(s.ws.read("grow.txt", None, None).unwrap().len(), 3001);
 }
 
@@ -631,8 +677,22 @@ fn a_deleted_root_fails_closed_and_is_not_recreated() {
 
 // Permissions
 
+/// Runs the test again in a child process with umask 0, so that a mode the code leaves to the umask
+/// shows as open to others whatever umask the test runs under.
 #[test]
 fn files_and_folders_made_are_for_the_user_only() {
+    const CHILD: &str = "CB_WS_ATTACK_UMASK_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = Command::new("sh")
+            .args(["-c", "umask 0; exec \"$0\" --exact \"$1\" --test-threads=1"])
+            .arg(std::env::current_exe().unwrap())
+            .arg("files_and_folders_made_are_for_the_user_only")
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed under umask 0");
+        return;
+    }
     let s = Stand::new();
     s.ws.write("top.txt", "x").unwrap();
     s.ws.write("a/b/c.txt", "x").unwrap();
