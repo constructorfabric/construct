@@ -9,8 +9,8 @@
 //! call and its result, when they differ from the last result there (see `recall`).
 //!
 //! When a model turn asks for tools, the calls are stored, run one by one in the order given and
-//! answered in the conversation, and the model is asked again, until a turn has no call. One answer
-//! runs at most [`MAX_CALLS`] calls. The tools themselves are given to the chat (see
+//! answered in the conversation, and the model is asked again, until a turn has no call or the user
+//! stops the answer. The tools themselves are given to the chat (see
 //! [`Chat::with_tools`]): a fixed list, offered to the model in every request; a call to a name
 //! that is not in it is answered with an error text. A result is cut at 64 KiB, note included.
 //!
@@ -68,9 +68,6 @@ const ERROR_BODY_LIMIT: usize = 64 * 1024;
 const ERROR_BODY_DEADLINE: Duration = Duration::from_secs(5);
 /// A conversation is listed under its first message cut to this many characters.
 const TITLE_CHARS: usize = 60;
-/// Most tool calls one answer runs. The answer ends with [`CALL_LIMIT_TEXT`] instead of running more.
-const MAX_CALLS: usize = 8;
-const CALL_LIMIT_TEXT: &str = "I stopped after 8 tool calls.";
 /// The result of a call that was cut short by `chat-stop`.
 const STOPPED_RESULT: &str = "stopped by the user";
 /// A client that does not read for this long is gone.
@@ -505,7 +502,6 @@ impl Chat {
         last: &mut Option<i64>,
         emit: &mut dyn FnMut(Piece<'_>) -> bool,
     ) -> End {
-        let mut run = 0;
         loop {
             let Ok(body) = request_body(&target.model, &records, self.inner.tools.listing()) else {
                 return End::Failed(Failure::Internal);
@@ -521,7 +517,7 @@ impl Chat {
             if end != End::Done {
                 return end;
             }
-            let mut calls = calls.finish();
+            let calls = calls.finish();
             if calls.is_empty() {
                 return End::Done;
             }
@@ -529,28 +525,11 @@ impl Chat {
             if calls.iter().any(|call| call.name.is_empty()) {
                 return End::Failed(Failure::Cut);
             }
-            // The calls over the limit are not stored and not run.
-            let over = calls.len() > MAX_CALLS - run;
-            calls.truncate(MAX_CALLS - run);
-            run += calls.len();
             if let Err(end) = self
                 .run_calls(conversation, calls, cancel, last, emit)
                 .await
             {
                 return end;
-            }
-            if over {
-                if self
-                    .store_text(conversation, last, CALL_LIMIT_TEXT.into())
-                    .is_err()
-                {
-                    return End::Failed(Failure::CannotSave);
-                }
-                return if emit(Piece::Text(CALL_LIMIT_TEXT)) {
-                    End::Done
-                } else {
-                    End::Stopped
-                };
             }
             records = match self.read(conversation) {
                 Ok(records) => records,
