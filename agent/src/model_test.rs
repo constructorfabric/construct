@@ -1,12 +1,23 @@
-//! The model Test call, `settings-test`: one "ping" to the model the user connected, so the
-//! app can say whether the address, the model and the key work.
+//! The model Test call, `settings-test`: a list of named checks on the model the user
+//! connected, so the app can say whether the address, the model and the key work, and what the
+//! model can do.
 //!
-//! One chat-completions request goes to `<address>/chat/completions` with the key as a bearer
-//! token. The answer is one JSON line: `{"result":"works","text":"..."}`, or
-//! `{"result":"key refused"}` (401, 403), `{"result":"model not found"}` (404),
-//! `{"result":"unreachable"}` (no connection), `{"result":"timeout"}`, or
-//! `{"result":"error","status":N}`. A request that cannot be made at all (no address, a bad
-//! address or key) answers `{"error":"..."}` like the other commands.
+//! The checks run in order, each with its own deadline, and a check after a failed one is
+//! `skipped`. `answers` sends one "ping" and `uses tools` offers one tiny tool and sends its
+//! result back; every request goes to `<address>/chat/completions` with the key as a bearer
+//! token. The answer is one JSON line: `{"result":"works","text":"...","checks":[...]}`, where
+//! `result` is `works` only when every check works, and otherwise the result of the first
+//! check that failed. A result is `works`, `key refused` (401, 403), `model not found` (404),
+//! `unreachable` (no connection), `timeout`, `error` with the `status`, or one of the
+//! results of `uses tools`: `tools refused` (a 400, 404 or 422 to either of its requests),
+//! `no tool call`, `bad tool call`, `wrong answer` (the answer has no whole number 5).
+//! Each entry of `checks` is `{"name":"answers","result":"works"}`, with the `status` for an
+//! `error` and `skipped` for a check that did not run. A request that cannot be made at all
+//! (no address, a bad address or key) answers `{"error":"..."}` like the other commands.
+//!
+//! With `"progress": true` in the request the answer is several lines: `{"checks":[names]}`,
+//! then `{"check":{...}}` for each check as soon as it ends (a skipped one too), then the one
+//! line above.
 //!
 //! Redirects are never followed and no proxy is used, so the key goes only to the address
 //! that was checked. The provider's error body is read and dropped, never passed on: it can
@@ -24,7 +35,7 @@ use crate::settings::{Error, Model, check_base_url, check_key};
 
 /// The model used when neither the request nor the settings name one.
 pub const DEFAULT_MODEL: &str = "gpt-6-luna";
-/// The whole call, connecting, sending and reading, may take this long.
+/// Each check, connecting, sending and reading, may take this long.
 pub(crate) const DEADLINE: Duration = Duration::from_secs(15);
 /// The most of an answer that is read.
 const MAX_ANSWER: u64 = 64 * 1024;
@@ -33,7 +44,13 @@ const MAX_TEXT_CHARS: usize = 200;
 /// "A few tokens", but a reasoning model spends some on thinking first: `gpt-6-luna` with 16
 /// sometimes ends with a 400 ("output limit reached"); it needed 7 to 14 for thinking.
 const MAX_TOKENS: u32 = 128;
+/// A tool call needs more room: the model thinks about the tool, then writes the call.
+const MAX_TOOL_TOKENS: u32 = 1024;
 const INSTRUCTION: &str = "Answer with the single word: pong";
+const TOOL_INSTRUCTION: &str = "Use the add tool to add 2 and 3, then tell me the sum.";
+const TOOL_NAME: &str = "add";
+/// What the tool "returns"; the model has to answer from it.
+const TOOL_RESULT: &str = "5";
 
 /// The values of a `settings-test` request. A missing or empty one comes from the settings.
 #[derive(Default, Deserialize)]
@@ -42,9 +59,11 @@ struct Request {
     base_url: Option<String>,
     model: Option<String>,
     api_key: Option<String>,
+    /// Answer with a line for each check, as it ends, before the last line.
+    progress: bool,
 }
 
-/// What the call came to.
+/// What a check came to.
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
     Works(String),
@@ -53,10 +72,22 @@ enum Outcome {
     Unreachable,
     Timeout,
     Status(u16),
+    /// The provider refused a request that offers tools.
+    ToolsRefused,
+    /// The model answered with text where it had to call the tool.
+    NoToolCall,
+    /// The model called a tool that is not there, with arguments that do not fit, or without an id.
+    BadToolCall,
+    /// The model got the result of its call and did not answer from it.
+    WrongAnswer,
 }
 
 impl Outcome {
-    fn to_json(&self) -> String {
+    fn works(&self) -> bool {
+        matches!(self, Outcome::Works(_))
+    }
+
+    fn to_value(&self) -> Value {
         match self {
             Outcome::Works(text) => json!({ "result": "works", "text": text }),
             Outcome::KeyRefused => json!({ "result": "key refused" }),
@@ -64,9 +95,51 @@ impl Outcome {
             Outcome::Unreachable => json!({ "result": "unreachable" }),
             Outcome::Timeout => json!({ "result": "timeout" }),
             Outcome::Status(status) => json!({ "result": "error", "status": status }),
+            Outcome::ToolsRefused => json!({ "result": "tools refused" }),
+            Outcome::NoToolCall => json!({ "result": "no tool call" }),
+            Outcome::BadToolCall => json!({ "result": "bad tool call" }),
+            Outcome::WrongAnswer => json!({ "result": "wrong answer" }),
         }
-        .to_string()
     }
+}
+
+/// What a check needs to reach the model.
+struct Probe<'a> {
+    url: &'a Url,
+    model: &'a str,
+    key: Option<&'a str>,
+}
+
+/// One named check. A check gets its own `deadline`.
+pub struct Check {
+    name: &'static str,
+    run: fn(&Probe, Duration) -> Outcome,
+}
+
+impl Check {
+    /// The model answers a "ping".
+    #[must_use]
+    pub fn answers() -> Self {
+        Self {
+            name: "answers",
+            run: ping,
+        }
+    }
+
+    /// The model calls a tool with the right arguments, then answers from the tool's result.
+    #[must_use]
+    pub fn uses_tools() -> Self {
+        Self {
+            name: "uses tools",
+            run: use_tool,
+        }
+    }
+}
+
+/// The checks of a Test, in the order they run.
+#[must_use]
+pub fn checks() -> Vec<Check> {
+    vec![Check::answers(), Check::uses_tools()]
 }
 
 /// `value` unless it is missing or empty.
@@ -74,18 +147,61 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|v| !v.is_empty())
 }
 
+/// The entry of a check in the `checks` list; `None` is a check that did not run.
+fn entry(name: &str, outcome: Option<&Outcome>) -> Value {
+    let mut value = outcome.map_or_else(|| json!({ "result": "skipped" }), Outcome::to_value);
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("text");
+        fields.insert("name".to_string(), json!(name));
+    }
+    value
+}
+
+/// The last line: the result of the first check that failed, or the first check's own (and so
+/// its text) when none did, and the entry of every check.
+fn summary(checks: &[Check], outcomes: &[Option<Outcome>]) -> String {
+    let mut line = outcomes
+        .iter()
+        .flatten()
+        .find(|o| !o.works())
+        .or_else(|| outcomes.iter().flatten().next())
+        .map_or_else(
+            || Outcome::Works(String::new()).to_value(),
+            Outcome::to_value,
+        );
+    line["checks"] = checks
+        .iter()
+        .zip(outcomes)
+        .map(|(check, outcome)| entry(check.name, outcome.as_ref()))
+        .collect();
+    line.to_string()
+}
+
 /// Run `settings-test` with `argument` (a JSON object, or nothing) over the stored `stored`
-/// model, and give the JSON line to answer.
-#[must_use]
-pub fn run(argument: &str, stored: &Model, deadline: Duration) -> String {
-    let request = if argument.is_empty() {
-        Request::default()
+/// model, with the `checks` of a Test, and hand each line of the answer to `out`: only the
+/// last one, or with `progress` in the request a line for each check too. `out` returns
+/// `false` when nobody reads the lines any more, and the Test stops.
+pub fn run(argument: &str, stored: &Model, deadline: Duration, out: &mut dyn FnMut(&str) -> bool) {
+    run_checks(argument, stored, deadline, &checks(), out);
+}
+
+/// `run` with the list of `checks` given.
+pub fn run_checks(
+    argument: &str,
+    stored: &Model,
+    deadline: Duration,
+    checks: &[Check],
+    out: &mut dyn FnMut(&str) -> bool,
+) {
+    let Ok(request) = (if argument.is_empty() {
+        Ok(Request::default())
     } else {
-        match serde_json::from_str::<Request>(argument) {
-            Ok(request) => request,
-            Err(_) => return error_response("invalid settings-test request"),
-        }
+        serde_json::from_str::<Request>(argument)
+    }) else {
+        out(&error_response("invalid settings-test request"));
+        return;
     };
+    let progress = request.progress;
     let base_url = non_empty(request.base_url).unwrap_or_else(|| stored.base_url.clone());
     let model = non_empty(request.model)
         .or_else(|| non_empty(Some(stored.model.clone())))
@@ -99,21 +215,47 @@ pub fn run(argument: &str, stored: &Model, deadline: Duration) -> String {
     });
 
     if base_url.is_empty() {
-        return error_response("no model address is set");
+        out(&error_response("no model address is set"));
+        return;
     }
     if let Err(e) = check_base_url(&base_url) {
-        return error_response(e.as_str());
+        out(&error_response(e.as_str()));
+        return;
     }
     // The key has to be a header value too: ASCII only.
     if let Some(key) = key.as_deref()
         && (check_key(key).is_err() || !key.is_ascii())
     {
-        return error_response(Error::InvalidKey.as_str());
+        out(&error_response(Error::InvalidKey.as_str()));
+        return;
     }
     let Some(url) = completions_url(&base_url) else {
-        return error_response(Error::InvalidBaseUrl.as_str());
+        out(&error_response(Error::InvalidBaseUrl.as_str()));
+        return;
     };
-    ping(&url, &model, key.as_deref(), deadline).to_json()
+    let probe = Probe {
+        url: &url,
+        model: &model,
+        key: key.as_deref(),
+    };
+
+    if progress {
+        let names: Vec<&str> = checks.iter().map(|c| c.name).collect();
+        if !out(&json!({ "checks": names }).to_string()) {
+            return;
+        }
+    }
+    let mut outcomes: Vec<Option<Outcome>> = Vec::with_capacity(checks.len());
+    let mut failed = false;
+    for check in checks {
+        let outcome = (!failed).then(|| (check.run)(&probe, deadline));
+        failed |= outcome.as_ref().is_some_and(|o| !o.works());
+        if progress && !out(&json!({ "check": entry(check.name, outcome.as_ref()) }).to_string()) {
+            return;
+        }
+        outcomes.push(outcome);
+    }
+    out(&summary(checks, &outcomes));
 }
 
 /// `<address>/chat/completions`, without doubling a slash at the end of the address.
@@ -134,54 +276,232 @@ enum LimitField {
     MaxTokens,
 }
 
-fn body(model: &str, limit: LimitField) -> String {
-    let field = match limit {
+/// A request body with `limit` tokens in the field `field`.
+fn with_limit(mut body: Value, field: LimitField, limit: u32) -> String {
+    let field = match field {
         LimitField::MaxCompletionTokens => "max_completion_tokens",
         LimitField::MaxTokens => "max_tokens",
     };
-    let mut body = json!({
+    body[field] = json!(limit);
+    body.to_string()
+}
+
+fn ping_body(model: &str, field: LimitField) -> String {
+    let body = json!({
         "model": model,
         "messages": [
             { "role": "system", "content": INSTRUCTION },
             { "role": "user", "content": "ping" },
         ],
     });
-    body[field] = json!(MAX_TOKENS);
-    body.to_string()
+    with_limit(body, field, MAX_TOKENS)
+}
+
+/// Check `answers`.
+fn ping(probe: &Probe, deadline: Duration) -> Outcome {
+    let answered = match post(probe, &|field| ping_body(probe.model, field), deadline) {
+        Ok(answered) => answered,
+        Err(outcome) => return outcome,
+    };
+    match answered.status {
+        200..=299 => completion_text(&answered.body, probe.key)
+            .map_or(Outcome::Status(answered.status), Outcome::Works),
+        status => refusal(status),
+    }
+}
+
+/// The outcome of a status that is not a success.
+fn refusal(status: u16) -> Outcome {
+    match status {
+        401 | 403 => Outcome::KeyRefused,
+        404 => Outcome::ModelNotFound,
+        _ => Outcome::Status(status),
+    }
+}
+
+/// The tool the model is offered.
+fn tools() -> Value {
+    json!([{
+        "type": "function",
+        "function": {
+            "name": TOOL_NAME,
+            "description": "Add two numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": { "a": { "type": "number" }, "b": { "type": "number" } },
+                "required": ["a", "b"],
+            },
+        },
+    }])
+}
+
+fn tool_body(model: &str, messages: &[Value], field: LimitField) -> String {
+    let body = json!({ "model": model, "messages": messages, "tools": tools() });
+    with_limit(body, field, MAX_TOOL_TOKENS)
+}
+
+/// What the model made of the offer of the tool.
+enum ToolTurn {
+    /// A call of the tool, with its id and the message to send back.
+    Call {
+        id: String,
+        message: Value,
+    },
+    Outcome(Outcome),
+}
+
+/// Whether `arguments` (the JSON text of a call) are the numbers 2 and 3, in either order.
+fn fits_arguments(arguments: &str) -> bool {
+    let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(arguments) else {
+        return false;
+    };
+    let number = |name: &str| fields.get(name).and_then(Value::as_f64);
+    let (Some(a), Some(b)) = (number("a"), number("b")) else {
+        return false;
+    };
+    // `3` and `3.0` are the same number.
+    let is = |value: f64, want: f64| (value - want).abs() < f64::EPSILON;
+    fields.len() == 2 && ((is(a, 2.0) && is(b, 3.0)) || (is(a, 3.0) && is(b, 2.0)))
+}
+
+/// Read the first turn: a call of the tool with fitting arguments, or why not.
+fn tool_turn(answer: &[u8]) -> ToolTurn {
+    let Ok(value) = serde_json::from_slice::<Value>(answer) else {
+        return ToolTurn::Outcome(Outcome::Status(200));
+    };
+    let Some(message) = value
+        .pointer("/choices/0/message")
+        .filter(|m| m.is_object())
+    else {
+        return ToolTurn::Outcome(Outcome::Status(200));
+    };
+    let Some(call) = message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .and_then(|calls| calls.first())
+    else {
+        return ToolTurn::Outcome(Outcome::NoToolCall);
+    };
+    let function = call.get("function");
+    let name = function.and_then(|f| f.get("name")).and_then(Value::as_str);
+    let arguments = function
+        .and_then(|f| f.get("arguments"))
+        .and_then(Value::as_str);
+    let Some(arguments) = arguments.filter(|a| name == Some(TOOL_NAME) && fits_arguments(a)) else {
+        return ToolTurn::Outcome(Outcome::BadToolCall);
+    };
+    // The result is sent back under the call's id, so a call without one cannot be answered.
+    let Some(id) = call
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+    else {
+        return ToolTurn::Outcome(Outcome::BadToolCall);
+    };
+    // Send the call back as it was made, but only the parts the provider has to know.
+    let message = json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{
+            "id": id,
+            "type": "function",
+            "function": { "name": TOOL_NAME, "arguments": arguments },
+        }],
+    });
+    ToolTurn::Call { id, message }
+}
+
+/// Check `uses tools`: offer the tool, take the call, send the result, read the answer. Both
+/// requests share the one `deadline`.
+fn use_tool(probe: &Probe, deadline: Duration) -> Outcome {
+    let started = Instant::now();
+    let mut messages = vec![json!({ "role": "user", "content": TOOL_INSTRUCTION })];
+    let first = match post(
+        probe,
+        &|field| tool_body(probe.model, &messages, field),
+        deadline,
+    ) {
+        Ok(answered) => answered,
+        Err(outcome) => return outcome,
+    };
+    let first = match accepted(first) {
+        Ok(answered) => answered,
+        Err(outcome) => return outcome,
+    };
+    let (id, call) = match tool_turn(&first.body) {
+        ToolTurn::Call { id, message } => (id, message),
+        ToolTurn::Outcome(outcome) => return outcome,
+    };
+    messages.push(call);
+    messages.push(json!({ "role": "tool", "tool_call_id": id, "content": TOOL_RESULT }));
+
+    let Some(left) = deadline.checked_sub(started.elapsed()) else {
+        return Outcome::Timeout;
+    };
+    let second = match post(
+        probe,
+        &|field| tool_body(probe.model, &messages, field),
+        left,
+    ) {
+        Ok(answered) => answered,
+        Err(outcome) => return outcome,
+    };
+    let second = match accepted(second) {
+        Ok(answered) => answered,
+        Err(outcome) => return outcome,
+    };
+    let Some(content) = completion_content(&second.body) else {
+        return Outcome::Status(second.status);
+    };
+    // The whole number, on the whole text: "15" is not 5, and a 5 after a long thought counts.
+    if content
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|number| number == TOOL_RESULT)
+    {
+        // Nothing reads the text of this check: only the first check's text is passed on.
+        Outcome::Works(String::new())
+    } else {
+        Outcome::WrongAnswer
+    }
+}
+
+/// The answer to a request that offers tools, when it is a success. Any 400, 404 or 422 is
+/// `tools refused`, after the tool message as well as before it.
+fn accepted(answered: Answered) -> Result<Answered, Outcome> {
+    match answered.status {
+        200..=299 => Ok(answered),
+        400 | 404 | 422 => Err(Outcome::ToolsRefused),
+        status => Err(refusal(status)),
+    }
+}
+
+/// What the provider answered: the status and the body that was read.
+struct Answered {
+    status: u16,
+    body: Vec<u8>,
 }
 
 /// Make the call: with `max_completion_tokens`, and once more with `max_tokens` when the
 /// provider answers a 400 that names `max_completion_tokens`. Both share one `deadline`.
-fn ping(url: &Url, model: &str, key: Option<&str>, deadline: Duration) -> Outcome {
+/// Fails with what a request that got no answer came to.
+fn post(
+    probe: &Probe,
+    body: &dyn Fn(LimitField) -> String,
+    deadline: Duration,
+) -> Result<Answered, Outcome> {
     let started = Instant::now();
-    let first = send(
-        url,
-        &body(model, LimitField::MaxCompletionTokens),
-        key,
-        deadline,
-    );
-    if !first.refused_limit_field {
-        return first.outcome;
+    let first = send(probe, &body(LimitField::MaxCompletionTokens), deadline)?;
+    // The body is only searched here, never passed on.
+    let refused_limit_field = first.status == 400
+        && String::from_utf8_lossy(&first.body).contains("max_completion_tokens");
+    if !refused_limit_field {
+        return Ok(first);
     }
     let Some(left) = deadline.checked_sub(started.elapsed()) else {
-        return Outcome::Timeout;
+        return Err(Outcome::Timeout);
     };
-    send(url, &body(model, LimitField::MaxTokens), key, left).outcome
-}
-
-/// What one request came to, and whether it was a 400 that names `max_completion_tokens`.
-struct Sent {
-    outcome: Outcome,
-    refused_limit_field: bool,
-}
-
-impl From<Outcome> for Sent {
-    fn from(outcome: Outcome) -> Self {
-        Self {
-            outcome,
-            refused_limit_field: false,
-        }
-    }
+    send(probe, &body(LimitField::MaxTokens), left)
 }
 
 /// Read at most `MAX_ANSWER` bytes of the answer.
@@ -198,7 +518,7 @@ fn read_answer(response: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, ur
     Ok(answer)
 }
 
-fn send(url: &Url, body: &str, key: Option<&str>, deadline: Duration) -> Sent {
+fn send(probe: &Probe, body: &str, deadline: Duration) -> Result<Answered, Outcome> {
     let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .max_redirects(0)
@@ -207,35 +527,20 @@ fn send(url: &Url, body: &str, key: Option<&str>, deadline: Duration) -> Sent {
         .build();
     let agent = ureq::Agent::new_with_config(config);
     let mut request = agent
-        .post(url.as_str())
+        .post(probe.url.as_str())
         .header("Content-Type", "application/json");
-    if let Some(key) = key {
+    if let Some(key) = probe.key {
         request = request.header("Authorization", format!("Bearer {key}"));
     }
-    let response = match request.send(body) {
-        Ok(response) => response,
-        Err(e) => return failure(&e).into(),
-    };
+    let response = request.send(body).map_err(|e| failure(&e))?;
     let status = response.status().as_u16();
-    let answer = match read_answer(response) {
+    let body = match read_answer(response) {
         Ok(answer) => answer,
         // Too long to be a completion, and not worth reading on.
         Err(ureq::Error::BodyExceedsLimit(_)) => Vec::new(),
-        Err(e) => return failure(&e).into(),
+        Err(e) => return Err(failure(&e)),
     };
-    match status {
-        200..=299 => completion_text(&answer, key)
-            .map_or(Outcome::Status(status), Outcome::Works)
-            .into(),
-        400 => Sent {
-            outcome: Outcome::Status(400),
-            // The body is only searched here, never passed on.
-            refused_limit_field: String::from_utf8_lossy(&answer).contains("max_completion_tokens"),
-        },
-        401 | 403 => Outcome::KeyRefused.into(),
-        404 => Outcome::ModelNotFound.into(),
-        _ => Outcome::Status(status).into(),
-    }
+    Ok(Answered { status, body })
 }
 
 /// The reason for a call that got no answer. The error text is dropped on purpose.
@@ -250,6 +555,16 @@ fn failure(error: &ureq::Error) -> Outcome {
 /// model can spend its few tokens on thinking). `None` when the answer is not a completion.
 /// The key is scrubbed from the whole text, then the text is cut, so no part of it is passed on.
 fn completion_text(answer: &[u8], key: Option<&str>) -> Option<String> {
+    let text = completion_content(answer)?;
+    let text = match key {
+        Some(key) => text.replace(key, "[hidden]"),
+        None => text,
+    };
+    Some(text.chars().take(MAX_TEXT_CHARS).collect())
+}
+
+/// The whole text of the first choice, as the provider wrote it; see `completion_text`.
+fn completion_content(answer: &[u8]) -> Option<String> {
     let value: Value = serde_json::from_slice(answer).ok()?;
     let choices = value.get("choices")?.as_array()?;
     let text = choices
@@ -257,9 +572,5 @@ fn completion_text(answer: &[u8], key: Option<&str>) -> Option<String> {
         .and_then(|c| c.pointer("/message/content"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let text = match key {
-        Some(key) => text.replace(key, "[hidden]"),
-        None => text.to_string(),
-    };
-    Some(text.chars().take(MAX_TEXT_CHARS).collect())
+    Some(text.to_string())
 }

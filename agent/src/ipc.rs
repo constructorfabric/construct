@@ -6,8 +6,9 @@
 //! `status` (the reply has `service`: `registered` or `not_registered`, whether the login
 //! service of the agent is registered, and no `service` when that cannot be told),
 //! `settings-get`, `settings-set <JSON object>` (the fields to change; see `settings`), and
-//! `settings-test [JSON object]` (one ping to the model; see `model_test`).
+//! `settings-test [JSON object]` (the checks on the model; see `model_test`).
 //! `backfill [JSON object]` sends the prompts of the past to Construct (see `manage`).
+//! `settings-test` answers with several JSON lines when its request has `"progress": true`.
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
 //! `MAX_REQUEST` bytes, and a `chat-send` line at most `chat::MAX_REQUEST`.
@@ -473,12 +474,7 @@ mod unix {
                     Err(e) => error_response(e.as_str()),
                 }
             }
-            ("settings-test", Some(s)) => {
-                crate::model_test::run(argument, &s.model(), crate::model_test::DEADLINE)
-            }
-            ("settings-get" | "settings-set" | "settings-test", None) => {
-                error_response("settings are not available")
-            }
+            ("settings-get" | "settings-set", None) => error_response("settings are not available"),
             _ => unknown_command_response(line),
         }
     }
@@ -491,12 +487,53 @@ mod unix {
                 if let Some(chat_reply) = chat_command(&line, shared, &mut stream)? {
                     return Ok(chat_reply);
                 }
+                if let Some(test_reply) = settings_test_command(&line, shared, &mut stream)? {
+                    return Ok(test_reply);
+                }
                 reply(&line, shared)
             }
             Request::TooLong { chat: true } => chat::event_error("request too large"),
             Request::TooLong { chat: false } => error_response("request too long"),
         };
         writeln!(stream, "{reply}")
+    }
+
+    /// What the multi-line commands give their lines to: writes each line and a newline, and
+    /// answers `false` once the client is gone.
+    fn line_writer(out: &mut UnixStream) -> impl FnMut(&str) -> bool + '_ {
+        |l| out.write_all(format!("{l}\n").as_bytes()).is_ok()
+    }
+
+    /// Serve `settings-test`; `None` when the line is not one. With `progress` in its request
+    /// it answers with a line for each check, and a Test can take longer than the read timeout
+    /// of the request line: a client that is gone is found by a failed write. Never log, or
+    /// return in an error, any part of `line`.
+    fn settings_test_command(
+        line: &[u8],
+        shared: &Shared,
+        stream: &mut UnixStream,
+    ) -> io::Result<Option<()>> {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return Ok(None);
+        };
+        let (_, command, argument) = split_command(line);
+        if command != "settings-test" {
+            return Ok(None);
+        }
+        let Some(settings) = shared.settings else {
+            writeln!(stream, "{}", error_response("settings are not available"))?;
+            return Ok(Some(()));
+        };
+        stream.set_read_timeout(None)?;
+        stream.set_write_timeout(Some(chat::WRITE_TIMEOUT))?;
+        let mut out = stream.try_clone()?;
+        crate::model_test::run(
+            argument,
+            &settings.model(),
+            crate::model_test::DEADLINE,
+            &mut line_writer(&mut out),
+        );
+        Ok(Some(()))
     }
 
     /// Serve a chat command; `None` when the line is not one. An answer can take minutes, so
@@ -531,9 +568,7 @@ mod unix {
         match command {
             "chat-send" => {
                 let mut out = stream.try_clone()?;
-                chat.send(argument, &mut |l| {
-                    out.write_all(format!("{l}\n").as_bytes()).is_ok()
-                });
+                chat.send(argument, &mut line_writer(&mut out));
             }
             "chat-stop" => {
                 writeln!(

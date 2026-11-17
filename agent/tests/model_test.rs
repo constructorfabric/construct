@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use construct_agent::ipc::Server;
-use construct_agent::model_test::{DEFAULT_MODEL, run};
+use construct_agent::model_test::{Check, DEFAULT_MODEL, checks, run_checks};
 use construct_agent::settings::{Model, Settings};
 use serde_json::{Value, json};
 
@@ -122,11 +122,12 @@ fn write_reply(stream: &mut TcpStream, status: u16, headers: &str, body: &str) {
     );
 }
 
+fn completion_body(text: &str) -> String {
+    json!({ "choices": [{ "message": { "role": "assistant", "content": text } }] }).to_string()
+}
+
 fn completion(text: &str) -> Reply {
-    Reply::Status(
-        200,
-        json!({ "choices": [{ "message": { "role": "assistant", "content": text } }] }).to_string(),
-    )
+    Reply::Status(200, completion_body(text))
 }
 
 fn stored(base_url: &str) -> Model {
@@ -134,6 +135,23 @@ fn stored(base_url: &str) -> Model {
         base_url: base_url.to_string(),
         model: "my-model".to_string(),
         api_key: Some(KEY.to_string()),
+    }
+}
+
+/// Run the check `answers` alone and give its line without the `checks` list: the tests of
+/// this check are about its result.
+fn run(argument: &str, stored: &Model, deadline: Duration) -> String {
+    let mut last = String::new();
+    run_checks(argument, stored, deadline, &[Check::answers()], &mut |l| {
+        last = l.to_string();
+        true
+    });
+    match serde_json::from_str::<Value>(&last) {
+        Ok(mut line) if line.get("checks").is_some() => {
+            line.as_object_mut().unwrap().remove("checks");
+            line.to_string()
+        }
+        _ => last,
     }
 }
 
@@ -404,10 +422,27 @@ fn the_socket_command_runs_the_test_over_the_store() {
     let set = json!({ "model": { "base_url": fake.url(), "model": "m", "api_key": KEY } });
     ask(&format!("settings-set {set}"));
     let reply = ask("settings-test");
+    assert_eq!(reply.lines().count(), 1, "{reply}");
+    // The fake answers "pong" to everything, so the model never calls the tool.
     assert_eq!(
         serde_json::from_str::<Value>(&reply).unwrap(),
-        json!({ "result": "works", "text": "pong" })
+        json!({
+            "result": "no tool call",
+            "checks": [
+                { "name": "answers", "result": "works" },
+                { "name": "uses tools", "result": "no tool call" },
+            ],
+        })
     );
+    assert!(!reply.contains(KEY));
+    let reply = ask("settings-test {\"progress\":true}");
+    let lines: Vec<Value> = reply
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 4, "{reply}");
+    assert_eq!(lines[0], json!({ "checks": ["answers", "uses tools"] }));
+    assert_eq!(lines[3]["result"], "no tool call");
     assert!(!reply.contains(KEY));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -452,4 +487,456 @@ fn the_socket_command_without_settings_answers_an_error() {
     s.read_to_string(&mut reply).unwrap();
     assert!(reply.contains("settings are not available"), "{reply}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// The whole Test: the checks, in order.
+
+/// The model calls the tool.
+fn tool_call(arguments: &str) -> Reply {
+    Reply::Status(
+        200,
+        json!({ "choices": [{ "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_7",
+                "type": "function",
+                "function": { "name": "add", "arguments": arguments },
+            }],
+        } }] })
+        .to_string(),
+    )
+}
+
+/// Run the whole Test, and give every line it answered with.
+fn test_lines(fake: &Fake, argument: &str) -> Vec<String> {
+    test_lines_within(fake, argument, LONG)
+}
+
+fn test_lines_within(fake: &Fake, argument: &str, deadline: Duration) -> Vec<String> {
+    let mut lines = Vec::new();
+    run_checks(
+        argument,
+        &stored(&fake.url()),
+        deadline,
+        &checks(),
+        &mut |l| {
+            lines.push(l.to_string());
+            true
+        },
+    );
+    for line in &lines {
+        assert!(!line.contains(KEY), "the key is in the answer: {line}");
+    }
+    lines
+}
+
+fn last(lines: &[String]) -> Value {
+    serde_json::from_str(lines.last().unwrap()).unwrap()
+}
+
+#[test]
+fn a_model_that_answers_and_uses_the_tool_works_in_both_checks() {
+    let fake = Fake::start(vec![
+        completion("pong"),
+        tool_call("{\"a\":2,\"b\":3}"),
+        completion("2 + 3 = 5"),
+    ]);
+    let lines = test_lines(&fake, "");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        last(&lines),
+        json!({
+            "result": "works",
+            "text": "pong",
+            "checks": [
+                { "name": "answers", "result": "works" },
+                { "name": "uses tools", "result": "works" },
+            ],
+        })
+    );
+
+    let seen = fake.seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    assert!(seen[0].body.get("tools").is_none());
+    // The tool request offers the tool and leaves the model room to think.
+    assert_eq!(seen[1].body["tools"][0]["function"]["name"], "add");
+    assert_eq!(seen[1].body["max_completion_tokens"], 1024);
+    // The second request answers the call with the tool's result.
+    let messages = seen[2].body["messages"].as_array().unwrap();
+    let tool = messages.last().unwrap();
+    assert_eq!(tool["role"], "tool");
+    assert_eq!(tool["tool_call_id"], "call_7");
+    assert_eq!(tool["content"], "5");
+    let call = &messages[messages.len() - 2];
+    assert_eq!(call["role"], "assistant");
+    assert_eq!(call["tool_calls"][0]["id"], "call_7");
+    assert_eq!(seen[2].body["tools"][0]["function"]["name"], "add");
+    for captured in seen.iter() {
+        assert_eq!(
+            captured.authorization.as_deref(),
+            Some(&*format!("Bearer {KEY}"))
+        );
+    }
+}
+
+#[test]
+fn arguments_in_the_other_order_fit() {
+    let fake = Fake::start(vec![
+        completion("pong"),
+        tool_call("{\"a\":3.0,\"b\":2}"),
+        completion("5"),
+    ]);
+    assert_eq!(last(&test_lines(&fake, ""))["result"], "works");
+}
+
+#[test]
+fn text_instead_of_a_tool_call_is_no_tool_call_and_the_test_result() {
+    let fake = Fake::start(vec![completion("pong"), completion("The sum is 5.")]);
+    let lines = test_lines(&fake, "");
+    assert_eq!(
+        last(&lines),
+        json!({
+            "result": "no tool call",
+            "checks": [
+                { "name": "answers", "result": "works" },
+                { "name": "uses tools", "result": "no tool call" },
+            ],
+        })
+    );
+    assert_eq!(fake.requests(), 2);
+}
+
+#[test]
+fn a_call_with_arguments_that_do_not_fit_is_a_bad_tool_call() {
+    for arguments in [
+        "{\"a\":2}",
+        "{\"a\":2,\"b\":4}",
+        "{\"a\":\"2\",\"b\":\"3\"}",
+        "{\"a\":2,\"b\":3,\"c\":1}",
+        "not json",
+        "[2,3]",
+    ] {
+        let fake = Fake::start(vec![completion("pong"), tool_call(arguments)]);
+        let answer = last(&test_lines(&fake, ""));
+        assert_eq!(answer["result"], "bad tool call", "{arguments}");
+        assert_eq!(fake.requests(), 2);
+    }
+    // A call of a tool that was not offered.
+    let wrong_name = tool_call("{\"a\":2,\"b\":3}");
+    let Reply::Status(_, body) = wrong_name else {
+        unreachable!()
+    };
+    let fake = Fake::start(vec![
+        completion("pong"),
+        Reply::Status(200, body.replace("\"add\"", "\"subtract\"")),
+    ]);
+    assert_eq!(last(&test_lines(&fake, ""))["result"], "bad tool call");
+}
+
+#[test]
+fn a_provider_that_refuses_tools_gives_tools_refused_and_no_body() {
+    let echo = format!("{{\"error\":\"this model does not support tools: {KEY}\"}}");
+    for status in [400, 404, 422] {
+        let fake = Fake::start(vec![
+            completion("pong"),
+            Reply::Status(status, echo.clone()),
+        ]);
+        let lines = test_lines(&fake, "");
+        assert_eq!(
+            last(&lines),
+            json!({
+                "result": "tools refused",
+                "checks": [
+                    { "name": "answers", "result": "works" },
+                    { "name": "uses tools", "result": "tools refused" },
+                ],
+            }),
+            "status {status}"
+        );
+        assert!(!lines[0].contains("support"));
+    }
+}
+
+#[test]
+fn a_400_about_max_completion_tokens_is_retried_in_the_tool_check_too() {
+    let fake = Fake::start(vec![
+        completion("pong"),
+        Reply::Status(
+            400,
+            "{\"error\":\"unknown parameter max_completion_tokens\"}".to_string(),
+        ),
+        tool_call("{\"a\":2,\"b\":3}"),
+        completion("5"),
+    ]);
+    assert_eq!(last(&test_lines(&fake, ""))["result"], "works");
+    let seen = fake.seen.lock().unwrap();
+    assert_eq!(seen.len(), 4);
+    assert_eq!(seen[2].body["max_tokens"], 1024);
+    assert!(seen[2].body.get("max_completion_tokens").is_none());
+}
+
+#[test]
+fn an_answer_that_does_not_use_the_result_is_a_wrong_answer() {
+    for second in [completion("I cannot tell"), completion(""), tool_call("{}")] {
+        let fake = Fake::start(vec![
+            completion("pong"),
+            tool_call("{\"a\":2,\"b\":3}"),
+            second,
+        ]);
+        assert_eq!(last(&test_lines(&fake, ""))["result"], "wrong answer");
+    }
+}
+
+#[test]
+fn other_failures_of_the_tool_check_keep_their_reasons() {
+    for (status, want) in [
+        (401, json!({ "result": "key refused" })),
+        (500, json!({ "result": "error", "status": 500 })),
+    ] {
+        let fake = Fake::start(vec![
+            completion("pong"),
+            Reply::Status(status, "{}".to_string()),
+        ]);
+        let answer = last(&test_lines(&fake, ""));
+        assert_eq!(answer["result"], want["result"], "status {status}");
+        assert_eq!(answer.get("status"), want.get("status"));
+    }
+    let fake = Fake::start(vec![
+        completion("pong"),
+        Reply::Status(200, "<html></html>".to_string()),
+    ]);
+    let answer = last(&test_lines(&fake, ""));
+    assert_eq!(answer["result"], "error");
+    assert_eq!(answer["status"], 200);
+}
+
+#[test]
+fn a_failed_second_request_of_the_tool_check_is_not_hidden() {
+    let fake = Fake::start(vec![
+        completion("pong"),
+        tool_call("{\"a\":2,\"b\":3}"),
+        Reply::Status(500, "{}".to_string()),
+    ]);
+    let answer = last(&test_lines(&fake, ""));
+    assert_eq!(answer["result"], "error");
+    assert_eq!(answer["status"], 500);
+}
+
+#[test]
+fn a_bad_key_fails_the_first_check_and_skips_the_second() {
+    let fake = Fake::start(vec![Reply::Status(401, "{}".to_string())]);
+    let lines = test_lines(&fake, "");
+    assert_eq!(
+        last(&lines),
+        json!({
+            "result": "key refused",
+            "checks": [
+                { "name": "answers", "result": "key refused" },
+                { "name": "uses tools", "result": "skipped" },
+            ],
+        })
+    );
+    assert_eq!(fake.requests(), 1);
+}
+
+#[test]
+fn an_error_status_is_kept_in_the_entry_of_its_check() {
+    let fake = Fake::start(vec![Reply::Status(500, "{}".to_string())]);
+    let answer = last(&test_lines(&fake, ""));
+    assert_eq!(answer["result"], "error");
+    assert_eq!(answer["status"], 500);
+    assert_eq!(
+        answer["checks"][0],
+        json!({ "name": "answers", "result": "error", "status": 500 })
+    );
+}
+
+#[test]
+fn with_progress_the_lines_come_in_order_and_the_last_is_the_one_line_reply() {
+    let script = || {
+        vec![
+            completion("pong"),
+            tool_call("{\"a\":2,\"b\":3}"),
+            completion("5"),
+        ]
+    };
+    let plain = test_lines(&Fake::start(script()), "");
+    assert_eq!(plain.len(), 1);
+
+    let fake = Fake::start(script());
+    let lines = test_lines(&fake, "{\"progress\":true}");
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    let parsed: Vec<Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(parsed[0], json!({ "checks": ["answers", "uses tools"] }));
+    assert_eq!(
+        parsed[1],
+        json!({ "check": { "name": "answers", "result": "works" } })
+    );
+    assert_eq!(
+        parsed[2],
+        json!({ "check": { "name": "uses tools", "result": "works" } })
+    );
+    assert_eq!(lines[3], plain[0]);
+}
+
+#[test]
+fn a_checks_line_arrives_before_the_next_check_starts() {
+    let fake = Fake::start(vec![
+        completion("pong"),
+        tool_call("{\"a\":2,\"b\":3}"),
+        completion("5"),
+    ]);
+    // What the fake had seen when each line arrived.
+    let mut seen_at = Vec::new();
+    run_checks(
+        "{\"progress\":true}",
+        &stored(&fake.url()),
+        LONG,
+        &checks(),
+        &mut |l| {
+            seen_at.push((l.to_string(), fake.requests()));
+            true
+        },
+    );
+    assert_eq!(seen_at.len(), 4);
+    assert_eq!(seen_at[0].1, 0, "the names come first");
+    assert!(seen_at[1].0.contains("\"answers\""));
+    assert_eq!(
+        seen_at[1].1, 1,
+        "the first check ended before the second began"
+    );
+    assert_eq!(seen_at[2].1, 3);
+}
+
+#[test]
+fn with_progress_a_skipped_check_has_its_line_and_a_bad_request_one_line() {
+    let fake = Fake::start(vec![Reply::Status(401, "{}".to_string())]);
+    let lines = test_lines(&fake, "{\"progress\":true}");
+    assert_eq!(lines.len(), 4);
+    assert_eq!(
+        serde_json::from_str::<Value>(&lines[2]).unwrap(),
+        json!({ "check": { "name": "uses tools", "result": "skipped" } })
+    );
+
+    let lines = test_lines(&fake, "{\"progress\":true,\"surprise\":1}");
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("\"error\""));
+    assert_eq!(fake.requests(), 1);
+}
+
+#[test]
+fn the_test_stops_when_nobody_reads_the_lines() {
+    let fake = Fake::start(vec![completion("pong")]);
+    let mut count = 0;
+    run_checks(
+        "{\"progress\":true}",
+        &stored(&fake.url()),
+        LONG,
+        &checks(),
+        &mut |_| {
+            count += 1;
+            count < 2
+        },
+    );
+    assert_eq!(count, 2);
+    assert_eq!(fake.requests(), 1);
+}
+
+#[test]
+fn each_check_has_its_own_deadline() {
+    let fake = Fake::start(vec![
+        Reply::Slow(Duration::from_millis(700), 200, completion_body("pong")),
+        Reply::Slow(
+            Duration::from_millis(700),
+            200,
+            completion_body("not a call"),
+        ),
+    ]);
+    // Together the two checks take 1.4 s, over the deadline of one.
+    let lines = test_lines_within(&fake, "", Duration::from_millis(1000));
+    assert_eq!(last(&lines)["result"], "no tool call");
+}
+
+#[test]
+fn the_tool_check_ends_at_its_deadline() {
+    let fake = Fake::start(vec![completion("pong"), Reply::Hang]);
+    let started = Instant::now();
+    let lines = test_lines_within(&fake, "", Duration::from_millis(600));
+    assert_eq!(last(&lines)["result"], "timeout");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn the_two_requests_of_the_tool_check_share_its_deadline() {
+    let call = || {
+        let Reply::Status(_, body) = tool_call("{\"a\":2,\"b\":3}") else {
+            unreachable!()
+        };
+        body
+    };
+    let fake = Fake::start(vec![
+        completion("pong"),
+        Reply::Slow(Duration::from_millis(700), 200, call()),
+        Reply::Hang,
+    ]);
+    let started = Instant::now();
+    let lines = test_lines_within(&fake, "", Duration::from_millis(1000));
+    assert_eq!(last(&lines)["result"], "timeout");
+    // Two full deadlines would take 1.7 s for the check alone.
+    assert!(
+        started.elapsed() < Duration::from_millis(1600),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_refusal_after_the_tool_message_is_tools_refused_too() {
+    for status in [400, 404, 422] {
+        let fake = Fake::start(vec![
+            completion("pong"),
+            tool_call("{\"a\":2,\"b\":3}"),
+            Reply::Status(status, "{}".to_string()),
+        ]);
+        assert_eq!(
+            last(&test_lines(&fake, ""))["result"],
+            "tools refused",
+            "status {status}"
+        );
+    }
+}
+
+#[test]
+fn only_the_whole_number_5_is_the_sum() {
+    for (text, want) in [
+        ("The sum is 15", "wrong answer"),
+        ("2 + 3 = 25", "wrong answer"),
+        ("five", "wrong answer"),
+        ("5", "works"),
+        ("The sum of 2 and 3 is 5.", "works"),
+        // A long thought first: the 5 is past the part of the text that is passed on.
+        (&format!("{} so it is 5", "thinking ".repeat(50)), "works"),
+    ] {
+        let fake = Fake::start(vec![
+            completion("pong"),
+            tool_call("{\"a\":2,\"b\":3}"),
+            completion(text),
+        ]);
+        assert_eq!(last(&test_lines(&fake, ""))["result"], want, "{text}");
+    }
+}
+
+#[test]
+fn a_tool_call_without_an_id_is_a_bad_tool_call() {
+    let Reply::Status(_, body) = tool_call("{\"a\":2,\"b\":3}") else {
+        unreachable!()
+    };
+    let without_id = body.replace("\"id\":\"call_7\",", "");
+    assert_ne!(without_id, body);
+    let fake = Fake::start(vec![completion("pong"), Reply::Status(200, without_id)]);
+    assert_eq!(last(&test_lines(&fake, ""))["result"], "bad tool call");
 }
