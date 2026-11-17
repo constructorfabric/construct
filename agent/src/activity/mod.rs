@@ -8,6 +8,7 @@
 //! arrive in, so a step-by-step store equals a rebuilt one.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use connectors::{Author, Mark, Record, Role, Turn, compare_times, minute_of};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -15,6 +16,9 @@ use sqlx::{PgConnection, PgPool, Row};
 
 use crate::database::{Error, SOCKET_PORT, SUPERUSER, err};
 use crate::records::{FileSink, read_records, turn_key};
+
+mod feed;
+pub use feed::Feed;
 
 /// The database the store lives in; the agent creates it when it is missing.
 pub const DBNAME: &str = "activity";
@@ -134,6 +138,19 @@ impl Store {
     /// # Errors
     /// Fails when a file cannot be read or a statement is refused; the store is then as before.
     pub async fn rebuild(&self, sink: &FileSink) -> Result<usize, Error> {
+        self.rebuild_counting(sink, &AtomicU64::new(0)).await
+    }
+
+    /// Like [`Store::rebuild`], adding every record read to `done` as it goes, so that another
+    /// thread can show the progress.
+    ///
+    /// # Errors
+    /// Fails when a file cannot be read or a statement is refused; the store is then as before.
+    pub async fn rebuild_counting(
+        &self,
+        sink: &FileSink,
+        done: &AtomicU64,
+    ) -> Result<usize, Error> {
         let files = sink
             .session_files()
             .map_err(|e| err("list the record files", e))?;
@@ -153,6 +170,7 @@ impl Store {
         for file in files {
             for record in read_records(&file).map_err(|e| err("read a record file", e))? {
                 applied += usize::from(apply_in(&mut tx, &record).await?);
+                done.fetch_add(1, Ordering::Relaxed);
             }
         }
         tx.commit().await.map_err(|e| err("commit", e))?;
@@ -285,6 +303,15 @@ fn is_utc_time(time: &str) -> bool {
         && time::OffsetDateTime::parse(time, &time::format_description::well_known::Rfc3339).is_ok()
 }
 
+/// Whether the store counts the record at all; tool calls and results of a chat carry no
+/// activity.
+fn is_activity(record: &Record) -> bool {
+    match record {
+        Record::Turn(_) | Record::Mark(_) => true,
+        Record::ToolCall(_) | Record::ToolResult(_) => false,
+    }
+}
+
 async fn apply_in(conn: &mut PgConnection, record: &Record) -> Result<bool, Error> {
     if !is_utc_time(record.time()) {
         return Ok(false);
@@ -341,6 +368,7 @@ async fn apply_in(conn: &mut PgConnection, record: &Record) -> Result<bool, Erro
             branch,
             ..
         }) => touch(conn, tool, session, time, folder, branch).await?,
+        // See `is_activity`.
         Record::ToolCall(_) | Record::ToolResult(_) => return Ok(false),
     }
     Ok(true)

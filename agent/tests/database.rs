@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod common;
+
 use construct_agent::ipc::query_status;
+use construct_agent::settings::{Settings, Update, config_dir_from};
 
 /// A spawned agent, killed when the test ends, also when it fails.
 struct Agent(Child);
@@ -610,6 +613,133 @@ fn wait_activity_session(stand: &Stand) {
     }
 }
 
+/// The `state` of the `activity` object of `status`, waited for, since the build ends a moment
+/// after the rows are there.
+fn wait_activity_state(stand: &Stand, wanted: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let v: serde_json::Value =
+            serde_json::from_str(&query_status(&stand.agent_socket()).unwrap()).unwrap();
+        if v["activity"]["state"] == wanted {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the activity state was {} and not {wanted}",
+            v["activity"]
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+fn a_prompt_written_to_a_log_while_the_agent_runs_reaches_the_activity_store() {
+    let stand = Stand::new("actlive");
+    let home = stand.root.join("home");
+    let log_dir = home.join(".claude/projects/-w");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let mut command = stand.command();
+    command
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env_remove("CLAUDE_CONFIG_DIR");
+    let mut agent = Agent(command.spawn().unwrap());
+    stand.wait_ready();
+    wait_activity_state(&stand, "ready");
+    std::fs::write(
+        log_dir.join("live-1.jsonl"),
+        concat!(
+            r#"{"type":"user","timestamp":"2026-11-11T10:15:30.123Z","cwd":"/w","#,
+            r#""sessionId":"live-1","message":{"role":"user","content":"hello"}}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    // The follower looks every 5 seconds; the rest is the write.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while stand.sql_in(
+        "activity",
+        "select count(*) from activity.sessions where session = 'live-1'",
+    ) != "1"
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the prompt did not reach the store"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    agent.terminate();
+}
+
+/// A model provider that answers every request with the same short stream.
+fn provider() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            common::read_request(&mut stream);
+            common::head(&mut stream);
+            common::chunk(&mut stream, "fine");
+            common::done(&mut stream);
+        }
+    });
+    format!("http://127.0.0.1:{port}/v1")
+}
+
+#[test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+fn a_chat_message_while_the_agent_runs_reaches_the_activity_store() {
+    use std::io::{Read, Write};
+
+    let stand = Stand::new("actchat");
+    let home = stand.root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let config = config_dir_from(
+        Some(home.join("config")),
+        Some(home.clone()),
+        cfg!(target_os = "macos"),
+    )
+    .unwrap();
+    let update = serde_json::json!({ "model": {
+        "base_url": provider(), "model": "m", "api_key": "k"
+    } });
+    Settings::open(&config)
+        .unwrap()
+        .apply(Update::parse(&update.to_string()).unwrap())
+        .unwrap();
+    let mut command = stand.command();
+    command
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env_remove("CLAUDE_CONFIG_DIR");
+    let mut agent = Agent(command.spawn().unwrap());
+    stand.wait_ready();
+    wait_activity_state(&stand, "ready");
+    let mut socket = std::os::unix::net::UnixStream::connect(stand.agent_socket()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    writeln!(socket, r#"chat-send {{"message":"hello"}}"#).unwrap();
+    let mut answer = String::new();
+    socket.read_to_string(&mut answer).unwrap();
+    assert!(answer.contains("fine"), "{answer}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while stand.sql_in(
+        "activity",
+        "select count(*) from activity.sessions where tool = 'chat'",
+    ) != "1"
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the chat message did not reach the store"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    agent.terminate();
+}
+
 fn status_is_ready(stand: &Stand) {
     let v: serde_json::Value =
         serde_json::from_str(&query_status(&stand.agent_socket()).unwrap()).unwrap();
@@ -632,6 +762,7 @@ fn the_agent_answers_status_after_the_activity_schema_is_dropped() {
     status_is_ready(&stand);
     // The restart made the schema again and filled it from the records on disk.
     wait_activity_session(&stand);
+    wait_activity_state(&stand, "ready");
     agent.terminate();
 }
 
@@ -670,6 +801,7 @@ fn the_agent_runs_on_when_the_activity_store_cannot_be_opened() {
         std::thread::sleep(Duration::from_millis(200));
     }
     status_is_ready(&stand);
+    wait_activity_state(&stand, "off");
     assert_eq!(
         stand.sql_in("activity", "select version from activity.rules"),
         "x"

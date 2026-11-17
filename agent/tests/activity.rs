@@ -5,48 +5,19 @@
 // Test code: a failed `unwrap` is a failed test.
 #![allow(clippy::unwrap_used)]
 
+use connectors::{Author, Mark, Record, Role, ToolCall, Turn};
+use construct_agent::activity::{LOCK_KEY, RULES_VERSION, Session, Store};
+use construct_agent::records::{FileSink, Sink};
 use std::path::PathBuf;
 
-use connectors::{Author, Mark, Record, Role, ToolCall, Turn};
-use construct_agent::activity::{DBNAME, LOCK_KEY, RULES_VERSION, Session, Store};
-use construct_agent::database::{Database, Paths, running_postmaster};
-use construct_agent::records::{FileSink, Sink};
-use sqlx::Connection;
+mod common;
 
-/// A scratch directory with a running PostgreSQL, stopped and removed at the end.
-struct Stand {
-    root: PathBuf,
-    database: Database,
-}
+use common::pg_stand::PgStand as Stand;
 
 impl Stand {
-    async fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("cb-{name}-{}", std::process::id()));
-        let paths = Paths {
-            data_dir: root.join("data/postgres"),
-            install_dir: root.join("data/postgres-bin"),
-            socket_dir: root.join("run/pg"),
-        };
-        let database = Database::start(paths).await.unwrap();
-        database.ensure_database(DBNAME).await.unwrap();
-        Self { root, database }
-    }
-
-    async fn store(&self) -> Store {
-        Store::open(&self.database.paths().socket_dir)
-            .await
-            .unwrap()
-    }
-
     /// An empty directory of records, which clears a store when it is rebuilt from it.
     fn empty_sink(&self) -> FileSink {
         FileSink::new(&self.root.join("empty"))
-    }
-
-    /// A plain connection to the activity database, for what the store does not offer.
-    async fn connect(&self) -> sqlx::PgConnection {
-        let options = Store::connect_options(&self.database.paths().socket_dir);
-        sqlx::PgConnection::connect_with(&options).await.unwrap()
     }
 
     /// A store that holds the rebuilt fixture, with the sink it was built from.
@@ -55,23 +26,6 @@ impl Stand {
         let sink = sink_with(self, &fixture());
         store.rebuild(&sink).await.unwrap();
         (store, sink)
-    }
-
-    async fn finish(self) {
-        self.database.stop().await.unwrap();
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-impl Drop for Stand {
-    /// A failed test must not leave its PostgreSQL running.
-    fn drop(&mut self) {
-        if let Some(pid) = running_postmaster(&self.database.paths().data_dir) {
-            let _ = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .status();
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

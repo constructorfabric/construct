@@ -13,7 +13,7 @@ import { isRecord } from '../src/agent-json';
 import { checkInApp, expect, openSettings, restartAgent, test as base } from './fixtures';
 import type { Session } from './fixtures';
 
-// The agent looks at the session files every 10 seconds. A wait is for several passes, so a slow
+// The agent looks at the session files every 5 seconds. A wait is for several passes, so a slow
 // runner does not turn it red; a wait that ends at once when the agent has done what it should.
 const waitMs = 60_000;
 

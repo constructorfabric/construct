@@ -88,6 +88,7 @@ fn run() -> std::io::Result<()> {
     let (health, construct_health) = (Health::default(), Health::default());
     construct_health.wait(database::reason::WAITING_FOR_DATABASE);
     let connectors = Stats::default();
+    let activity = construct_agent::activity::Feed::new();
     let model_state = construct_agent::model::ModelState::default();
     let settings = open_settings();
     // Built before the socket server: a chat answer runs on this runtime, driven by the
@@ -103,6 +104,7 @@ fn run() -> std::io::Result<()> {
                 .with_database(health.clone())
                 .with_construct(construct_health.clone())
                 .with_connectors(connectors.clone())
+                .with_activity(activity.clone())
                 .with_model(model_state.clone())
                 .with_service(login_service()),
             settings.as_ref(),
@@ -111,6 +113,7 @@ fn run() -> std::io::Result<()> {
         rt.handle(),
         &link,
         manage.as_ref(),
+        &activity,
     );
     eprintln!(
         "construct-agent {} listening on {}",
@@ -129,7 +132,7 @@ fn run() -> std::io::Result<()> {
     // The log readers need no database: they scan on a thread of their own, so neither the
     // first scan nor a slow disk holds up `status`. The thread stops when `follow_alive` is
     // dropped, so it is kept until the agent stops (see the end of this function).
-    let follow_alive = spawn_follower(&connectors, settings.as_ref(), manage.as_ref());
+    let follow_alive = spawn_follower(&connectors, settings.as_ref(), manage.as_ref(), &activity);
 
     let (mut term, mut int) = rt.block_on(async {
         Ok::<_, std::io::Error>((
@@ -174,9 +177,11 @@ fn run() -> std::io::Result<()> {
         };
         // The activity store is a copy of the records, made in a task of its own: the host does
         // not wait for it and a stop signal cancels it. Without it the agent still runs.
-        let activity = match database.as_ref() {
-            Some(db) => start_activity(db).await,
-            None => None,
+        let activity_task = if let Some(db) = database.as_ref() {
+            start_activity(db, &activity).await
+        } else {
+            activity.off("the database is not running");
+            None
         };
         // The Construct host needs the database; without one it does not start.
         let started = start_construct_until_stopped(
@@ -191,7 +196,7 @@ fn run() -> std::io::Result<()> {
             Ok(host) => host,
             Err(sig) => {
                 eprintln!("{sig} while the Construct host was starting; stopped");
-                stop_activity(activity).await;
+                stop_activity(activity_task).await;
                 stop_all(None, database.as_ref()).await;
                 return Ok(());
             }
@@ -213,7 +218,7 @@ fn run() -> std::io::Result<()> {
             () = watch => Ok(()),
             () = watch_host => Ok(()),
         };
-        stop_activity(activity).await;
+        stop_activity(activity_task).await;
         stop_all(host, database.as_ref()).await;
         result
     });
@@ -258,6 +263,7 @@ fn with_chat(
     handle: &tokio::runtime::Handle,
     link: &construct_agent::chat::Link,
     manage: Option<&construct_agent::manage::Manager>,
+    activity: &construct_agent::activity::Feed,
 ) -> construct_agent::ipc::Server {
     use construct_agent::chat::{Chat, Deadlines};
     let Some(settings) = settings else {
@@ -267,7 +273,10 @@ fn with_chat(
         .map_err(|e| e.to_string())
         .and_then(|dir| {
             Chat::new(settings.clone(), &dir, handle.clone(), Deadlines::default())
-                .map(|chat| chat.with_link(link.clone()))
+                .map(|chat| {
+                    chat.with_link(link.clone())
+                        .with_recorder(activity.recorder())
+                })
                 .map(|chat| with_file_tools(chat, &dir))
                 .map(|chat| match manage {
                     Some(manage) => chat.with_observer(manage.observer()),
@@ -350,6 +359,7 @@ fn spawn_follower(
     stats: &construct_agent::follow::Stats,
     settings: Option<&construct_agent::settings::Settings>,
     manage: Option<&construct_agent::manage::Manager>,
+    activity: &construct_agent::activity::Feed,
 ) -> std::sync::mpsc::Sender<()> {
     let tools = connectors::Registry::builtin();
     let Some(settings) = settings else {
@@ -371,6 +381,7 @@ fn spawn_follower(
         stats,
         Some(switch),
         manage.map(construct_agent::manage::Manager::observer),
+        Some(activity.recorder()),
     )
 }
 
@@ -456,35 +467,36 @@ async fn start_construct(
     }
 }
 
-/// Make the activity database, then open the store and bring it up to date with the record
-/// files in a task of its own. A failure is only logged: the store is a copy and the agent does
-/// not need it.
+/// Make the activity database, then open the store in a task of its own, build it from the
+/// record files and keep it up to date with what `feed` is given. A failure is only logged and
+/// shown in `status`: the store is a copy and the agent does not need it.
 #[cfg(unix)]
 async fn start_activity(
     db: &construct_agent::database::Database,
+    feed: &construct_agent::activity::Feed,
 ) -> Option<tokio::task::JoinHandle<()>> {
     use construct_agent::activity::{DBNAME, Store};
     use construct_agent::records::{self, FileSink};
 
     if let Err(e) = db.ensure_database(DBNAME).await {
         eprintln!("activity store off: {e}");
+        feed.off(&e.to_string());
         return None;
     }
     let socket_dir = db.paths().socket_dir.clone();
+    let feed = feed.clone();
     Some(tokio::spawn(async move {
-        let made = async {
+        let opened = async {
             let store = Store::open(&socket_dir).await.map_err(|e| e.to_string())?;
             let data_dir = records::data_dir().map_err(|e| e.to_string())?;
-            let applied = store
-                .rebuild(&FileSink::new(&data_dir))
-                .await
-                .map_err(|e| e.to_string());
-            store.close().await;
-            applied
+            Ok::<_, String>((store, FileSink::new(&data_dir)))
         };
-        match made.await {
-            Ok(applied) => eprintln!("activity store ready: {applied} records applied"),
-            Err(e) => eprintln!("activity store off: {e}"),
+        match opened.await {
+            Ok((store, files)) => feed.run(&store, &files).await,
+            Err(e) => {
+                eprintln!("activity store off: {e}");
+                feed.off(&e);
+            }
         }
     }))
 }
