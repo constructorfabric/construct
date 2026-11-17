@@ -22,3 +22,5 @@ pub mod records;
 #[cfg(unix)]
 pub mod settings;
 mod sync;
+#[cfg(unix)]
+pub mod workspace;
