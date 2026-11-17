@@ -1,7 +1,13 @@
+import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import started from 'electron-squirrel-startup';
-import { agentBinaryPath, ensureAgentService, shouldRegisterAgent } from './agent-service';
+import {
+  agentBinaryPath,
+  ensureAgentService,
+  isInstalledDiskPath,
+  registrationDecision,
+} from './agent-service';
 import {
   SETTINGS_COLLECTION_CHANNEL,
   SETTINGS_GET_CHANNEL,
@@ -10,7 +16,7 @@ import {
   SETTINGS_TEST_CHANNEL,
 } from './agent-settings';
 import { readAgentStatus } from './agent-socket';
-import { STATUS_CHANNEL } from './agent-status';
+import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
 import { createChatHandlers } from './chat-calls';
 import type { ChatHandlers } from './chat-calls';
 import {
@@ -23,23 +29,68 @@ import {
 } from './chat-protocol';
 import { createLinkHandler } from './external-calls';
 import { OPEN_LINK_CHANNEL } from './external';
+import { offerMoveToApplications } from './move-to-applications';
 import { createSettingsHandlers } from './settings-calls';
 
 let mainWindow: BrowserWindow | null = null;
 let chatHandlers: ChatHandlers | null = null;
 
+let needsMove = false;
+// A second launch has nothing to open until the first one has finished starting.
+let startupDone = false;
+
+const moveDeclinedMarker = () => path.join(app.getPath('userData'), 'move-declined');
+
+// A packaged app outside Applications asks whether to move itself there. Electron's own call
+// shows no dialog, so the question is ours. Returns `true` when the app is moving and this run
+// must stop.
+const moveToApplications = (): Promise<boolean> => {
+  return offerMoveToApplications({
+    isEligible: () =>
+      process.platform === 'darwin' &&
+      app.isPackaged &&
+      !app.isInApplicationsFolder() &&
+      !isInstalledDiskPath(process.resourcesPath),
+    isDeclined: () => existsSync(moveDeclinedMarker()),
+    markDeclined: () => {
+      writeFileSync(moveDeclinedMarker(), '');
+    },
+    ask: async () => {
+      const { response } = await dialog.showMessageBox({
+        type: 'question',
+        message: 'Move Construct Browser to the Applications folder?',
+        detail: 'The agent starts at login only when the app is installed in Applications.',
+        buttons: ['Move to Applications', 'Not now'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      return response === 0;
+    },
+    move: (conflictHandler) => app.moveToApplicationsFolder({ conflictHandler }),
+  });
+};
+
 // On first start the agent registers itself as a login service. A failure leaves the window
-// on `stopped`, so it is logged and the app goes on.
+// on `stopped`, so it is logged and the app goes on. From a place macOS removes later, nothing
+// is registered and the window tells the user to move the app.
 const registerAgent = async () => {
-  if (!shouldRegisterAgent(app.isPackaged, process.env)) {
-    console.info('agent registration skipped: development run');
-    return;
-  }
   const binary = agentBinaryPath({
     packaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
   });
+  const decision = registrationDecision(app.isPackaged, process.env, binary, process.platform);
+  if (decision === 'skip-development') {
+    console.info('agent registration skipped: development run');
+    return;
+  }
+  if (decision === 'skip-transient-path') {
+    needsMove = true;
+    console.warn(
+      `agent registration skipped: the app runs from ${binary}; move it to Applications`,
+    );
+    return;
+  }
   try {
     console.info(await ensureAgentService(binary, process.env));
   } catch (error) {
@@ -82,6 +133,9 @@ const createWindow = () => {
 // can stay alive without a window) and quits.
 function startApp(): void {
   app.on('second-instance', () => {
+    if (!startupDone) {
+      return;
+    }
     if (mainWindow === null) {
       createWindow();
       return;
@@ -92,7 +146,8 @@ function startApp(): void {
     mainWindow.focus();
   });
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
+    ipcMain.handle(NEEDS_MOVE_CHANNEL, () => needsMove);
     ipcMain.handle(STATUS_CHANNEL, () => readAgentStatus(process.env, process.platform));
     const settings = createSettingsHandlers({ env: process.env, platform: process.platform });
     ipcMain.handle(SETTINGS_GET_CHANNEL, () => settings.get());
@@ -119,8 +174,13 @@ function startApp(): void {
     ipcMain.handle(SETTINGS_COLLECTION_CHANNEL, (_event, input: unknown) =>
       settings.saveCollection(input),
     );
+    // The handlers come first: a second launch can open a window while the dialog is up.
+    if (await moveToApplications()) {
+      return;
+    }
     void registerAgent();
     createWindow();
+    startupDone = true;
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

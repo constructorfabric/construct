@@ -30,6 +30,43 @@ export function shouldRegisterAgent(packaged: boolean, env: NodeJS.ProcessEnv): 
   return packaged || env[REGISTER_IN_DEV_VARIABLE] === '1';
 }
 
+/** An install on a second disk, `/Volumes/<disk>/Applications/…`, as opposed to a disk image. */
+export function isInstalledDiskPath(binary: string): boolean {
+  return /^\/Volumes\/[^/]+\/Applications\//.test(binary);
+}
+
+/**
+ * Where macOS runs an app from only for a while: a read-only App Translocation copy (deleted
+ * at logout or restart) or a mounted disk image. A login service that points there is left
+ * with a missing file.
+ */
+export function isTransientAppPath(binary: string, platform: NodeJS.Platform): boolean {
+  if (platform !== 'darwin') {
+    return false;
+  }
+  // A second disk can hold a real install (`/Volumes/Data/Applications/…`); a disk image
+  // holds the app at its top or in a folder of its own.
+  return (
+    binary.includes('/AppTranslocation/') ||
+    (binary.startsWith('/Volumes/') && !isInstalledDiskPath(binary))
+  );
+}
+
+export type RegistrationDecision = 'register' | 'skip-development' | 'skip-transient-path';
+
+/** Whether the app registers the agent as a login service, from where it runs now. */
+export function registrationDecision(
+  packaged: boolean,
+  env: NodeJS.ProcessEnv,
+  binary: string,
+  platform: NodeJS.Platform,
+): RegistrationDecision {
+  if (!shouldRegisterAgent(packaged, env)) {
+    return 'skip-development';
+  }
+  return isTransientAppPath(binary, platform) ? 'skip-transient-path' : 'register';
+}
+
 /**
  * Asks the agent to register itself as a login service. `ensure-service` does nothing when
  * the service is registered for this very binary, so this is safe at every start.

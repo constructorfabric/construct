@@ -9,7 +9,7 @@ import {
 } from './agent-settings';
 import type { ModelTestResult, SettingsResult } from './agent-settings';
 import { OPEN_LINK_CHANNEL } from './external';
-import { STATUS_CHANNEL } from './agent-status';
+import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
 import type { AgentStatus, ConstructAgentApi } from './agent-status';
 import {
   CHAT_DELETE_CHANNEL,
@@ -23,6 +23,7 @@ import type { ChatEvent, DeleteResult, GetResult, ListResult, SendResult } from 
 
 const api: ConstructAgentApi = {
   getStatus: () => ipcRenderer.invoke(STATUS_CHANNEL) as Promise<AgentStatus>,
+  getNeedsMove: () => ipcRenderer.invoke(NEEDS_MOVE_CHANNEL) as Promise<boolean>,
   getSettings: () => ipcRenderer.invoke(SETTINGS_GET_CHANNEL) as Promise<SettingsResult>,
   saveModel: (input) => ipcRenderer.invoke(SETTINGS_SAVE_CHANNEL, input) as Promise<SettingsResult>,
   testModel: (input) =>

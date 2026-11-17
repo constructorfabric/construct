@@ -26,9 +26,12 @@ export type ConstructAgentApi = ModelSettingsApi &
   ChatApi &
   ExternalApi & {
     readonly getStatus: () => Promise<AgentStatus>;
+    /** `true` when the app runs from a place macOS will remove, so no login service was set up. */
+    readonly getNeedsMove: () => Promise<boolean>;
   };
 
 export const STATUS_CHANNEL = 'agent:status';
+export const NEEDS_MOVE_CHANNEL = 'agent:needs-move';
 
 /** Turns the agent's JSON reply line into a status; anything else is an error. */
 export function parseStatusReply(line: string): AgentStatus {
