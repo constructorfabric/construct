@@ -1,5 +1,5 @@
 //! Sends what the user said to the Construct host, so the profile is built from it: every user
-//! prompt the log readers store goes to the host's `manage-facts` route over its loopback port,
+//! prompt a record store takes in, from the log readers or from the chat, goes to the host's `manage-facts` route over its loopback port,
 //! with the turns before it as context. The route plans with the model inside the request, so
 //! prompts go one at a time from a queue on a thread of their own, and the readers never wait.
 //!
@@ -14,6 +14,13 @@
 //!
 //! [`input`] shapes a call, [`call`] makes it and reads the answer, and [`journal`] keeps what was
 //! sent. This module holds what they share: the queue, the thread, `backfill` and the counters.
+//!
+//! Every prompt is checked against [`Settings::collects`] before it is queued and again before it
+//! is sent, so with collection off nothing is sent. A prompt typed while collection is off is
+//! never sent: it is marked as refused in the journal, and `status` counts it as `refused`. A
+//! prompt that collection refuses later, one queued when it went off or one from history, is not
+//! marked: a live one is queued again at the next start, a history one goes out in a backfill, and
+//! a backfill that is running stops.
 
 mod call;
 mod input;
@@ -198,7 +205,8 @@ impl Manager {
         timing: Timing,
     ) -> io::Result<Self> {
         create_private_dir(data_dir)?;
-        let tools = Registry::builtin().iter().map(Tool::name).collect();
+        let mut tools: Vec<&'static str> = Registry::builtin().iter().map(Tool::name).collect();
+        tools.push(crate::chat::SOURCE);
         Ok(Self {
             inner: Arc::new(Inner {
                 data_dir: data_dir.to_owned(),
@@ -215,16 +223,13 @@ impl Manager {
         })
     }
 
-    /// What the log readers call with every new turn: a user prompt from after the first start
-    /// is queued. It never blocks.
+    /// What a record store calls with every new user turn (the log readers' and the chat's): a
+    /// prompt from after the first start is queued. It never blocks.
     #[must_use]
     pub fn observer(&self) -> crate::follow::Observer {
         let inner = Arc::clone(&self.inner);
-        Arc::new(move |turn: &Turn| {
-            if turn.role == Role::User {
-                inner.offer(Prompt::of(turn));
-            }
-        })
+        // The stores call it for user turns only.
+        Arc::new(move |turn: &Turn| inner.offer(Prompt::of(turn)))
     }
 
     /// Starts the thread that sends the queued prompts.
@@ -284,13 +289,29 @@ enum Done {
 }
 
 impl Inner {
-    /// Queues a live prompt.
+    /// A prompt that was just stored; see the module doc for what is refused.
     fn offer(&self, prompt: Prompt) {
-        if compare_times(&prompt.time, &self.first_start).is_lt() {
+        if !self.is_live(&prompt) {
             return;
         }
+        if !self.settings.collects(&prompt.tool) {
+            if let Err(e) = lock(&self.journal).refuse(prompt.key()) {
+                self.note_error(&format!("cannot write the journal: {e}"));
+            }
+            return;
+        }
+        self.enqueue(prompt);
+    }
+
+    /// Whether the prompt was typed after the agent's first start.
+    fn is_live(&self, prompt: &Prompt) -> bool {
+        compare_times(&prompt.time, &self.first_start).is_ge()
+    }
+
+    /// Queues a live prompt.
+    fn enqueue(&self, prompt: Prompt) {
         let key = prompt.key();
-        if lock(&self.journal).sent.contains(&key) {
+        if lock(&self.journal).is_done(key) {
             return;
         }
         let mut queue = lock(&self.queue);
@@ -315,7 +336,10 @@ impl Inner {
     /// Queues the live prompts that were stored but not sent before the agent stopped.
     fn recover(&self) {
         match self.prompts() {
-            Ok(all) => all.into_iter().for_each(|p| self.offer(p)),
+            Ok(all) => all
+                .into_iter()
+                .filter(|p| self.is_live(p) && self.settings.collects(&p.tool))
+                .for_each(|p| self.enqueue(p)),
             Err(e) => self.note_error(&format!("cannot read the records: {e}")),
         }
     }
@@ -334,9 +358,10 @@ impl Inner {
             let journal = lock(&self.journal);
             all.into_iter()
                 .filter(|p| {
-                    compare_times(&p.time, &since).is_ge()
+                    self.settings.collects(&p.tool)
+                        && compare_times(&p.time, &since).is_ge()
                         && compare_times(&p.time, &self.first_start).is_lt()
-                        && !journal.sent.contains(&p.key())
+                        && !journal.is_done(p.key())
                 })
                 .collect()
         };
@@ -392,7 +417,10 @@ impl Inner {
                 queue.backfill.as_ref().map_or(0, VecDeque::len),
             )
         };
-        let sent = lock(&self.journal).sent.len();
+        let (sent, refused) = {
+            let journal = lock(&self.journal);
+            (journal.sent.len(), journal.refused.len())
+        };
         let counts = lock(&self.counts);
         let b = &counts.backfill;
         let mut backfill = json!({
@@ -411,6 +439,7 @@ impl Inner {
             "sent": sent,
             "added": counts.added,
             "unsure": counts.unsure,
+            "refused": refused,
             "live": {
                 "queued": queued,
                 "sent": counts.live_sent,
@@ -482,6 +511,14 @@ impl Inner {
                 continue;
             };
             let key = prompt.key();
+            if !self.settings.collects(&prompt.tool) {
+                // Collection went off while it waited; see the module doc.
+                self.remove(source, key);
+                if source == Source::Backfill {
+                    self.stop_backfill("collection is off");
+                }
+                continue;
+            }
             match self.send(&connection, &prompt) {
                 Ok(done) => {
                     strikes.remove(&key);
@@ -599,16 +636,45 @@ impl Inner {
         }
     }
 
+    /// The context without what was typed while collection was off: those prompts and the answers
+    /// to them stay on the machine, like the prompts themselves.
+    fn without_refused(&self, turns: Vec<Turn>) -> Vec<Turn> {
+        let journal = lock(&self.journal);
+        let mut skipping = false;
+        turns
+            .into_iter()
+            .filter(|t| {
+                if t.role == Role::User {
+                    skipping = journal.refused.contains(&Prompt::of(t).key());
+                }
+                !skipping
+            })
+            .collect()
+    }
+
     /// One prompt: its context is read, it is marked in the journal, and then up to [`ATTEMPTS`]
     /// calls are made.
     fn send(&self, connection: &Connection, prompt: &Prompt) -> Result<Done, Failure> {
         if prompt.text.trim().is_empty() {
             return Ok(Done::Skipped);
         }
+        // A chat conversation that was deleted while its message waited: nothing to send.
+        if prompt.tool == crate::chat::SOURCE
+            && FileSink::new(&self.data_dir)
+                .read_session(&prompt.tool, &prompt.session)
+                .map_err(|e| Failure::Unavailable(format!("cannot read the records: {e}")))?
+                .is_empty()
+        {
+            return Ok(Done::Skipped);
+        }
         // Before the mark: a prompt whose context cannot be read is not sent without it.
-        let before = FileSink::new(&self.data_dir)
-            .turns_before(&prompt.tool, &prompt.session, &prompt.time, CONTEXT_TURNS)
+        // The whole session is read and cleaned before the last turns are taken, so a window never
+        // opens in the middle of an answer to a prompt that was refused.
+        let mut before = FileSink::new(&self.data_dir)
+            .turns_before(&prompt.tool, &prompt.session, &prompt.time, usize::MAX)
             .map_err(|e| Failure::Unavailable(format!("cannot read the records: {e}")))?;
+        before = self.without_refused(before);
+        before.drain(..before.len().saturating_sub(CONTEXT_TURNS));
         let key = prompt.key();
         match lock(&self.journal).begin(key) {
             Ok(true) => {}

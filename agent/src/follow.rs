@@ -156,7 +156,7 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
 /// only from the next pass.
 pub type Switch = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// Called with every turn the sink stored for the first time, on the follower's thread, after the
+/// Called with every user turn a sink stored for the first time, on the writer's thread, after the
 /// turn is in the sink. It must not block.
 pub type Observer = Arc<dyn Fn(&Turn) + Send + Sync>;
 
@@ -182,13 +182,15 @@ pub fn spawn_observed(
     let (alive, stop) = mpsc::channel::<()>();
     let names: Vec<&'static str> = tools.iter().map(Tool::name).collect();
     let follower = paths
-        .and_then(|(home, data)| Follower::new(tools, &home, FileSink::new(&data), stats.clone()))
+        .and_then(|(home, data)| {
+            let sink = match observer {
+                Some(observer) => FileSink::new(&data).with_observer(observer),
+                None => FileSink::new(&data),
+            };
+            Follower::new(tools, &home, sink, stats.clone())
+        })
         .map(|follower| match switch {
             Some(switch) => follower.with_switch(switch),
-            None => follower,
-        })
-        .map(|follower| match observer {
-            Some(observer) => follower.with_observer(observer),
             None => follower,
         });
     match follower {
@@ -232,8 +234,6 @@ pub struct Follower<S: Sink> {
     read_errors: HashMap<String, String>,
     /// Which tools may be stored; all of them when there is none.
     switch: Option<Switch>,
-    /// Told of every turn stored for the first time.
-    observer: Option<Observer>,
 }
 
 type Checked = (u64, Option<SystemTime>);
@@ -259,7 +259,6 @@ impl<S: Sink> Follower<S> {
             checked: HashMap::new(),
             read_errors: HashMap::new(),
             switch: None,
-            observer: None,
         })
     }
 
@@ -269,13 +268,6 @@ impl<S: Sink> Follower<S> {
     #[must_use]
     pub fn with_switch(mut self, switch: Switch) -> Self {
         self.switch = Some(switch);
-        self
-    }
-
-    /// Tell `observer` of every turn that is stored for the first time.
-    #[must_use]
-    pub fn with_observer(mut self, observer: Observer) -> Self {
-        self.observer = Some(observer);
         self
     }
 
@@ -296,7 +288,6 @@ impl<S: Sink> Follower<S> {
             checked,
             read_errors,
             switch,
-            observer,
         } = self;
         let mut failure = None;
         for tool in tools.iter() {
@@ -338,7 +329,6 @@ impl<S: Sink> Follower<S> {
                     saver: &mut *saver,
                     checked: &mut *checked,
                     switch: switch.as_ref(),
-                    observer: observer.as_ref(),
                 };
                 let key = path.to_string_lossy().into_owned();
                 match ctx.follow(&path) {
@@ -447,7 +437,6 @@ struct Ctx<'a, S: Sink> {
     /// Asked before each file is read: while the user has the tool switched off, lines are
     /// read and nothing is stored.
     switch: Option<&'a Switch>,
-    observer: Option<&'a Observer>,
 }
 
 impl<S: Sink> Ctx<'_, S> {
@@ -513,9 +502,6 @@ impl<S: Sink> Ctx<'_, S> {
                     // A record the sink had stored already is a replay, not a turn read now.
                     Ok(true) if matches!(record, Record::Turn(_)) => {
                         self.count(|s| s.turns += 1);
-                        if let (Record::Turn(turn), Some(observer)) = (&record, self.observer) {
-                            observer(turn);
-                        }
                     }
                     Ok(_) => {}
                     Err(e) => {

@@ -109,6 +109,7 @@ fn run() -> std::io::Result<()> {
         settings.as_ref(),
         rt.handle(),
         &link,
+        manage.as_ref(),
     );
     eprintln!(
         "construct-agent {} listening on {}",
@@ -247,6 +248,7 @@ fn with_chat(
     settings: Option<&construct_agent::settings::Settings>,
     handle: &tokio::runtime::Handle,
     link: &construct_agent::chat::Link,
+    manage: Option<&construct_agent::manage::Manager>,
 ) -> construct_agent::ipc::Server {
     use construct_agent::chat::{Chat, Deadlines};
     let Some(settings) = settings else {
@@ -257,6 +259,10 @@ fn with_chat(
         .and_then(|dir| {
             Chat::new(settings.clone(), &dir, handle.clone(), Deadlines::default())
                 .map(|chat| chat.with_link(link.clone()))
+                .map(|chat| match manage {
+                    Some(manage) => chat.with_observer(manage.observer()),
+                    None => chat,
+                })
                 .map_err(|e| e.to_string())
         });
     match chat {

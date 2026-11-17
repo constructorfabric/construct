@@ -354,8 +354,9 @@ impl Settings {
         self.lock().collection
     }
 
-    /// Whether the sessions of the tool called `tool` (a connector's name) may be stored:
+    /// Whether the sessions of the source called `tool` (a connector's name, or the chat's) may be stored:
     /// collection is on, and so is the tool's own switch. A tool the settings do not know is off.
+    /// The chat has no switch of its own: it follows collection alone.
     #[must_use]
     pub fn collects(&self, tool: &str) -> bool {
         let c = self.collection();
@@ -363,6 +364,7 @@ impl Settings {
             && match tool {
                 "claude-code" => c.claude_code,
                 "codex" => c.codex,
+                crate::chat::SOURCE => true,
                 _ => false,
             }
     }
@@ -471,6 +473,16 @@ mod tests {
         let s = Settings::open(&dir).unwrap();
         assert!(s.collects("claude-code") && s.collects("codex"));
         assert!(!s.collects("unknown-tool"));
+        assert!(s.collects("chat"));
+        s.apply(update(
+            r#"{"collection":{"claude_code":false,"codex":false}}"#,
+        ))
+        .unwrap();
+        assert!(s.collects("chat"));
+        s.apply(update(
+            r#"{"collection":{"claude_code":true,"codex":true}}"#,
+        ))
+        .unwrap();
         s.apply(update(r#"{"collection":{"codex":false}}"#))
             .unwrap();
         assert!(s.collects("claude-code") && !s.collects("codex"));
