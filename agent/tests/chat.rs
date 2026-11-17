@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use connectors::{Record, ToolCall, ToolResult, compare_times};
-use construct_agent::chat::{Chat, Deadlines};
+use construct_agent::chat::{Chat, Deadlines, ToolRunner};
 use construct_agent::ipc::Server;
 use construct_agent::records::{FileSink, Sink};
 use construct_agent::settings::{Settings, Update};
@@ -88,7 +88,21 @@ impl Env {
         Self::build(name, base_url, deadlines, None)
     }
 
+    fn with_tools(name: &str, base_url: &str, runner: ToolRunner) -> Self {
+        Self::assemble(name, base_url, short(), None, Some(runner))
+    }
+
     fn build(name: &str, base_url: &str, deadlines: Deadlines, wire_limit: Option<usize>) -> Self {
+        Self::assemble(name, base_url, deadlines, wire_limit, None)
+    }
+
+    fn assemble(
+        name: &str,
+        base_url: &str,
+        deadlines: Deadlines,
+        wire_limit: Option<usize>,
+        tools: Option<ToolRunner>,
+    ) -> Self {
         let base =
             std::env::temp_dir().join(format!("construct-chat-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -106,6 +120,9 @@ impl Env {
         let mut chat = Chat::new(settings.clone(), &data, rt.handle().clone(), deadlines).unwrap();
         if let Some(limit) = wire_limit {
             chat = chat.with_wire_limit(limit);
+        }
+        if let Some(runner) = tools {
+            chat = chat.with_tools(runner);
         }
         let server = Server::bind(&socket)
             .unwrap()
@@ -910,4 +927,561 @@ fn the_same_text_after_a_partial_answer_is_a_new_message() {
     assert_eq!(roles, ["user", "assistant", "user", "assistant"]);
     assert_eq!(fake.bodies()[1].matches(MESSAGE).count(), 2);
     assert!(fake.bodies()[1].contains("half"));
+}
+
+// The tool loop. A script answers request `n` with `turns[n]`: chunks, then `[DONE]`.
+
+/// The fragment of a tool call in a chunk.
+fn call_chunk(index: usize, id: Option<&str>, name: Option<&str>, arguments: &str) -> Value {
+    let mut call = json!({ "index": index, "function": { "arguments": arguments } });
+    if let Some(id) = id {
+        call["id"] = json!(id);
+        call["type"] = json!("function");
+    }
+    if let Some(name) = name {
+        call["function"]["name"] = json!(name);
+    }
+    json!({ "choices": [{ "delta": { "tool_calls": [call] } }] })
+}
+
+fn finish(reason: &str) -> Value {
+    json!({ "choices": [{ "delta": {}, "finish_reason": reason }] })
+}
+
+fn text_chunk(text: &str) -> Value {
+    json!({ "choices": [{ "delta": { "content": text } }] })
+}
+
+/// One whole call in one chunk, then the end of the turn.
+fn whole_call(id: &str, name: &str, arguments: &str) -> Vec<Value> {
+    vec![
+        call_chunk(0, Some(id), Some(name), arguments),
+        finish("tool_calls"),
+    ]
+}
+
+fn turns(turns: Vec<Vec<Value>>) -> Script {
+    Arc::new(move |n, s| {
+        head(s);
+        for data in turns.get(n).into_iter().flatten() {
+            raw_chunk(s, data);
+        }
+        done(s);
+    })
+}
+
+/// The `messages` of a request body.
+fn messages(body: &str) -> Vec<Value> {
+    serde_json::from_str::<Value>(body).unwrap()["messages"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn kinds(records: &[Value]) -> Vec<&str> {
+    records
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap())
+        .collect()
+}
+
+/// A runner that answers `name` with the arguments it got, and notes the order of the calls.
+fn noting(seen: &Arc<Mutex<Vec<String>>>) -> ToolRunner {
+    let seen = Arc::clone(seen);
+    Arc::new(move |name, arguments| {
+        seen.lock().unwrap().push(format!("{name} {arguments}"));
+        if name == "fail" {
+            Err("it broke".into())
+        } else {
+            Ok(format!("result of {name}"))
+        }
+    })
+}
+
+#[test]
+fn a_call_is_run_and_its_result_goes_in_the_next_request() {
+    let fake = Fake::start(turns(vec![
+        whole_call("call_a", "lookup", r#"{"q":"blue door"}"#),
+        vec![text_chunk("The "), text_chunk("answer"), finish("stop")],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("one-call", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let (conversation, text, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "done" }), "{events:?}");
+    assert_eq!(text, "The answer");
+    assert_eq!(*seen.lock().unwrap(), [r#"lookup {"q":"blue door"}"#]);
+
+    let records = env.get(&conversation);
+    assert_eq!(kinds(&records), ["turn", "toolcall", "toolresult", "turn"]);
+    assert_eq!(records[1]["call_id"], "call_a");
+    assert_eq!(records[1]["name"], "lookup");
+    assert_eq!(records[2]["call_id"], "call_a");
+    assert_eq!(records[2]["text"], "result of lookup");
+    let times: Vec<&str> = records
+        .iter()
+        .map(|r| r["time"].as_str().unwrap())
+        .collect();
+    assert!(
+        times.windows(2).all(|w| compare_times(w[0], w[1]).is_lt()),
+        "{times:?}"
+    );
+
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 2);
+    // No tool is declared yet, and the second request holds the call and its result.
+    assert!(bodies.iter().all(|b| !b.contains("\"tools\"")));
+    let sent = messages(&bodies[1]);
+    assert_eq!(sent.len(), 4);
+    assert_eq!(sent[2]["tool_calls"][0]["id"], "call_a");
+    assert_eq!(sent[2]["tool_calls"][0]["function"]["name"], "lookup");
+    assert_eq!(sent[3]["role"], "tool");
+    assert_eq!(sent[3]["tool_call_id"], "call_a");
+    assert_eq!(sent[3]["content"], "result of lookup");
+    // The key and the message reach the client in no event.
+    let all = serde_json::to_string(&events).unwrap();
+    assert!(!all.contains(KEY) && !all.contains(MESSAGE), "{all}");
+}
+
+#[test]
+fn two_calls_in_one_message_run_in_order_and_both_are_answered() {
+    let fake = Fake::start(turns(vec![
+        vec![
+            call_chunk(0, Some("call_a"), Some("first"), "{}"),
+            call_chunk(1, Some("call_b"), Some("fail"), "{\"x\":1}"),
+            finish("tool_calls"),
+        ],
+        vec![text_chunk("ok"), finish("stop")],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("two-calls", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    assert_eq!(*seen.lock().unwrap(), ["first {}", r#"fail {"x":1}"#]);
+    let sent = messages(&fake.bodies()[1]);
+    // The system instruction, the user, one assistant message with both calls, two results.
+    assert_eq!(sent.len(), 5, "{sent:?}");
+    let calls = sent[2]["tool_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["id"], "call_a");
+    assert_eq!(calls[1]["id"], "call_b");
+    assert_eq!(sent[3]["tool_call_id"], "call_a");
+    assert_eq!(sent[3]["content"], "result of first");
+    // A tool error is only a result.
+    assert_eq!(sent[4]["tool_call_id"], "call_b");
+    assert_eq!(sent[4]["content"], "Error: it broke");
+}
+
+#[test]
+fn arguments_come_back_byte_for_byte() {
+    let arguments = "{ \"z\":1,\n  \"a\" : [3,  2],\t\"m\":\"é\\n\" }";
+    let fake = Fake::start(turns(vec![
+        whole_call("call_a", "lookup", arguments),
+        vec![text_chunk("ok"), finish("stop")],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("odd-arguments", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    assert_eq!(*seen.lock().unwrap(), [format!("lookup {arguments}")]);
+    let escaped = serde_json::to_string(arguments).unwrap();
+    let expected = format!(r#""function":{{"name":"lookup","arguments":{escaped}}}"#);
+    assert!(fake.bodies()[1].contains(&expected), "{}", fake.bodies()[1]);
+}
+
+#[test]
+fn arguments_split_over_chunks_and_fragments_without_an_id_are_put_together() {
+    let fake = Fake::start(turns(vec![
+        vec![
+            // The first fragment has the id and the name; the later ones only the index. The two
+            // calls are interleaved.
+            call_chunk(0, Some("call_a"), Some("lookup"), "{\"q\""),
+            call_chunk(1, Some("call_b"), Some("other"), ""),
+            call_chunk(0, None, None, ": \"blue"),
+            call_chunk(1, None, None, "{ \"k\" :"),
+            call_chunk(0, None, None, " door\" }"),
+            call_chunk(1, None, None, " 1}"),
+            finish("tool_calls"),
+        ],
+        vec![text_chunk("ok"), finish("stop")],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("split", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [r#"lookup {"q": "blue door" }"#, r#"other { "k" : 1}"#]
+    );
+    let sent = messages(&fake.bodies()[1]);
+    assert_eq!(sent[2]["tool_calls"][0]["id"], "call_a");
+    assert_eq!(sent[2]["tool_calls"][1]["id"], "call_b");
+}
+
+#[test]
+fn a_chunk_with_only_usage_between_the_fragments_and_the_finish_changes_nothing() {
+    let fake = Fake::start(turns(vec![
+        vec![
+            call_chunk(0, Some("call_a"), Some("lookup"), "{\"q\":"),
+            json!({ "usage": { "total_tokens": 7 } }),
+            call_chunk(0, None, None, "1}"),
+            finish("tool_calls"),
+        ],
+        vec![text_chunk("fine"), finish("stop")],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("usage", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let (_, text, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "done" }), "{events:?}");
+    assert_eq!(text, "fine");
+    assert_eq!(*seen.lock().unwrap(), [r#"lookup {"q":1}"#]);
+}
+
+#[test]
+fn null_lists_in_a_chunk_do_not_cost_the_text() {
+    let fake = Fake::start(Arc::new(|_, s| {
+        head(s);
+        raw_chunk(
+            s,
+            &json!({ "choices": [{ "delta": { "content": "kept", "tool_calls": null } }] }),
+        );
+        // A chunk whose `choices` is `null` and an empty one, between text and the finish.
+        raw_chunk(
+            s,
+            &json!({ "choices": null, "usage": { "total_tokens": 3 } }),
+        );
+        raw_chunk(s, &json!({ "choices": [], "usage": { "total_tokens": 3 } }));
+        raw_chunk(s, &finish("stop"));
+        done(s);
+    }));
+    let env = Env::new("null-lists", &fake.url(), short());
+    let (_, text, last) = summary(&env.send("", MESSAGE).rest());
+    assert_eq!(text, "kept");
+    assert_eq!(last, json!({ "event": "done" }));
+}
+
+#[test]
+fn a_finish_reason_ends_the_turn_while_the_connection_stays_open() {
+    let fake = Fake::start(Arc::new(|n, s| {
+        head(s);
+        if n == 0 {
+            for data in whole_call("call_a", "lookup", "{}") {
+                raw_chunk(s, &data);
+            }
+            // No `[DONE]`, and the connection stays open.
+            hold(s);
+        } else {
+            raw_chunk(s, &text_chunk("fine"));
+            raw_chunk(s, &finish("stop"));
+            hold(s);
+        }
+    }));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("open-connection", &fake.url(), noting(&seen));
+    let at = Instant::now();
+    let events = env.send("", MESSAGE).rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    assert!(at.elapsed() < Duration::from_secs(5), "{:?}", at.elapsed());
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn calls_of_a_turn_that_was_cut_short_are_not_kept() {
+    let fake = Fake::start(turns(vec![vec![
+        call_chunk(0, Some("call_a"), Some("lookup"), "{\"q\":\"bl"),
+        finish("length"),
+    ]]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("length", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let (conversation, _, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "error", "reason": "cut" }));
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(kinds(&env.get(&conversation)), ["turn"]);
+}
+
+#[test]
+fn a_turn_whose_calls_may_not_be_whole_or_have_no_name_is_cut_and_runs_nothing() {
+    // `finish_reason` other than `stop` and `tool_calls`, and a call with no name.
+    for (n, chunks) in [
+        vec![
+            call_chunk(0, Some("call_a"), Some("lookup"), "{}"),
+            finish("error"),
+        ],
+        vec![
+            call_chunk(0, Some("call_a"), None, "{}"),
+            finish("tool_calls"),
+        ],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let fake = Fake::start(turns(vec![chunks]));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let env = Env::with_tools(&format!("not-whole-{n}"), &fake.url(), noting(&seen));
+        let events = env.send("", MESSAGE).rest();
+        let (conversation, _, last) = summary(&events);
+        assert_eq!(last, json!({ "event": "error", "reason": "cut" }), "{n}");
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(kinds(&env.get(&conversation)), ["turn"]);
+        assert_eq!(fake.bodies().len(), 1);
+    }
+}
+
+#[test]
+fn a_repeated_index_with_a_new_id_is_another_call_and_a_bare_call_gets_an_id() {
+    let fake = Fake::start(turns(vec![
+        vec![
+            call_chunk(0, Some("call_a"), Some("lookup"), "{\"n\":1}"),
+            call_chunk(0, Some("call_b"), Some("lookup"), "{\"n\":2}"),
+            // No id, and no arguments at all.
+            json!({ "choices": [{ "delta": { "tool_calls": [
+                { "index": 1, "function": { "name": "now" } }
+            ] } }] }),
+            finish("tool_calls"),
+        ],
+        vec![text_chunk("ok"), finish("stop")],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("same-index", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [r#"lookup {"n":1}"#, r#"lookup {"n":2}"#, "now {}"]
+    );
+    let sent = messages(&fake.bodies()[1]);
+    let calls = sent[2]["tool_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0]["id"], "call_a");
+    assert_eq!(calls[1]["id"], "call_b");
+    let generated = calls[2]["id"].as_str().unwrap();
+    assert!(generated.starts_with("call_") && generated.len() > 10);
+    assert_eq!(calls[2]["function"]["arguments"], "{}");
+    assert_eq!(sent[5]["tool_call_id"], generated);
+}
+
+#[test]
+fn an_unknown_tool_is_a_result_and_the_model_goes_on() {
+    let fake = Fake::start(turns(vec![
+        whole_call("call_a", "nothing_like_it", "{}"),
+        vec![text_chunk("sorry"), finish("stop")],
+    ]));
+    // No tools are given to this chat.
+    let env = Env::new("unknown-tool", &fake.url(), short());
+    let events = env.send("", MESSAGE).rest();
+    let (conversation, text, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "done" }));
+    assert_eq!(text, "sorry");
+    let records = env.get(&conversation);
+    assert_eq!(records[2]["text"], "Error: unknown tool nothing_like_it");
+    let sent = messages(&fake.bodies()[1]);
+    assert_eq!(sent[3]["content"], "Error: unknown tool nothing_like_it");
+}
+
+#[test]
+fn the_ninth_call_is_not_run_and_the_answer_says_so() {
+    // The model asks for one more call in every turn.
+    let fake = Fake::start(Arc::new(|n, s| {
+        head(s);
+        for data in whole_call(&format!("call_{n}"), "lookup", "{}") {
+            raw_chunk(s, &data);
+        }
+        done(s);
+    }));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("ninth", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let (conversation, text, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "done" }), "{events:?}");
+    assert_eq!(text, "I stopped after 8 tool calls.");
+    assert_eq!(seen.lock().unwrap().len(), 8);
+    assert_eq!(fake.bodies().len(), 9);
+    let records = env.get(&conversation);
+    assert_eq!(
+        records.iter().filter(|r| r["kind"] == "toolcall").count(),
+        8
+    );
+    assert_eq!(
+        records.iter().filter(|r| r["kind"] == "toolresult").count(),
+        8
+    );
+    assert_eq!(
+        assistant_text(&records).as_deref(),
+        Some("I stopped after 8 tool calls.")
+    );
+
+    // Ten calls in one turn: the first eight run, and the model is not asked again.
+    let fake = Fake::start(turns(vec![{
+        let mut chunks: Vec<Value> = (0..10)
+            .map(|i| call_chunk(i, Some(&format!("c{i}")), Some("lookup"), "{}"))
+            .collect();
+        chunks.push(finish("tool_calls"));
+        chunks
+    }]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("ninth-at-once", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let (conversation, text, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "done" }), "{events:?}");
+    assert_eq!(text, "I stopped after 8 tool calls.");
+    assert_eq!(seen.lock().unwrap().len(), 8);
+    assert_eq!(fake.bodies().len(), 1);
+    let records = env.get(&conversation);
+    assert_eq!(
+        records.iter().filter(|r| r["kind"] == "toolcall").count(),
+        8
+    );
+}
+
+#[test]
+fn stop_while_a_call_runs_answers_every_call_and_ends_within_two_seconds() {
+    let fake = Fake::start(turns(vec![
+        vec![
+            call_chunk(0, Some("call_a"), Some("slow"), "{}"),
+            call_chunk(1, Some("call_b"), Some("slow"), "{}"),
+            finish("tool_calls"),
+        ],
+        vec![text_chunk("after the stop"), finish("stop")],
+    ]));
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let started_tx = Mutex::new(started_tx);
+    let release_rx = Mutex::new(release_rx);
+    // The call waits until the test lets it go, or for a few seconds at most.
+    let runner: ToolRunner = Arc::new(move |_, _| {
+        let _ = started_tx.lock().unwrap().send(());
+        let _ = release_rx
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(5));
+        Ok("late".into())
+    });
+    let env = Env::with_tools("stop-call", &fake.url(), runner);
+    let mut lines = env.send("", MESSAGE);
+    let conversation = lines.next().unwrap()["conversation"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    let at = Instant::now();
+    let stopped = env.connect(&format!("chat-stop {conversation}")).rest();
+    assert_eq!(stopped, vec![json!({ "stopped": true })]);
+    let rest = lines.rest();
+    assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+    assert_eq!(rest, vec![json!({ "event": "done", "stopped": true })]);
+    let _ = release_tx.send(());
+
+    let records = env.get(&conversation);
+    assert_eq!(
+        kinds(&records),
+        ["turn", "toolcall", "toolcall", "toolresult", "toolresult"]
+    );
+    assert_eq!(records[3]["text"], "stopped by the user");
+    assert_eq!(records[4]["text"], "stopped by the user");
+
+    // The next request answers every call.
+    let events = env.send(&conversation, "and then?").rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    let sent = messages(&fake.bodies()[1]);
+    let answers: Vec<&Value> = sent.iter().filter(|m| m["role"] == "tool").collect();
+    assert_eq!(answers.len(), 2);
+    assert!(
+        answers
+            .iter()
+            .all(|m| m["content"] == "stopped by the user")
+    );
+}
+
+#[test]
+fn the_limit_counts_calls_across_turns_and_a_turn_may_hold_text_too() {
+    let fake = Fake::start(Arc::new(|n, s| {
+        head(s);
+        if n == 0 {
+            raw_chunk(s, &text_chunk("Let me look."));
+        }
+        for i in 0..5 {
+            raw_chunk(
+                s,
+                &call_chunk(i, Some(&format!("c{n}_{i}")), Some("lookup"), "{}"),
+            );
+        }
+        raw_chunk(s, &finish("tool_calls"));
+        done(s);
+    }));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("across-turns", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let (conversation, text, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "done" }), "{events:?}");
+    assert_eq!(text, "Let me look.I stopped after 8 tool calls.");
+    // Five calls in the first turn, three of the five in the second.
+    assert_eq!(seen.lock().unwrap().len(), 8);
+    assert_eq!(fake.bodies().len(), 2);
+    let records = env.get(&conversation);
+    assert_eq!(records[1]["text"], "Let me look.");
+    assert_eq!(
+        records.iter().filter(|r| r["kind"] == "toolcall").count(),
+        8
+    );
+    assert_eq!(
+        records.iter().filter(|r| r["kind"] == "toolresult").count(),
+        8
+    );
+}
+
+#[test]
+fn stop_during_a_later_call_keeps_the_real_results_before_it() {
+    let fake = Fake::start(turns(vec![vec![
+        call_chunk(0, Some("call_a"), Some("quick"), "{}"),
+        call_chunk(1, Some("call_b"), Some("slow"), "{}"),
+        call_chunk(2, Some("call_c"), Some("slow"), "{}"),
+        finish("tool_calls"),
+    ]]));
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let started_tx = Mutex::new(started_tx);
+    let release_rx = Mutex::new(release_rx);
+    let runner: ToolRunner = Arc::new(move |name, _| {
+        if name == "slow" {
+            let _ = started_tx.lock().unwrap().send(());
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        }
+        Ok(format!("{name} done"))
+    });
+    let env = Env::with_tools("stop-later", &fake.url(), runner);
+    let mut lines = env.send("", MESSAGE);
+    let conversation = lines.next().unwrap()["conversation"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    env.connect(&format!("chat-stop {conversation}")).rest();
+    lines.rest();
+    let _ = release_tx.send(());
+    let results: Vec<String> = env
+        .get(&conversation)
+        .iter()
+        .filter(|r| r["kind"] == "toolresult")
+        .map(|r| {
+            format!(
+                "{} {}",
+                r["call_id"].as_str().unwrap(),
+                r["text"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [
+            "call_a quick done",
+            "call_b stopped by the user",
+            "call_c stopped by the user"
+        ]
+    );
 }

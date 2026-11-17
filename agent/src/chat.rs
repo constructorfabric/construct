@@ -8,6 +8,11 @@
 //! Before each answer the person's facts are put in the conversation as a `recall_facts` tool
 //! call and its result, when they differ from the last result there (see `recall`).
 //!
+//! When a model turn asks for tools, the calls are stored, run one by one in the order given and
+//! answered in the conversation, and the model is asked again, until a turn has no call. One answer
+//! runs at most [`MAX_CALLS`] calls. The tools themselves are given to the chat (see
+//! [`Chat::with_tools`]); a call to a name nobody handles is answered with an error text.
+//!
 //! The request body is written from typed structs in a fixed field order, never through a
 //! `serde_json::Value` (it sorts keys), with tool-call arguments as the stored text, so a request
 //! starts with the bytes of the one before it and the provider's prompt cache can use that.
@@ -43,7 +48,7 @@ use crate::sync::lock;
 mod recall;
 mod wire;
 
-use wire::{Chunk, WireCap, into_http, request_body};
+use wire::{Calls, Chunk, PendingCall, WireCap, into_http, request_body};
 
 /// The source the conversations belong to.
 pub const SOURCE: &str = "chat";
@@ -60,6 +65,11 @@ const ERROR_BODY_LIMIT: usize = 64 * 1024;
 const ERROR_BODY_DEADLINE: Duration = Duration::from_secs(5);
 /// A conversation is listed under its first message cut to this many characters.
 const TITLE_CHARS: usize = 60;
+/// Most tool calls one answer runs. The answer ends with [`CALL_LIMIT_TEXT`] instead of running more.
+const MAX_CALLS: usize = 8;
+const CALL_LIMIT_TEXT: &str = "I stopped after 8 tool calls.";
+/// The result of a call that was cut short by `chat-stop`.
+const STOPPED_RESULT: &str = "stopped by the user";
 /// A client that does not read for this long is gone.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -101,6 +111,7 @@ enum Failure {
     Status(u16),
     TooLong,
     Cut,
+    CannotSave,
     Internal,
 }
 
@@ -114,6 +125,7 @@ impl Failure {
             Self::Status(status) => format!("error {status}"),
             Self::TooLong => "too long".into(),
             Self::Cut => "cut".into(),
+            Self::CannotSave => "cannot save".into(),
             Self::Internal => "error".into(),
         }
     }
@@ -126,6 +138,10 @@ enum End {
     Stopped,
     Failed(Failure),
 }
+
+/// Runs one tool call: the name and the arguments text, then the result text or the error text. It
+/// may block, so the chat runs it on a thread of its own.
+pub type ToolRunner = Arc<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>;
 
 /// Where the chat finds the Construct host: empty until the host is ready. Clones share it.
 #[derive(Clone, Default)]
@@ -154,6 +170,7 @@ struct Inner {
     client: reqwest::Client,
     wire_limit: usize,
     link: Link,
+    tools: Option<ToolRunner>,
     running: Mutex<Option<Running>>,
 }
 
@@ -211,6 +228,7 @@ impl Chat {
                 client,
                 wire_limit: WIRE_LIMIT,
                 link: Link::default(),
+                tools: None,
                 running: Mutex::new(None),
             }),
         })
@@ -232,6 +250,20 @@ impl Chat {
     pub fn with_link(mut self, link: Link) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
             inner.link = link;
+        }
+        self
+    }
+
+    /// Run the tool calls of the model with `runner`; without it every call is answered with an
+    /// unknown-tool error. Call it before the chat is cloned.
+    ///
+    /// The chat puts no deadline on a call: the runner bounds its own run time. A call runs on a
+    /// thread that Stop cannot end, so after a Stop it goes on until it returns, and the next answer
+    /// does not wait for it.
+    #[must_use]
+    pub fn with_tools(mut self, runner: ToolRunner) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.tools = Some(runner);
         }
         self
     }
@@ -327,32 +359,19 @@ impl Chat {
             out(&event_error("cannot read"));
             return;
         };
-        let mut text = String::new();
-        let end = match request_body(&target.model, &records) {
-            Ok(body) => {
-                self.stream_answer(&target, body, &cancel, &mut text, &mut |piece| {
-                    out(&json!({ "event": "delta", "text": piece }).to_string())
-                })
-                .await
-            }
-            Err(_) => End::Failed(Failure::Internal),
-        };
-        // Stored before the last line is written, so a client that has seen the end can read
-        // the whole conversation back.
-        let stored = text.is_empty()
-            || self
-                .store(&Record::Turn(Turn {
-                    tool: SOURCE.into(),
-                    session: conversation.clone(),
-                    time: next_time(&mut last),
-                    folder: String::new(),
-                    branch: String::new(),
-                    role: Role::Assistant,
-                    text,
-                }))
-                .is_ok();
+        let end = self
+            .answer(
+                &target,
+                &conversation,
+                records,
+                &cancel,
+                &mut last,
+                &mut |piece| out(&json!({ "event": "delta", "text": piece }).to_string()),
+            )
+            .await;
+        // Everything is stored before the last line is written, so a client that has seen the end
+        // can read the whole conversation back.
         let line = match end {
-            _ if !stored => event_error("cannot save"),
             End::Done => json!({ "event": "done" }).to_string(),
             End::Stopped => json!({ "event": "done", "stopped": true }).to_string(),
             End::Failed(f) => event_error(&f.reason()),
@@ -391,13 +410,7 @@ impl Chat {
             name: recall::NAME.into(),
             arguments: "{}".into(),
         }))?;
-        self.store(&Record::ToolResult(ToolResult {
-            tool: SOURCE.into(),
-            session: conversation.into(),
-            time: next_time(last),
-            call_id,
-            text,
-        }))
+        self.store_result(conversation, last, &call_id, &text)
     }
 
     /// The stored records of the conversation a request names: none for a new one, and the
@@ -447,14 +460,184 @@ impl Chat {
         sink.flush_session(SOURCE, record.session())
     }
 
+    /// The answer: one request to the provider per model turn, and between two turns the tool calls
+    /// of the first run. Every turn's text and every call and result are stored as they come.
+    /// `emit` gets each piece of text and returns `false` when the client is gone.
+    async fn answer(
+        &self,
+        target: &Target,
+        conversation: &str,
+        mut records: Vec<Record>,
+        cancel: &CancellationToken,
+        last: &mut Option<i64>,
+        emit: &mut dyn FnMut(&str) -> bool,
+    ) -> End {
+        let mut run = 0;
+        loop {
+            let Ok(body) = request_body(&target.model, &records) else {
+                return End::Failed(Failure::Internal);
+            };
+            let mut text = String::new();
+            let mut calls = Calls::default();
+            let end = self
+                .stream_answer(target, body, cancel, &mut text, &mut calls, emit)
+                .await;
+            if !text.is_empty() && self.store_text(conversation, last, text).is_err() {
+                return End::Failed(Failure::CannotSave);
+            }
+            if end != End::Done {
+                return end;
+            }
+            let mut calls = calls.finish();
+            if calls.is_empty() {
+                return End::Done;
+            }
+            // A call with no name cannot be answered or replayed: the turn is broken.
+            if calls.iter().any(|call| call.name.is_empty()) {
+                return End::Failed(Failure::Cut);
+            }
+            // The calls over the limit are not stored and not run.
+            let over = calls.len() > MAX_CALLS - run;
+            calls.truncate(MAX_CALLS - run);
+            run += calls.len();
+            if let Err(end) = self.run_calls(conversation, calls, cancel, last).await {
+                return end;
+            }
+            if over {
+                if self
+                    .store_text(conversation, last, CALL_LIMIT_TEXT.into())
+                    .is_err()
+                {
+                    return End::Failed(Failure::CannotSave);
+                }
+                return if emit(CALL_LIMIT_TEXT) {
+                    End::Done
+                } else {
+                    End::Stopped
+                };
+            }
+            records = match self.read(conversation) {
+                Ok(records) => records,
+                Err(_) => return End::Failed(Failure::Internal),
+            };
+        }
+    }
+
+    fn store_text(
+        &self,
+        conversation: &str,
+        last: &mut Option<i64>,
+        text: String,
+    ) -> io::Result<()> {
+        self.store(&Record::Turn(Turn {
+            tool: SOURCE.into(),
+            session: conversation.into(),
+            time: next_time(last),
+            folder: String::new(),
+            branch: String::new(),
+            role: Role::Assistant,
+            text,
+        }))
+    }
+
+    /// Store `calls`, then run them in order, storing each result. When the answer is stopped, every
+    /// call that has no result yet gets [`STOPPED_RESULT`] and the error is `End::Stopped`.
+    async fn run_calls(
+        &self,
+        conversation: &str,
+        calls: Vec<PendingCall>,
+        cancel: &CancellationToken,
+        last: &mut Option<i64>,
+    ) -> Result<(), End> {
+        let calls: Vec<ToolCall> = calls
+            .into_iter()
+            .map(|call| ToolCall {
+                tool: SOURCE.into(),
+                session: conversation.into(),
+                time: String::new(),
+                call_id: if call.id.is_empty() {
+                    format!("call_{}", Uuid::new_v4().simple())
+                } else {
+                    call.id
+                },
+                name: call.name,
+                // A call with no arguments is sent back as an empty object, as providers expect.
+                arguments: if call.arguments.is_empty() {
+                    "{}".into()
+                } else {
+                    call.arguments
+                },
+            })
+            .collect();
+        for call in &calls {
+            let call = ToolCall {
+                time: next_time(last),
+                ..call.clone()
+            };
+            if self.store(&Record::ToolCall(call)).is_err() {
+                return Err(End::Failed(Failure::CannotSave));
+            }
+        }
+        for (done, call) in calls.iter().enumerate() {
+            let outcome = tokio::select! {
+                biased;
+                () = cancel.cancelled() => None,
+                result = self.run_tool(&call.name, &call.arguments) => Some(result),
+            };
+            let Some(result) = outcome else {
+                // A stop answers this call and every call after it.
+                for call in &calls[done..] {
+                    self.store_result(conversation, last, &call.call_id, STOPPED_RESULT)
+                        .map_err(|_| End::Failed(Failure::CannotSave))?;
+                }
+                return Err(End::Stopped);
+            };
+            let text = result.unwrap_or_else(|error| format!("Error: {error}"));
+            self.store_result(conversation, last, &call.call_id, &text)
+                .map_err(|_| End::Failed(Failure::CannotSave))?;
+        }
+        Ok(())
+    }
+
+    fn store_result(
+        &self,
+        conversation: &str,
+        last: &mut Option<i64>,
+        call_id: &str,
+        text: &str,
+    ) -> io::Result<()> {
+        self.store(&Record::ToolResult(ToolResult {
+            tool: SOURCE.into(),
+            session: conversation.into(),
+            time: next_time(last),
+            call_id: call_id.into(),
+            text: text.into(),
+        }))
+    }
+
+    /// One tool call, on a thread of its own so that a stop does not wait for it.
+    async fn run_tool(&self, name: &str, arguments: &str) -> Result<String, String> {
+        let Some(runner) = self.inner.tools.clone() else {
+            return Err(format!("unknown tool {name}"));
+        };
+        let (name, arguments) = (name.to_string(), arguments.to_string());
+        self.inner
+            .handle
+            .spawn_blocking(move || runner(&name, &arguments))
+            .await
+            .unwrap_or_else(|_| Err("the tool failed".into()))
+    }
+
     /// One request to the provider and its answer, until it ends. The text so far is in `text`
-    /// whatever the end. `emit` gets each piece and returns `false` when the client is gone.
+    /// whatever the end, and the tool calls the model asked for in `calls`. `emit` gets each piece
+    /// and returns `false` when the client is gone.
     async fn stream_answer(
         &self,
         target: &Target,
         body: String,
         cancel: &CancellationToken,
         text: &mut String,
+        calls: &mut Calls,
         emit: &mut dyn FnMut(&str) -> bool,
     ) -> End {
         let deadlines = self.inner.deadlines;
@@ -495,7 +678,6 @@ impl Chat {
         };
 
         let mut got_chunk = false;
-        let mut finished = false;
         loop {
             let wait = if got_chunk {
                 Instant::now() + deadlines.silence
@@ -513,9 +695,6 @@ impl Chat {
             let event = match next {
                 Err(_) => return broken(Failure::Timeout),
                 Ok(Some(Ok(event))) => event,
-                // Some servers close after the last chunk without `[DONE]`; a `finish_reason`
-                // says the answer was complete.
-                Ok(None) if finished => return End::Done,
                 // The wire cap is a cut, whatever the text holds.
                 Ok(Some(Err(StreamingError::Stream(e)))) if e.is::<WireCap>() => {
                     return End::Failed(Failure::Cut);
@@ -534,7 +713,11 @@ impl Chat {
             let Some(choice) = chunk.choices.into_iter().next() else {
                 continue;
             };
-            finished |= choice.finish_reason.is_some();
+            for fragment in choice.delta.tool_calls {
+                if calls.push(fragment, TEXT_LIMIT).is_err() {
+                    return End::Failed(Failure::Cut);
+                }
+            }
             if let Some(piece) = choice.delta.content.filter(|p| !p.is_empty()) {
                 if text.len() + piece.len() > TEXT_LIMIT {
                     return End::Failed(Failure::Cut);
@@ -543,6 +726,18 @@ impl Chat {
                 if !emit(&piece) {
                     return End::Stopped;
                 }
+            }
+            // A `finish_reason` ends the model turn: the usage chunk and `[DONE]` that may follow
+            // are not waited for, so a server that holds the connection open is no matter. Only
+            // `stop` and `tool_calls` say the turn was whole; for any other reason (`length`,
+            // `content_filter`, a vendor's own) the arguments of its calls may not be, so none is kept.
+            if let Some(reason) = choice.finish_reason.filter(|r| !r.is_empty()) {
+                let whole = matches!(reason.as_str(), "stop" | "tool_calls" | "function_call");
+                return if !whole && !calls.is_empty() {
+                    End::Failed(Failure::Cut)
+                } else {
+                    End::Done
+                };
             }
         }
     }

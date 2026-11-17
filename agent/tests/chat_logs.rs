@@ -50,6 +50,22 @@ fn provider() -> String {
                     chunk(&mut stream, "fine");
                     done(&mut stream);
                 }
+                // A turn with a tool call whose name and arguments quote the key and the message.
+                4 => {
+                    head(&mut stream);
+                    let call = json!({ "index": 0, "id": "call_1", "function": {
+                        "name": format!("tool_{KEY}"), "arguments": json!({ "q": quote }).to_string()
+                    } });
+                    raw_chunk(
+                        &mut stream,
+                        &json!({ "choices": [{ "delta": { "tool_calls": [call] } }] }),
+                    );
+                    raw_chunk(
+                        &mut stream,
+                        &json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
+                    );
+                    done(&mut stream);
+                }
                 _ => {
                     head(&mut stream);
                     chunk(&mut stream, "fine");
@@ -156,5 +172,20 @@ fn neither_the_log_nor_the_records_hold_the_key_and_the_log_no_message() {
             file.display()
         );
     }
+
+    // An answer with a tool call that quotes the key and the message: the call is stored as the
+    // model wrote it, but the log still has neither.
+    let answer = send(&socket, MESSAGE);
+    assert!(answer.contains("\"done\""), "{answer}");
+    assert!(
+        !answer.contains(KEY) && !answer.contains("blue door"),
+        "{answer}"
+    );
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(logged.matches("chat: answer ended").count(), 5, "{logged}");
+    assert!(
+        !logged.contains(KEY) && !logged.contains("blue door"),
+        "{logged}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
