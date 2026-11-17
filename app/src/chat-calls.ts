@@ -130,11 +130,14 @@ export function createChatHandlers(
         chatSendLine(input),
         limits.stream,
         (line) => {
-          let event: ChatEvent;
+          let event: ChatEvent | null;
           try {
             event = parseChatEvent(line);
           } catch {
             end(current, { event: 'error', reason: reasonUnreadable });
+            return;
+          }
+          if (event === null) {
             return;
           }
           if (event.event === 'start') {

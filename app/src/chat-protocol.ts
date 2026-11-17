@@ -8,7 +8,10 @@ export interface ConversationSummary {
   readonly time: string;
 }
 
-/** A message of the thread. The agent also stores tool records; the window never sees them. */
+/**
+ * A message of the thread. The agent also stores tool records, and sends a line of the role `tool`
+ * for each call; the window does not show them yet.
+ */
 export interface ChatMessage {
   readonly role: 'user' | 'assistant';
   readonly text: string;
@@ -93,8 +96,11 @@ export function chatSendLine(input: ChatInput): string {
   return `chat-send ${JSON.stringify({ conversation: input.conversation, message: input.message })}`;
 }
 
-/** One line of a `chat-send` answer; anything else is an error. */
-export function parseChatEvent(line: string): ChatEvent {
+/**
+ * One line of a `chat-send` answer: `null` for an event the window does not know (the agent also
+ * says when a tool call starts), an error for anything else.
+ */
+export function parseChatEvent(line: string): ChatEvent | null {
   const reply = parseLine(line);
   switch (reply.event) {
     case 'start':
@@ -115,7 +121,10 @@ export function parseChatEvent(line: string): ChatEvent {
       }
       return { event: 'error', reason: reply.reason };
     default:
-      throw new Error('the agent sent an unknown event');
+      if (typeof reply.event !== 'string') {
+        throw new Error('the agent sent a line that is no event');
+      }
+      return null;
   }
 }
 
@@ -143,7 +152,10 @@ export function parseListReply(line: string): ListResult {
   return { ok: true, conversations };
 }
 
-/** Turns the lines of `chat-get` into a result: the turns, without the tool records. */
+/**
+ * Turns the lines of `chat-get` into a result: the turns of the user and the assistant, without
+ * the tool records and without turns of a role the window does not know.
+ */
 export function parseGetLines(lines: readonly string[]): GetResult {
   const messages: ChatMessage[] = [];
   for (const line of lines) {
@@ -155,13 +167,12 @@ export function parseGetLines(lines: readonly string[]): GetResult {
     if (record.kind !== 'turn') {
       continue;
     }
-    if (
-      (record.role !== 'user' && record.role !== 'assistant') ||
-      typeof record.text !== 'string'
-    ) {
+    if (typeof record.role !== 'string' || typeof record.text !== 'string') {
       throw new Error('the agent sent a turn in a form the app does not accept');
     }
-    messages.push({ role: record.role, text: record.text });
+    if (record.role === 'user' || record.role === 'assistant') {
+      messages.push({ role: record.role, text: record.text });
+    }
   }
   return { ok: true, messages };
 }

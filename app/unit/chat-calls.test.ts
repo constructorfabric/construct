@@ -76,12 +76,14 @@ async function withFakeAgent(
 
 const answering: Behaviour = (_line, client) => {
   client.write(`{"event":"start","conversation":"${id}"}\n`);
-  client.write('{"event":"delta","text":"Hel"}\n{"event":"delta","text":"lo"}\n');
+  // The line of a tool call is not forwarded: the window does not show it yet.
+  client.write('{"event":"delta","text":"Hel"}\n{"event":"tool","line":"Read notes.txt"}\n');
+  client.write('{"event":"delta","text":"lo"}\n');
   client.end('{"event":"done"}\n');
 };
 
 describe('the chat handlers', () => {
-  it('forwards each line of an answer as an event, in order', async () => {
+  it('forwards each line of an answer as an event, in order, and skips an unknown event', async () => {
     await withFakeAgent(answering, async (handlers, events, lines, ended) => {
       expect(handlers.send({ conversation: '', message: secretMessage })).toEqual({ ok: true });
       await ended();

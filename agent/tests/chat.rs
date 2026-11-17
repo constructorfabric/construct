@@ -50,6 +50,14 @@ impl ChatTool for Fakeware {
         r#"{"type":"object","properties":{"q":{"type":"string"}}}"#
     }
 
+    /// `Read <q>` for arguments that have a `q`, the name for any other.
+    fn line(&self, arguments: &str) -> String {
+        serde_json::from_str::<Value>(arguments)
+            .ok()
+            .and_then(|v| v["q"].as_str().map(|q| format!("Read {q}")))
+            .unwrap_or_else(|| self.name.to_string())
+    }
+
     fn run(&self, arguments: &str) -> Result<String, String> {
         (self.runner)(self.name, arguments)
     }
@@ -140,7 +148,7 @@ struct Env {
     socket: PathBuf,
     settings: Settings,
     data: PathBuf,
-    _rt: tokio::runtime::Runtime,
+    rt: tokio::runtime::Runtime,
 }
 
 fn short() -> Deadlines {
@@ -202,8 +210,12 @@ impl Env {
             socket,
             settings,
             data,
-            _rt: rt,
+            rt,
         }
+    }
+
+    fn runtime_handle(&self) -> tokio::runtime::Handle {
+        self.rt.handle().clone()
     }
 
     fn connect(&self, request: &str) -> Lines {
@@ -221,7 +233,15 @@ impl Env {
         ))
     }
 
+    /// What `chat-get` sends, the entries of role `tool` left out.
     fn get(&self, conversation: &str) -> Vec<Value> {
+        let mut entries = self.get_all(conversation);
+        entries.retain(|e| e["role"] != "tool");
+        entries
+    }
+
+    /// What `chat-get` sends.
+    fn get_all(&self, conversation: &str) -> Vec<Value> {
         self.connect(&format!("chat-get {conversation}")).rest()
     }
 }
@@ -1445,7 +1465,14 @@ fn stop_while_a_call_runs_answers_every_call_and_ends_within_two_seconds() {
     assert_eq!(stopped, vec![json!({ "stopped": true })]);
     let rest = lines.rest();
     assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
-    assert_eq!(rest, vec![json!({ "event": "done", "stopped": true })]);
+    // Only the call that started is announced.
+    assert_eq!(
+        rest,
+        vec![
+            json!({ "event": "tool", "line": "slow" }),
+            json!({ "event": "done", "stopped": true })
+        ]
+    );
     let _ = release_tx.send(());
 
     let records = env.get(&conversation);
@@ -1615,7 +1642,10 @@ fn a_blocked_tool_holds_neither_the_agent_nor_the_stop() {
     );
     assert_eq!(
         lines.rest(),
-        vec![json!({ "event": "done", "stopped": true })]
+        vec![
+            json!({ "event": "tool", "line": "slow" }),
+            json!({ "event": "done", "stopped": true })
+        ]
     );
     assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
 
@@ -1650,4 +1680,120 @@ fn a_result_of_100_kib_is_cut_at_64_kib_with_the_note() {
     assert_eq!(result.len(), 64 * 1024 - 1);
     assert!(result.ends_with(" [cut]"));
     assert!(result.starts_with("aéé"));
+}
+
+const FILE_TEXT: &str = "the-text-of-the-file";
+
+/// A conversation in which the model reads `notes.txt` between two pieces of text.
+fn reading_script() -> Script {
+    turns(vec![
+        vec![
+            text_chunk("Let me look. "),
+            call_chunk(
+                0,
+                Some("call_r"),
+                Some("lookup"),
+                &json!({ "q": "notes.txt", "content": FILE_TEXT }).to_string(),
+            ),
+            finish("tool_calls"),
+        ],
+        vec![text_chunk("Found it."), finish("stop")],
+    ])
+}
+
+#[test]
+fn a_call_gives_a_tool_event_between_the_deltas() {
+    let fake = Fake::start(reading_script());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("tool-event", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let names: Vec<&str> = events
+        .iter()
+        .map(|e| e["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["start", "delta", "tool", "delta", "done"],
+        "{events:?}"
+    );
+    assert_eq!(
+        events[2],
+        json!({ "event": "tool", "line": "Read notes.txt" })
+    );
+    // The line is the short form: the other arguments reach no event.
+    let all = serde_json::to_string(&events).unwrap();
+    assert!(!all.contains(FILE_TEXT), "{all}");
+}
+
+#[test]
+fn chat_get_has_the_line_in_its_place_and_the_same_after_a_restart() {
+    let fake = Fake::start(reading_script());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("tool-get", &fake.url(), noting(&seen));
+    let (conversation, _, _) = summary(&env.send("", MESSAGE).rest());
+
+    let entries = env.get_all(&conversation);
+    let shape: Vec<(&str, &str)> = entries
+        .iter()
+        .map(|e| {
+            (
+                e["kind"].as_str().unwrap(),
+                e["role"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("turn", "user"),
+            ("turn", "assistant"),
+            ("toolcall", ""),
+            ("turn", "tool"),
+            ("toolresult", ""),
+            ("turn", "assistant"),
+        ]
+    );
+    assert_eq!(entries[3]["text"], "Read notes.txt");
+    assert!(
+        !serde_json::to_string(&entries[3])
+            .unwrap()
+            .contains(FILE_TEXT)
+    );
+
+    // A new chat over the same files, as after a restart of the agent.
+    let again = Chat::new(
+        env.settings.clone(),
+        &env.data,
+        env.runtime_handle(),
+        short(),
+    )
+    .unwrap()
+    .with_tools(registry(noting(&seen)));
+    let restarted: Vec<Value> = again
+        .get(&conversation)
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(restarted, entries);
+}
+
+#[test]
+fn the_facts_call_gives_neither_an_event_nor_a_line() {
+    let fake = Fake::start(replying(&["ok"]));
+    let env = Env::new("facts-hidden", &fake.url(), short());
+    // With memory off every answer stores the facts call and its result.
+    env.settings
+        .apply(Update::parse(&json!({ "collection": { "enabled": false } }).to_string()).unwrap())
+        .unwrap();
+    let events = env.send("", MESSAGE).rest();
+    assert!(events.iter().all(|e| e["event"] != "tool"), "{events:?}");
+    let (conversation, _, _) = summary(&events);
+    let entries = env.get_all(&conversation);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["kind"] == "toolcall" && e["name"] == "recall_facts"),
+        "{entries:?}"
+    );
+    assert!(entries.iter().all(|e| e["role"] != "tool"), "{entries:?}");
 }

@@ -84,6 +84,24 @@ unless the `recall_facts` tool returns the error that memory is off. So when the
 keeping, say that you will remember it, and never say that you have saved it. If `recall_facts` returns the error \
 that memory is off, say that nothing is remembered. Answer in the language of the user.";
 
+/// What the client is told while an answer runs, besides how it ends.
+enum Piece<'a> {
+    /// A piece of the answer text.
+    Text(&'a str),
+    /// A tool call starts: its short line.
+    Tool(&'a str),
+}
+
+impl Piece<'_> {
+    fn event(&self) -> String {
+        match self {
+            Self::Text(text) => json!({ "event": "delta", "text": text }),
+            Self::Tool(line) => json!({ "event": "tool", "line": line }),
+        }
+        .to_string()
+    }
+}
+
 /// The limits on the wait for the provider.
 #[derive(Clone, Copy, Debug)]
 pub struct Deadlines {
@@ -366,7 +384,7 @@ impl Chat {
                 records,
                 &cancel,
                 &mut last,
-                &mut |piece| out(&json!({ "event": "delta", "text": piece }).to_string()),
+                &mut |piece| out(&piece.event()),
             )
             .await;
         // Everything is stored before the last line is written, so a client that has seen the end
@@ -462,7 +480,8 @@ impl Chat {
 
     /// The answer: one request to the provider per model turn, and between two turns the tool calls
     /// of the first run. Every turn's text and every call and result are stored as they come.
-    /// `emit` gets each piece of text and returns `false` when the client is gone.
+    /// `emit` gets each piece of text and each call that starts, and returns `false` when the
+    /// client is gone.
     async fn answer(
         &self,
         target: &Target,
@@ -470,7 +489,7 @@ impl Chat {
         mut records: Vec<Record>,
         cancel: &CancellationToken,
         last: &mut Option<i64>,
-        emit: &mut dyn FnMut(&str) -> bool,
+        emit: &mut dyn FnMut(Piece<'_>) -> bool,
     ) -> End {
         let mut run = 0;
         loop {
@@ -500,7 +519,10 @@ impl Chat {
             let over = calls.len() > MAX_CALLS - run;
             calls.truncate(MAX_CALLS - run);
             run += calls.len();
-            if let Err(end) = self.run_calls(conversation, calls, cancel, last).await {
+            if let Err(end) = self
+                .run_calls(conversation, calls, cancel, last, emit)
+                .await
+            {
                 return end;
             }
             if over {
@@ -510,7 +532,7 @@ impl Chat {
                 {
                     return End::Failed(Failure::CannotSave);
                 }
-                return if emit(CALL_LIMIT_TEXT) {
+                return if emit(Piece::Text(CALL_LIMIT_TEXT)) {
                     End::Done
                 } else {
                     End::Stopped
@@ -542,13 +564,15 @@ impl Chat {
     }
 
     /// Store `calls`, then run them in order, storing each result. When the answer is stopped, every
-    /// call that has no result yet gets [`STOPPED_RESULT`] and the error is `End::Stopped`.
+    /// call that has no result yet gets [`STOPPED_RESULT`] and the error is `End::Stopped`. The
+    /// client is told of each call as it starts, except the facts call, which the window never shows.
     async fn run_calls(
         &self,
         conversation: &str,
         calls: Vec<PendingCall>,
         cancel: &CancellationToken,
         last: &mut Option<i64>,
+        emit: &mut dyn FnMut(Piece<'_>) -> bool,
     ) -> Result<(), End> {
         let calls: Vec<ToolCall> = calls
             .into_iter()
@@ -580,10 +604,19 @@ impl Chat {
             }
         }
         for (done, call) in calls.iter().enumerate() {
-            let outcome = tokio::select! {
-                biased;
-                () = cancel.cancelled() => None,
-                result = self.run_tool(&call.name, &call.arguments) => Some(result),
+            // A client that is gone ends the answer as a stop does.
+            let told = call.name == recall::NAME
+                || emit(Piece::Tool(
+                    &self.inner.tools.line(&call.name, &call.arguments),
+                ));
+            let outcome = if told {
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => None,
+                    result = self.run_tool(&call.name, &call.arguments) => Some(result),
+                }
+            } else {
+                None
             };
             let Some(result) = outcome else {
                 // A stop answers this call and every call after it.
@@ -631,7 +664,7 @@ impl Chat {
 
     /// One request to the provider and its answer, until it ends. The text so far is in `text`
     /// whatever the end, and the tool calls the model asked for in `calls`. `emit` gets each piece
-    /// and returns `false` when the client is gone.
+    /// of text and returns `false` when the client is gone.
     async fn stream_answer(
         &self,
         target: &Target,
@@ -639,7 +672,7 @@ impl Chat {
         cancel: &CancellationToken,
         text: &mut String,
         calls: &mut Calls,
-        emit: &mut dyn FnMut(&str) -> bool,
+        emit: &mut dyn FnMut(Piece<'_>) -> bool,
     ) -> End {
         let deadlines = self.inner.deadlines;
         let first_deadline = Instant::now() + deadlines.first_word;
@@ -724,7 +757,7 @@ impl Chat {
                     return End::Failed(Failure::Cut);
                 }
                 text.push_str(&piece);
-                if !emit(&piece) {
+                if !emit(Piece::Text(&piece)) {
                     return End::Stopped;
                 }
             }
@@ -777,7 +810,9 @@ impl Chat {
     }
 
     /// The JSON lines for `chat-get`, one per record, oldest first. The tool records are marked
-    /// `hidden`: the window does not show them.
+    /// `hidden`: the window does not show them. A call that is not the facts call also gets an entry
+    /// of its own, a turn of the role `tool` whose text is its line, made from the stored arguments
+    /// so it reads the same after a restart.
     #[must_use]
     pub fn get(&self, conversation: &str) -> Vec<String> {
         let records = match valid_id(conversation).then(|| self.read(conversation)) {
@@ -787,29 +822,40 @@ impl Chat {
         };
         records
             .iter()
-            .filter_map(|r| match r {
-                Record::Turn(t) => Some(json!({
+            .flat_map(|r| match r {
+                Record::Turn(t) => vec![json!({
                     "kind": "turn",
                     "role": match t.role { Role::User => "user", Role::Assistant => "assistant" },
                     "time": t.time,
                     "text": t.text,
-                })),
-                Record::ToolCall(c) => Some(json!({
-                    "kind": "toolcall",
-                    "hidden": true,
-                    "time": c.time,
-                    "call_id": c.call_id,
-                    "name": c.name,
-                    "arguments": c.arguments,
-                })),
-                Record::ToolResult(r) => Some(json!({
+                })],
+                Record::ToolCall(c) => {
+                    let mut entries = vec![json!({
+                        "kind": "toolcall",
+                        "hidden": true,
+                        "time": c.time,
+                        "call_id": c.call_id,
+                        "name": c.name,
+                        "arguments": c.arguments,
+                    })];
+                    if c.name != recall::NAME {
+                        entries.push(json!({
+                            "kind": "turn",
+                            "role": "tool",
+                            "time": c.time,
+                            "text": self.inner.tools.line(&c.name, &c.arguments),
+                        }));
+                    }
+                    entries
+                }
+                Record::ToolResult(r) => vec![json!({
                     "kind": "toolresult",
                     "hidden": true,
                     "time": r.time,
                     "call_id": r.call_id,
                     "text": r.text,
-                })),
-                Record::Mark(_) => None,
+                })],
+                Record::Mark(_) => Vec::new(),
             })
             .map(|v| v.to_string())
             .collect()
