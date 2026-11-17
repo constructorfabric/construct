@@ -11,7 +11,8 @@
 //! When a model turn asks for tools, the calls are stored, run one by one in the order given and
 //! answered in the conversation, and the model is asked again, until a turn has no call. One answer
 //! runs at most [`MAX_CALLS`] calls. The tools themselves are given to the chat (see
-//! [`Chat::with_tools`]); a call to a name nobody handles is answered with an error text.
+//! [`Chat::with_tools`]): a fixed list, offered to the model in every request; a call to a name
+//! that is not in it is answered with an error text. A result is cut at 64 KiB, note included.
 //!
 //! The request body is written from typed structs in a fixed field order, never through a
 //! `serde_json::Value` (it sorts keys), with tool-call arguments as the stored text, so a request
@@ -46,8 +47,10 @@ use crate::settings::Settings;
 use crate::sync::lock;
 
 mod recall;
+pub mod tool;
 mod wire;
 
+use tool::{ChatTools, limited};
 use wire::{Calls, Chunk, PendingCall, WireCap, into_http, request_body};
 
 /// The source the conversations belong to.
@@ -139,10 +142,6 @@ enum End {
     Failed(Failure),
 }
 
-/// Runs one tool call: the name and the arguments text, then the result text or the error text. It
-/// may block, so the chat runs it on a thread of its own.
-pub type ToolRunner = Arc<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>;
-
 /// Where the chat finds the Construct host: empty until the host is ready. Clones share it.
 #[derive(Clone, Default)]
 pub struct Link(Arc<Mutex<Option<Connection>>>);
@@ -170,7 +169,7 @@ struct Inner {
     client: reqwest::Client,
     wire_limit: usize,
     link: Link,
-    tools: Option<ToolRunner>,
+    tools: ChatTools,
     running: Mutex<Option<Running>>,
 }
 
@@ -228,7 +227,7 @@ impl Chat {
                 client,
                 wire_limit: WIRE_LIMIT,
                 link: Link::default(),
-                tools: None,
+                tools: ChatTools::default(),
                 running: Mutex::new(None),
             }),
         })
@@ -254,16 +253,16 @@ impl Chat {
         self
     }
 
-    /// Run the tool calls of the model with `runner`; without it every call is answered with an
-    /// unknown-tool error. Call it before the chat is cloned.
+    /// Offer `tools` to the model and run its calls; without any, no list is sent and every call is
+    /// answered with an unknown-tool error. Call it before the chat is cloned.
     ///
-    /// The chat puts no deadline on a call: the runner bounds its own run time. A call runs on a
+    /// The chat puts no deadline on a call: a tool bounds its own run time. A call runs on a
     /// thread that Stop cannot end, so after a Stop it goes on until it returns, and the next answer
     /// does not wait for it.
     #[must_use]
-    pub fn with_tools(mut self, runner: ToolRunner) -> Self {
+    pub fn with_tools(mut self, tools: ChatTools) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.tools = Some(runner);
+            inner.tools = tools;
         }
         self
     }
@@ -474,7 +473,7 @@ impl Chat {
     ) -> End {
         let mut run = 0;
         loop {
-            let Ok(body) = request_body(&target.model, &records) else {
+            let Ok(body) = request_body(&target.model, &records, self.inner.tools.listing()) else {
                 return End::Failed(Failure::Internal);
             };
             let mut text = String::new();
@@ -592,7 +591,7 @@ impl Chat {
                 }
                 return Err(End::Stopped);
             };
-            let text = result.unwrap_or_else(|error| format!("Error: {error}"));
+            let text = limited(result.unwrap_or_else(|error| format!("Error: {error}")));
             self.store_result(conversation, last, &call.call_id, &text)
                 .map_err(|_| End::Failed(Failure::CannotSave))?;
         }
@@ -617,13 +616,13 @@ impl Chat {
 
     /// One tool call, on a thread of its own so that a stop does not wait for it.
     async fn run_tool(&self, name: &str, arguments: &str) -> Result<String, String> {
-        let Some(runner) = self.inner.tools.clone() else {
+        let Some(tool) = self.inner.tools.find(name) else {
             return Err(format!("unknown tool {name}"));
         };
-        let (name, arguments) = (name.to_string(), arguments.to_string());
+        let arguments = arguments.to_string();
         self.inner
             .handle
-            .spawn_blocking(move || runner(&name, &arguments))
+            .spawn_blocking(move || tool.run(&arguments))
             .await
             .unwrap_or_else(|_| Err("the tool failed".into()))
     }

@@ -30,7 +30,7 @@ const TEXT_LIMIT: usize = 32 * 1024;
 /// Most characters of one fact's value, so one fact always fits under [`TEXT_LIMIT`].
 const VALUE_LIMIT: usize = 2048;
 /// The end of a value that was cut at [`VALUE_LIMIT`].
-const VALUE_CUT: &str = " [cut]";
+pub(super) const VALUE_CUT: &str = " [cut]";
 /// The last line of a text that was cut, so the model knows the list is not whole.
 const CUT_LINE: &str = "\n(The list is cut: more facts are known than are shown.)";
 

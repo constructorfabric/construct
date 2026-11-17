@@ -7,6 +7,7 @@ use bytes::Bytes;
 use connectors::{Record, Role, ToolCall, ToolResult, Turn};
 use oagw_sdk::Body;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use super::INSTRUCTION;
 
@@ -206,6 +207,9 @@ struct RequestBody<'a> {
     model: &'a str,
     messages: Vec<Message<'a>>,
     stream: bool,
+    /// After `stream`, and left out when there is no tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a RawValue>,
 }
 
 #[derive(Serialize)]
@@ -243,11 +247,16 @@ fn plain<'a>(role: &'static str, content: &'a str) -> Message<'a> {
 
 /// The request body for one answer: the fixed instruction, then every record of the
 /// conversation in order. Tool calls that follow each other are one assistant message, as the
-/// providers want them.
+/// providers want them. `tools` is the array of the tools offered, written once; it is left out
+/// when there is none.
 ///
 /// # Errors
 /// Fails only when the body cannot be written as JSON.
-pub fn request_body(model: &str, records: &[Record]) -> Result<String, serde_json::Error> {
+pub fn request_body(
+    model: &str,
+    records: &[Record],
+    tools: Option<&RawValue>,
+) -> Result<String, serde_json::Error> {
     let mut messages = vec![plain("system", INSTRUCTION)];
     for (at, record) in records.iter().enumerate() {
         match record {
@@ -302,6 +311,7 @@ pub fn request_body(model: &str, records: &[Record]) -> Result<String, serde_jso
         model,
         messages,
         stream: true,
+        tools,
     })
 }
 
@@ -403,7 +413,7 @@ mod tests {
             }),
             turn(Role::Assistant, "ok"),
         ];
-        let body = request_body("m", &records).unwrap();
+        let body = request_body("m", &records, None).unwrap();
         let escaped = serde_json::to_string(arguments).unwrap();
         let expected = format!(
             concat!(
@@ -440,7 +450,8 @@ mod tests {
                 text: "r".into(),
             })
         };
-        let body = request_body("m", &[call("a"), call("b"), result("a"), result("b")]).unwrap();
+        let body =
+            request_body("m", &[call("a"), call("b"), result("a"), result("b")], None).unwrap();
         assert_eq!(body.matches("\"tool_calls\"").count(), 1);
         assert!(body.contains(r#""id":"a""#) && body.contains(r#""id":"b""#));
     }
@@ -455,10 +466,25 @@ mod tests {
             name: "recall_facts".into(),
             arguments: "{}".into(),
         });
-        let body = request_body("m", &[turn(Role::User, "hi"), call]).unwrap();
+        let body = request_body("m", &[turn(Role::User, "hi"), call], None).unwrap();
         assert!(
             !body.contains("orphan") && !body.contains("tool_calls"),
             "{body}"
         );
+    }
+
+    #[test]
+    fn the_tools_array_follows_stream_as_written() {
+        let tools = RawValue::from_string(r#"[{"type":"function"}]"#.to_string()).unwrap();
+        let with = request_body("m", &[], Some(&tools)).unwrap();
+        let without = request_body("m", &[], None).unwrap();
+        assert_eq!(
+            with,
+            format!(
+                "{},\"tools\":[{{\"type\":\"function\"}}]}}",
+                &without[..without.len() - 1]
+            )
+        );
+        assert!(without.ends_with(r#""stream":true}"#));
     }
 }

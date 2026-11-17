@@ -19,7 +19,7 @@ path = "src/main.rs"
 connectors = { path = "../connectors" }
 serde = { version = "1.0", features = ["derive"] }
 postgresql_embedded = { version = "0.22", features = ["bundled", "tokio"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["raw_value"] }
 url = "2.5.8"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "process", "time", "sync"] }
 
