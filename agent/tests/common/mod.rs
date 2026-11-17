@@ -14,6 +14,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(unix)]
+pub mod fake_host;
+#[cfg(unix)]
+pub mod stand;
+
 use construct_agent::autostart::{CommandRunner, linux, macos};
 use serde_json::{Value, json};
 
@@ -160,7 +165,30 @@ impl Drop for Agent {
 
 /// Reads one request: its body and its `Authorization` header.
 pub fn read_request(stream: &mut TcpStream) -> (String, String) {
+    let request = read_http(stream);
+    (
+        String::from_utf8(request.body).unwrap(),
+        request.authorization,
+    )
+}
+
+/// One request as it came: the method, the path, the body bytes and the `Authorization` header.
+pub struct Request {
+    pub method: String,
+    pub path: String,
+    pub body: Vec<u8>,
+    pub authorization: String,
+}
+
+pub fn read_http(stream: &mut TcpStream) -> Request {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).unwrap();
+    let mut parts = request_line.split_whitespace();
+    let (method, path) = (
+        parts.next().unwrap_or_default().to_string(),
+        parts.next().unwrap_or_default().to_string(),
+    );
     let (mut length, mut authorization) = (0, String::new());
     loop {
         let mut line = String::new();
@@ -178,7 +206,12 @@ pub fn read_request(stream: &mut TcpStream) -> (String, String) {
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body).unwrap();
-    (String::from_utf8(body).unwrap(), authorization)
+    Request {
+        method,
+        path,
+        body,
+        authorization,
+    }
 }
 
 pub fn head(stream: &mut TcpStream) {

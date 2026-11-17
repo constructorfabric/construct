@@ -3,12 +3,9 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)] // helpers outside #[test] functions use it too
 
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,114 +19,8 @@ use serde_json::{Value, json};
 
 mod common;
 
-const TOKEN: &str = "manage-token-77c1";
-const STORED: &str = r#"{"outcome":"stored","reason":null,"added":1,"replaced":0,"removed":0}"#;
-const NO_CHANGE: &str =
-    r#"{"outcome":"nothing_changed","reason":"no_change","added":0,"replaced":0,"removed":0}"#;
-
-struct Call {
-    path: String,
-    authorization: String,
-    body: Value,
-}
-
-/// A host that answers every call with the next scripted answer, then with `STORED`.
-struct FakeHost {
-    addr: SocketAddr,
-    calls: Arc<Mutex<Vec<Call>>>,
-    script: Arc<Mutex<VecDeque<(u16, String)>>>,
-    delay: Arc<Mutex<Duration>>,
-}
-
-impl FakeHost {
-    fn start() -> Self {
-        Self::start_at(0)
-    }
-
-    fn start_at(port: u16) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
-        let addr = listener.local_addr().unwrap();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let script = Arc::new(Mutex::new(VecDeque::new()));
-        let delay = Arc::new(Mutex::new(Duration::ZERO));
-        let (c, s, d) = (Arc::clone(&calls), Arc::clone(&script), Arc::clone(&delay));
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let call = read_call(&mut stream);
-                c.lock().unwrap().push(call);
-                thread::sleep(*d.lock().unwrap());
-                let (code, body) = s
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .unwrap_or((200, STORED.to_string()));
-                common::status(&mut stream, code, &body);
-            }
-        });
-        Self {
-            addr,
-            calls,
-            script,
-            delay,
-        }
-    }
-
-    fn connection(&self) -> Connection {
-        Connection {
-            port: self.addr.port(),
-            token: TOKEN.into(),
-        }
-    }
-
-    fn answer(&self, code: u16, body: &str) {
-        self.script.lock().unwrap().push_back((code, body.into()));
-    }
-
-    fn count(&self) -> usize {
-        self.calls.lock().unwrap().len()
-    }
-
-    /// The `message` of every call so far.
-    fn messages(&self) -> Vec<String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|c| c.body["message"].as_str().unwrap().to_string())
-            .collect()
-    }
-}
-
-fn read_call(stream: &mut TcpStream) -> Call {
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line).unwrap();
-    let (mut length, mut authorization) = (0, String::new());
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        let lower = line.to_lowercase();
-        if let Some(v) = lower.strip_prefix("content-length:") {
-            length = v.trim().parse().unwrap();
-        }
-        if lower.starts_with("authorization:") {
-            authorization = line.split_once(':').unwrap().1.trim().to_string();
-        }
-        if line.trim().is_empty() {
-            break;
-        }
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).unwrap();
-    let path = request_line.split_whitespace().nth(1).unwrap().to_string();
-    assert!(request_line.starts_with("POST "), "{request_line}");
-    Call {
-        path,
-        authorization,
-        body: serde_json::from_slice(&body).unwrap(),
-    }
-}
+use common::fake_host::{FakeHost, NO_CHANGE, TOKEN};
+use common::stand::{timing, wait_for};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -161,24 +52,17 @@ impl Stand {
     }
 
     fn manager(&self) -> Manager {
-        let timing = Timing {
-            retry: [Duration::from_millis(10); 2],
-            idle: Duration::from_millis(20),
-            failed: Duration::from_millis(20),
-            refused: Duration::from_millis(50),
-            call: Duration::from_millis(600),
-        };
-        Manager::open_with(&self.dir, self.settings.clone(), self.link.clone(), timing).unwrap()
+        Manager::open_with(
+            &self.dir,
+            self.settings.clone(),
+            self.link.clone(),
+            timing(),
+        )
+        .unwrap()
     }
 
     fn manager_with_failed_pause(&self, failed: Duration) -> Manager {
-        let timing = Timing {
-            retry: [Duration::from_millis(10); 2],
-            idle: Duration::from_millis(20),
-            failed,
-            refused: Duration::from_millis(50),
-            call: Duration::from_millis(600),
-        };
+        let timing = Timing { failed, ..timing() };
         Manager::open_with(&self.dir, self.settings.clone(), self.link.clone(), timing).unwrap()
     }
 
@@ -233,12 +117,8 @@ fn ago(days: i64, minute: u32) -> String {
         .unwrap()
 }
 
-fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        thread::sleep(Duration::from_millis(20));
-    }
+fn set_collection(stand: &Stand, update: &str) {
+    common::stand::set_collection(&stand.settings, update);
 }
 
 fn backfill_state(manage: &Manager) -> String {
@@ -321,6 +201,7 @@ fn a_live_prompt_goes_out_with_the_turns_before_it_as_context() {
         "{}",
         call.path
     );
+    assert_eq!(call.method, "POST");
     assert_eq!(call.authorization, format!("Bearer {TOKEN}"));
     assert_eq!(
         call.body["message"],
@@ -368,7 +249,10 @@ fn a_dry_run_counts_the_prompts_per_tool_and_sends_nothing() {
 
     let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
     assert_eq!(reply["dry_run"], true);
-    assert_eq!(reply["prompts"], json!({ "claude-code": 4, "codex": 3 }));
+    assert_eq!(
+        reply["prompts"],
+        json!({ "chat": 0, "claude-code": 4, "codex": 3 })
+    );
     assert_eq!(reply["total"], 7);
     let limited: Value =
         serde_json::from_str(&manage.backfill(r#"{"dry_run":true,"limit":2}"#)).unwrap();
@@ -378,6 +262,228 @@ fn a_dry_run_counts_the_prompts_per_tool_and_sends_nothing() {
         serde_json::from_str(&manage.backfill(r#"{"dry_run":true,"days":1}"#)).unwrap();
     assert_eq!(short["total"], 0);
     thread::sleep(Duration::from_millis(100));
+    assert_eq!(host.count(), 0);
+}
+
+/// Two chat conversations of earlier days, one prompt and one answer in each.
+fn chat_history(data: &Path) {
+    for (session, minute, text) in [("c1", 0, "chat prompt one"), ("c2", 10, "chat prompt two")] {
+        store(
+            data,
+            &[
+                turn("chat", session, &ago(2, minute), Role::User, text),
+                turn("chat", session, &ago(2, minute + 1), Role::Assistant, "ok"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn a_backfill_counts_and_sends_the_chat_prompts_and_follows_the_master_switch() {
+    let stand = Stand::new();
+    let host = FakeHost::start();
+    history(stand.data(), 2, 1);
+    chat_history(stand.data());
+    let manage = stand.manager();
+    stand.link.set(host.connection());
+    manage.spawn();
+
+    let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
+    assert_eq!(
+        reply["prompts"],
+        json!({ "chat": 2, "claude-code": 1, "codex": 1 })
+    );
+    assert_eq!(reply["total"], 4);
+
+    // The chat has no switch of its own: the tools' switches do not change its count.
+    set_collection(&stand, r#"{"claude_code":false,"codex":false}"#);
+    let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
+    assert_eq!(
+        reply["prompts"],
+        json!({ "chat": 2, "claude-code": 0, "codex": 0 })
+    );
+    // With collection off nothing is counted.
+    set_collection(&stand, r#"{"enabled":false}"#);
+    let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
+    assert_eq!(reply["total"], 0);
+
+    set_collection(&stand, r#"{"enabled":true}"#);
+    let reply: Value = serde_json::from_str(&manage.backfill("{}")).unwrap();
+    assert_eq!(reply["queued"], 2, "{reply}");
+    wait_for("the run", || backfill_state(&manage) == "done");
+    assert_eq!(host.messages(), ["chat prompt one", "chat prompt two"]);
+}
+
+#[test]
+fn a_prompt_typed_while_collection_is_off_is_refused_for_good_and_counted_apart() {
+    let stand = Stand::new();
+    let host = FakeHost::start();
+    let manage = stand.manager();
+    stand.link.set(host.connection());
+    manage.spawn();
+    set_collection(&stand, r#"{"enabled":false}"#);
+    live_prompt(&stand, &manage, "typed while off", 10);
+    wait_for("the refusal", || manage.status()["refused"] == 1);
+    assert_eq!(manage.status()["sent"], 0);
+
+    set_collection(&stand, r#"{"enabled":true}"#);
+    let again = stand.manager();
+    again.spawn();
+    live_prompt(&stand, &again, "typed while on", 20);
+    wait_for("the call", || host.count() == 1);
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(host.messages(), ["typed while on"]);
+}
+
+#[test]
+fn a_prompt_queued_when_collection_goes_off_is_dropped_unmarked_and_goes_out_after_a_restart() {
+    let stand = Stand::new();
+    let host = FakeHost::start();
+    let manage = stand.manager();
+    manage.spawn();
+    // No host yet, so the prompt waits in the queue.
+    live_prompt(&stand, &manage, "queued", 10);
+    wait_for("the queue", || manage.status()["live"]["queued"] == 1);
+    set_collection(&stand, r#"{"enabled":false}"#);
+    stand.link.set(host.connection());
+    wait_for("the queue to empty", || {
+        manage.status()["live"]["queued"] == 0
+    });
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(host.count(), 0);
+    assert_eq!(manage.status()["refused"], 0);
+
+    set_collection(&stand, r#"{"enabled":true}"#);
+    let again = stand.manager();
+    again.spawn();
+    wait_for("the call", || host.count() == 1);
+    assert_eq!(host.messages(), ["queued"]);
+}
+
+#[test]
+fn what_was_typed_while_collection_was_off_is_not_in_the_context_of_a_later_prompt() {
+    let stand = Stand::new();
+    let host = FakeHost::start();
+    let manage = stand.manager();
+    stand.link.set(host.connection());
+    manage.spawn();
+    let (off, answer) = (later(10), later(11));
+    set_collection(&stand, r#"{"enabled":false}"#);
+    let typed = turn("chat", "c1", &off, Role::User, "typed while off");
+    let reply = turn("chat", "c1", &answer, Role::Assistant, "answer to it");
+    store(stand.data(), &[typed.clone(), reply]);
+    (manage.observer())(&typed);
+    wait_for("the refusal", || manage.status()["refused"] == 1);
+    set_collection(&stand, r#"{"enabled":true}"#);
+    let kept = turn("chat", "c1", &later(20), Role::User, "typed while on");
+    let next = turn("chat", "c1", &later(30), Role::User, "the next one");
+    store(stand.data(), &[kept.clone(), next.clone()]);
+    (manage.observer())(&kept);
+    (manage.observer())(&next);
+    wait_for("both calls", || host.count() == 2);
+    let calls = host.calls.lock().unwrap();
+    assert_eq!(calls[0].body["conversation"], "");
+    assert_eq!(calls[1].body["conversation"], "user: typed while on");
+}
+
+#[test]
+fn an_answer_to_a_refused_prompt_does_not_enter_the_window_from_its_edge() {
+    let stand = Stand::new();
+    let host = FakeHost::start();
+    let manage = stand.manager();
+    stand.link.set(host.connection());
+    manage.spawn();
+    set_collection(&stand, r#"{"enabled":false}"#);
+    // One prompt typed while off, with two answers (the chat stores text around a tool call).
+    let typed = turn("chat", "c1", &later(10), Role::User, "typed while off");
+    let first = turn(
+        "chat",
+        "c1",
+        &later(11),
+        Role::Assistant,
+        "first part of the answer",
+    );
+    let second = turn(
+        "chat",
+        "c1",
+        &later(12),
+        Role::Assistant,
+        "second part of the answer",
+    );
+    store(stand.data(), &[typed.clone(), first, second]);
+    (manage.observer())(&typed);
+    wait_for("the refusal", || manage.status()["refused"] == 1);
+    set_collection(&stand, r#"{"enabled":true}"#);
+    // Four exchanges: with the earlier turns, the last ten start inside the refused answer.
+    let mut exchanges = Vec::new();
+    for i in 0..4_u64 {
+        let user = format!("question {i}");
+        let answer = format!("answer {i}");
+        exchanges.push(turn("chat", "c1", &later(20 + 2 * i), Role::User, &user));
+        exchanges.push(turn(
+            "chat",
+            "c1",
+            &later(21 + 2 * i),
+            Role::Assistant,
+            &answer,
+        ));
+    }
+    let last = turn("chat", "c1", &later(40), Role::User, "the last one");
+    exchanges.push(last.clone());
+    store(stand.data(), &exchanges);
+    // Only the last prompt is offered; the others are history of the session.
+    (manage.observer())(&last);
+    wait_for("the call", || host.count() == 1);
+    let calls = host.calls.lock().unwrap();
+    let conversation = calls[0].body["conversation"].as_str().unwrap();
+    assert!(
+        !conversation.contains("part of the answer"),
+        "{conversation}"
+    );
+    assert!(!conversation.contains("typed while off"), "{conversation}");
+    assert!(
+        conversation.starts_with("user: question 0"),
+        "{conversation}"
+    );
+}
+
+#[test]
+fn a_backfill_stops_when_collection_goes_off_while_it_runs() {
+    let stand = Stand::new();
+    let host = FakeHost::start();
+    history(stand.data(), 3, 0);
+    *host.delay.lock().unwrap() = Duration::from_millis(300);
+    let manage = stand.manager();
+    stand.link.set(host.connection());
+    manage.spawn();
+    let _ = manage.backfill("{}");
+    wait_for("the first call", || host.count() == 1);
+    set_collection(&stand, r#"{"enabled":false}"#);
+    wait_for("the stop", || backfill_state(&manage) == "stopped");
+    assert_eq!(manage.status()["backfill"]["error"], "collection is off");
+    assert_eq!(host.count(), 1);
+}
+
+#[test]
+fn a_chat_message_whose_conversation_was_deleted_is_not_sent() {
+    let stand = Stand::new();
+    let host = FakeHost::start();
+    let manage = stand.manager();
+    manage.spawn();
+    // Queued with no host, and the conversation is not in the store: it was deleted.
+    let prompt = turn(
+        "chat",
+        "gone",
+        &later(10),
+        Role::User,
+        "from a deleted conversation",
+    );
+    (manage.observer())(&prompt);
+    wait_for("the queue", || manage.status()["live"]["queued"] == 1);
+    stand.link.set(host.connection());
+    wait_for("the queue to empty", || {
+        manage.status()["live"]["queued"] == 0
+    });
     assert_eq!(host.count(), 0);
 }
 
@@ -450,23 +556,30 @@ fn a_restart_does_not_send_a_prompt_again() {
 
 #[test]
 fn live_prompts_that_were_stored_but_not_sent_go_out_after_a_restart() {
-    let stand = Stand::new();
-    let host = FakeHost::start();
-    let first = stand.manager();
-    let prompt = turn(
-        "claude-code",
-        "s",
-        &later(5),
-        Role::User,
-        "typed while the agent was down",
-    );
-    store(stand.data(), std::slice::from_ref(&prompt));
-    drop(first);
-    stand.link.set(host.connection());
-    let manage = stand.manager();
-    manage.spawn();
-    wait_for("the recovered prompt", || host.count() == 1);
-    assert_eq!(host.messages(), ["typed while the agent was down"]);
+    // The same for a coding tool and for the chat: the new manager finds the prompt in the store.
+    for tool in ["claude-code", "chat"] {
+        let stand = Stand::new();
+        let host = FakeHost::start();
+        let first = stand.manager();
+        let prompt = turn(
+            tool,
+            "s",
+            &later(5),
+            Role::User,
+            "typed while the agent was down",
+        );
+        store(stand.data(), std::slice::from_ref(&prompt));
+        drop(first);
+        stand.link.set(host.connection());
+        let manage = stand.manager();
+        manage.spawn();
+        wait_for("the recovered prompt", || host.count() == 1);
+        assert_eq!(
+            host.messages(),
+            ["typed while the agent was down"],
+            "{tool}"
+        );
+    }
 }
 
 #[test]

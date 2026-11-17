@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use connectors::{FileState, Record, Role, Turn, compare_times, minute_of};
 use serde::{Deserialize, Serialize};
 
+use crate::follow::Observer;
 use crate::ipc::absolute_env_path;
 
 const PROGRESS_FILE: &str = "connectors-progress.json";
@@ -137,6 +138,8 @@ pub struct FileSink {
     sessions: HashMap<PathBuf, SessionFile>,
     /// Files written since the last `save_progress`, which makes them durable.
     unsynced: HashSet<PathBuf>,
+    /// Told of every user turn this sink stores for the first time.
+    observer: Option<Observer>,
 }
 
 impl FileSink {
@@ -147,7 +150,21 @@ impl FileSink {
             dir: data_dir.to_owned(),
             sessions: HashMap::new(),
             unsynced: HashSet::new(),
+            observer: None,
         }
+    }
+
+    /// Tell `observer` of every user turn this sink stores for the first time, whatever its
+    /// source, after the turn is written. It runs on the writer's thread and must not block.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Observer) -> Self {
+        self.set_observer(observer);
+        self
+    }
+
+    /// Like [`FileSink::with_observer`], for a sink that is built already.
+    pub fn set_observer(&mut self, observer: Observer) {
+        self.observer = Some(observer);
     }
 
     fn source_dir(&self, tool: &str) -> PathBuf {
@@ -450,6 +467,11 @@ impl Sink for FileSink {
         self.unsynced.insert(path.clone());
         if let Some(known) = self.sessions.get_mut(&path) {
             known.note(record);
+        }
+        if let (Record::Turn(turn), Some(observer)) = (record, &self.observer)
+            && turn.role == Role::User
+        {
+            observer(turn);
         }
         Ok(true)
     }

@@ -51,6 +51,20 @@ impl FakeModel {
                 let held = Arc::clone(&held);
                 thread::spawn(move || {
                     let (body, _) = common::read_request(&mut stream);
+                    // The chat asks for a stream: it gets a short text, and is not counted.
+                    if body.contains(r#""stream":true"#) {
+                        common::head(&mut stream);
+                        common::raw_chunk(
+                            &mut stream,
+                            &json!({ "choices": [{ "delta": { "content": "Noted." } }] }),
+                        );
+                        common::raw_chunk(
+                            &mut stream,
+                            &json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] }),
+                        );
+                        common::done(&mut stream);
+                        return;
+                    }
                     let answered_tools = body.contains(r#""role":"tool""#);
                     if !answered_tools {
                         counter.fetch_add(1, Ordering::SeqCst);
@@ -351,7 +365,7 @@ fn prompts_become_facts_and_a_kill_9_loses_and_repeats_nothing() {
     let dry = stand.ask(r#"backfill {"dry_run":true}"#);
     assert_eq!(
         dry["prompts"],
-        json!({ "claude-code": 15, "codex": 10 }),
+        json!({ "chat": 0, "claude-code": 15, "codex": 10 }),
         "{dry}"
     );
     assert_eq!(dry["total"], 25);
@@ -469,4 +483,28 @@ fn a_kill_9_during_a_call_does_not_send_that_prompt_again() {
 fn kill_9(agent: &mut Agent) {
     agent.0.kill().unwrap();
     agent.0.wait().unwrap();
+}
+
+#[test]
+#[ignore = "starts PostgreSQL and the Construct host; run with --ignored"]
+fn a_chat_message_in_the_real_agent_becomes_a_prompt_for_the_facts_route() {
+    let stand = Stand::new("mf-chat");
+    let model = FakeModel::start();
+    let _agent = stand.agent();
+    stand.set_model(&model.url);
+    stand.wait_ready();
+
+    let line = format!(
+        "chat-send {}",
+        json!({ "conversation": "", "message": LANGUAGE_AND_REPOSITORY })
+    );
+    let reply = request(&stand.socket(), &line, Duration::from_secs(60)).unwrap();
+    // The first line of the answer; the chat goes on by itself.
+    assert!(reply.contains(r#""event":"start""#), "{reply}");
+    stand.wait("the chat message", |s| s["facts"]["live"]["stored"] == 1);
+    assert_eq!(model.conversations(), 1, "one conversation of the planner");
+    assert_eq!(
+        values_of(&stand.profile(), "repositories"),
+        [json!("gears-rust")]
+    );
 }

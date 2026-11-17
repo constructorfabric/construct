@@ -3,16 +3,15 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)] // helpers outside #[test] functions use it too
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use connectors::compare_times;
-use construct_agent::chat::{Chat, Deadlines, Link};
+use construct_agent::chat::{Chat, Link};
 use construct_agent::host::Connection;
 use construct_agent::ipc::Server;
 use construct_agent::settings::{Settings, Update};
@@ -20,6 +19,7 @@ use serde_json::{Value, json};
 
 mod common;
 
+use common::stand::{chat_send, connect, deadlines, set_collection};
 use common::{chunk, done, head, read_request, status};
 
 const TOKEN: &str = "construct-token-5e1a";
@@ -193,11 +193,7 @@ impl Env {
                 token: TOKEN.into(),
             });
         }
-        let deadlines = Deadlines {
-            connect: Duration::from_secs(5),
-            first_word: Duration::from_secs(10),
-            silence: Duration::from_secs(10),
-        };
+        let deadlines = deadlines();
         let chat = Chat::new(
             settings.clone(),
             &base.join("data"),
@@ -219,41 +215,16 @@ impl Env {
     }
 
     fn connect(&self, request: &str) -> Vec<Value> {
-        let mut s = UnixStream::connect(&self.socket).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-        s.write_all(request.as_bytes()).unwrap();
-        s.write_all(b"\n").unwrap();
-        let mut text = String::new();
-        s.read_to_string(&mut text).unwrap();
-        text.lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect()
+        connect(&self.socket, request)
     }
 
     /// Send one message; the conversation id and the events.
     fn send(&self, conversation: &str, message: &str) -> (String, Vec<Value>) {
-        let events = self.connect(&format!(
-            "chat-send {}",
-            json!({ "conversation": conversation, "message": message })
-        ));
-        assert_eq!(
-            events.last().unwrap(),
-            &json!({ "event": "done" }),
-            "{events:?}"
-        );
-        let id = events[0]["conversation"].as_str().unwrap().to_string();
-        (id, events)
+        chat_send(&self.socket, conversation, message)
     }
 
     fn get(&self, conversation: &str) -> Vec<Value> {
         self.connect(&format!("chat-get {conversation}"))
-    }
-
-    fn collection(&self, enabled: bool) {
-        let update = json!({ "collection": { "enabled": enabled } });
-        self.settings
-            .apply(Update::parse(&update.to_string()).unwrap())
-            .unwrap();
     }
 }
 
@@ -338,9 +309,9 @@ fn the_switch_gives_the_error_and_back_gives_the_facts_again() {
     let provider = Provider::start();
     let env = Env::new("switch", &provider, Some(&construct));
     let (id, _) = env.send("", "one");
-    env.collection(false);
+    set_collection(&env.settings, r#"{"enabled":false}"#);
     env.send(&id, "two");
-    env.collection(true);
+    set_collection(&env.settings, r#"{"enabled":true}"#);
     env.send(&id, "three");
 
     let requests = provider.requests();
@@ -452,7 +423,7 @@ fn the_same_text_with_another_stored_at_adds_nothing_and_off_reads_nothing() {
     assert_eq!(&requests[1][..4], &requests[0][..]);
 
     let reads = construct.reads();
-    env.collection(false);
+    set_collection(&env.settings, r#"{"enabled":false}"#);
     env.send(&id, "three");
     assert_eq!(
         construct.reads(),
@@ -466,7 +437,7 @@ fn memory_off_on_the_first_message_stores_the_error_result() {
     let construct = FakeConstruct::start(ann());
     let provider = Provider::start();
     let env = Env::new("off-first", &provider, Some(&construct));
-    env.collection(false);
+    set_collection(&env.settings, r#"{"enabled":false}"#);
     let (id, _) = env.send("", "hello");
     let first = &provider.requests()[0];
     assert_eq!(first.len(), 4);

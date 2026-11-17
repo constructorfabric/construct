@@ -18,10 +18,12 @@ const JOURNAL_FILE: &str = "manage-sent.log";
 const FILE_MODE: u32 = 0o600;
 
 /// The prompts that were sent, one line each: `+` and the key before the call, `-` and the key
-/// when the call is known not to have reached the model.
+/// when the call is known not to have reached the model, and `!` and the key for a prompt typed
+/// while collection was off, which is never sent.
 pub(super) struct Journal {
     file: File,
     pub(super) sent: HashSet<u64>,
+    pub(super) refused: HashSet<u64>,
 }
 
 impl Journal {
@@ -36,6 +38,7 @@ impl Journal {
             Err(e) => return Err(e),
         }
         let mut sent = HashSet::new();
+        let mut refused = HashSet::new();
         // A line that is not a sign and 16 hex digits is a torn one: it counts for nothing.
         for line in String::from_utf8_lossy(&text).lines() {
             let (sign, key) = line.split_at_checked(1).unwrap_or_default();
@@ -52,6 +55,9 @@ impl Journal {
                 "-" => {
                     sent.remove(&key);
                 }
+                "!" => {
+                    refused.insert(key);
+                }
                 _ => {}
             }
         }
@@ -63,7 +69,11 @@ impl Journal {
         if !text.is_empty() && text.last() != Some(&b'\n') {
             file.write_all(b"\n")?;
         }
-        Ok(Self { file, sent })
+        Ok(Self {
+            file,
+            sent,
+            refused,
+        })
     }
 
     fn append(&mut self, sign: char, key: u64) -> io::Result<()> {
@@ -72,14 +82,27 @@ impl Journal {
         self.file.sync_data()
     }
 
+    /// Whether the prompt was sent, or was refused and never will be.
+    pub(super) fn is_done(&self, key: u64) -> bool {
+        self.sent.contains(&key) || self.refused.contains(&key)
+    }
+
     /// Marks the prompt as sent, on disk, before the call; false when it was sent already.
     pub(super) fn begin(&mut self, key: u64) -> io::Result<bool> {
-        if self.sent.contains(&key) {
+        if self.is_done(key) {
             return Ok(false);
         }
         self.append('+', key)?;
         self.sent.insert(key);
         Ok(true)
+    }
+
+    /// Marks the prompt as never to be sent, on disk.
+    pub(super) fn refuse(&mut self, key: u64) -> io::Result<()> {
+        if self.sent.contains(&key) || !self.refused.insert(key) {
+            return Ok(());
+        }
+        self.append('!', key)
     }
 
     /// Takes the mark back: the call did not reach the model.

@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 mod common;
 
+use common::stand::deadlines as short;
 use common::{chunk, done, head, hold, raw_chunk, read_request, status};
 
 const KEY: &str = "sk-test-key-4f9a";
@@ -149,14 +150,6 @@ struct Env {
     settings: Settings,
     data: PathBuf,
     rt: tokio::runtime::Runtime,
-}
-
-fn short() -> Deadlines {
-    Deadlines {
-        connect: Duration::from_secs(5),
-        first_word: Duration::from_secs(10),
-        silence: Duration::from_secs(10),
-    }
 }
 
 impl Env {
