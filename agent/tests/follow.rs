@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime};
 
 use connectors::{
-    ClaudeCode, Codex, FileState, Listing, MAX_LINE_BYTES, Parsed, Record, Registry, Role, Tool,
-    Turn,
+    Author, ClaudeCode, Codex, FileState, Listing, MAX_LINE_BYTES, Parsed, Record, Registry, Role,
+    Tool, Turn,
 };
 use construct_agent::follow::{self, Follower, Stats};
 use construct_agent::ipc::{Server, query_status};
@@ -112,6 +112,7 @@ impl Tool for Fake {
             folder: "/w".into(),
             branch: String::new(),
             role: Role::User,
+            author: Author::Unknown,
             text: line.into(),
         }))
     }

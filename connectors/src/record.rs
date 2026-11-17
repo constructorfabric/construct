@@ -10,6 +10,19 @@ pub enum Role {
     Assistant,
 }
 
+/// Who wrote a message, as far as the session log says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Author {
+    /// The log marks it as typed by a person.
+    Person,
+    /// A task notification, a script or an SDK prompt.
+    Unattended,
+    /// The log has no mark. Never guessed.
+    #[default]
+    Unknown,
+}
+
 /// One message of a session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Turn {
@@ -22,6 +35,9 @@ pub struct Turn {
     #[serde(default)]
     pub branch: String,
     pub role: Role,
+    /// Records written before this field existed read as `unknown`.
+    #[serde(default)]
+    pub author: Author,
     pub text: String,
 }
 
@@ -195,10 +211,23 @@ mod tests {
             folder: "/f".into(),
             branch: String::new(),
             role: Role::User,
+            author: Author::Person,
             text: "hi".into(),
         });
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains(r#""kind":"turn""#) && json.contains(r#""role":"user""#));
+        assert!(json.contains(r#""author":"person""#));
         assert_eq!(serde_json::from_str::<Record>(&json).unwrap(), r);
+    }
+
+    #[test]
+    fn a_turn_stored_without_an_author_reads_as_unknown() {
+        let old = r#"{"kind":"turn","tool":"t","session":"s","time":"2026-11-11T10:00:00Z","folder":"/f","role":"user","text":"hi"}"#;
+        let Record::Turn(t) = serde_json::from_str::<Record>(old).unwrap() else {
+            panic!("not a turn")
+        };
+        assert_eq!(t.author, Author::Unknown);
+        assert_eq!((t.role, t.text.as_str()), (Role::User, "hi"));
+        assert_eq!(t.time, "2026-11-11T10:00:00Z");
     }
 }

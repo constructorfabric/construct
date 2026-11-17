@@ -321,6 +321,7 @@ pub fn request_body(
 mod tests {
     use super::*;
     use crate::chat::SOURCE;
+    use connectors::Author;
 
     fn turn(role: Role, text: &str) -> Record {
         Record::Turn(Turn {
@@ -330,6 +331,7 @@ mod tests {
             folder: String::new(),
             branch: String::new(),
             role,
+            author: Author::Unknown,
             text: text.into(),
         })
     }
