@@ -60,7 +60,7 @@ impl State {
 /// Why a part is not ready, as `status` tells it. The reasons are fixed texts of the agent, so
 /// none can carry a path, a secret or the text of an error.
 pub mod reason {
-    /// The agent has no pgvector for this system (macOS for now).
+    /// The agent has no pgvector for this system.
     pub const PGVECTOR_MISSING: &str = "pgvector is not built for this platform yet";
     /// The PostgreSQL that runs offers another pgvector than the one the agent carries.
     pub const PGVECTOR_MISMATCH: &str = "PostgreSQL does not offer the pgvector the agent carries";
@@ -71,9 +71,7 @@ pub mod reason {
     pub const START: &str = "PostgreSQL does not start";
     /// Running PostgreSQL stopped accepting connections.
     pub const STOPPED_ANSWERING: &str = "PostgreSQL stopped answering";
-    /// The Construct gear waits for the database to start.
     pub const WAITING_FOR_DATABASE: &str = "waiting for the database";
-    /// The Construct gear does not start without a database.
     pub const NO_DATABASE: &str = "the database is not running";
     pub const GRAPH_DATABASE: &str = "the graph database cannot be created";
     pub const GEAR_START: &str = "the Construct gear did not start; the agent log has the details";
@@ -100,11 +98,17 @@ impl Health {
         crate::sync::lock(&self.0).0
     }
 
+    /// The state and, when the part is not ready, why; read together under one lock.
+    #[must_use]
+    fn snapshot(&self) -> Reported {
+        let (state, reason) = *crate::sync::lock(&self.0);
+        (state, if state == State::Ready { None } else { reason })
+    }
+
     /// Why the part is not ready; `None` when it is ready or no reason is known.
     #[must_use]
     pub fn reason(&self) -> Option<&'static str> {
-        let (state, reason) = *crate::sync::lock(&self.0);
-        if state == State::Ready { None } else { reason }
+        self.snapshot().1
     }
 
     /// Set the state and forget the reason of the one before.
@@ -112,12 +116,10 @@ impl Health {
         *crate::sync::lock(&self.0) = (state, None);
     }
 
-    /// Still starting, for this reason.
     pub fn wait(&self, reason: &'static str) {
         *crate::sync::lock(&self.0) = (State::Starting, Some(reason));
     }
 
-    /// Failed, for this reason.
     pub fn fail(&self, reason: &'static str) {
         *crate::sync::lock(&self.0) = (State::Failed, Some(reason));
     }
@@ -126,9 +128,9 @@ impl Health {
     /// when the part is ready or none is known.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
-        let state = self.get();
+        let (state, reason) = self.snapshot();
         let mut part = serde_json::json!({ "state": state.as_str() });
-        if let Some(reason) = self.reason() {
+        if let Some(reason) = reason {
             part["reason"] = reason.into();
         }
         part
@@ -212,12 +214,13 @@ pub(crate) fn err(context: &str, e: impl fmt::Display) -> Error {
     }
 }
 
-/// The reason of a failed pgvector step: missing on this platform, or `otherwise`.
+/// The reason of a failed pgvector step: missing on this platform, built for another
+/// PostgreSQL release, or `otherwise`.
 fn pgvector_reason(e: &io::Error, otherwise: &'static str) -> &'static str {
-    if e.kind() == io::ErrorKind::Unsupported {
-        reason::PGVECTOR_MISSING
-    } else {
-        otherwise
+    match e.kind() {
+        io::ErrorKind::Unsupported => reason::PGVECTOR_MISSING,
+        io::ErrorKind::InvalidData => reason::PGVECTOR_MISMATCH,
+        _ => otherwise,
     }
 }
 
@@ -229,7 +232,7 @@ pub struct Database {
 
 fn settings(paths: &Paths) -> Result<Settings, Error> {
     let version = VersionReq::parse(POSTGRESQL_VERSION)
-        .map_err(|e| err("bad bundled PostgreSQL version", e))?;
+        .map_err(|e| err("bad bundled PostgreSQL version", e).because(reason::UNPACK))?;
     let mut s = Settings::new();
     s.version = version;
     s.installation_dir.clone_from(&paths.install_dir);
@@ -374,7 +377,7 @@ impl Database {
             .kill_on_drop(true)
             .output()
             .await
-            .map_err(|e| err("run psql", e).because(reason::PGVECTOR_MISMATCH))?;
+            .map_err(|e| err("run psql", e).because(reason::UNPACK))?;
         let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if out.status.success() && got == want {
             Ok(())
@@ -531,6 +534,23 @@ mod tests {
         discard_partial_setup(&paths).unwrap();
         assert!(paths.data_dir.exists() && paths.install_dir.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_part_tells_its_state_and_reason_together() {
+        let health = Health::default();
+        health.wait(reason::WAITING_FOR_DATABASE);
+        assert_eq!(
+            health.to_json(),
+            serde_json::json!({"state": "starting", "reason": reason::WAITING_FOR_DATABASE})
+        );
+        health.fail(reason::NO_DATABASE);
+        assert_eq!(
+            health.to_json(),
+            serde_json::json!({"state": "failed", "reason": reason::NO_DATABASE})
+        );
+        health.set(State::Ready);
+        assert_eq!(health.to_json(), serde_json::json!({"state": "ready"}));
     }
 
     #[test]

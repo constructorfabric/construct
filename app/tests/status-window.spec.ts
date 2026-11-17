@@ -137,6 +137,8 @@ test('the Status page shows unknown, with its reason, when the agent answers wro
 test('the Status page shows the database and the Construct gear of the real agent', async ({
   page,
 }) => {
+  // The first start unpacks PostgreSQL, which is longer than the default test timeout.
+  test.setTimeout(150_000);
   await expect(page.locator('#agent-status')).toHaveText('running');
   await expect(page.getByRole('heading', { name: 'Database', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Construct gear', exact: true })).toBeVisible();
@@ -157,7 +159,7 @@ test('the Status page shows the database and the Construct gear of the real agen
     await expect(page.locator('#construct-state')).toHaveText('failed');
     await expect(page.locator('#construct-reason')).toHaveText('the database is not running');
   } else {
-    // The database starts within seconds; the gear may still be starting.
+    // Only the database is waited for: the gear's own start is covered by the Rust tests.
     await expect(page.locator('#database-state')).toHaveText('ready', { timeout: 120_000 });
     await expect(page.locator('#database-reason')).toHaveCount(0);
   }
@@ -203,6 +205,10 @@ test('the Status page reads the plain states of an older agent and skips what it
     await expect(page.locator('#database-reason')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Construct gear' })).toHaveCount(0);
     await expect(page.locator('#construct-state')).toHaveCount(0);
+    // An agent that does not tell the gear's state gives the Chat page no reason for a notice.
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
+    await expect(page.locator('#chat-input')).toBeVisible();
+    await expect(page.locator('#chat-no-profile')).toHaveCount(0);
   });
 });
 

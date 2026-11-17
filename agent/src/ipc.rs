@@ -23,8 +23,8 @@ pub const SOCKET_NAME: &str = "agent.sock";
 ///
 /// `database` and `construct` are objects: `state` is `starting`, `ready` or `failed`, and
 /// `reason`, only when the part is not ready, is a fixed short text of the agent (see
-/// `database::reason`), never a path, a secret or the text of an error. Agents before this
-/// sent the state alone as a plain string; the app reads both.
+/// `database::reason`), never a path, a secret or the text of an error. The app accepts a
+/// part as that object or as the state alone, a plain string.
 #[must_use]
 // One argument per field of the reply; a struct would only move the list.
 #[allow(clippy::too_many_arguments)]
