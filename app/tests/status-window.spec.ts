@@ -169,6 +169,7 @@ test('the window runs with the isolation settings and the bridge, and without No
     module: typeof module,
     bridge: typeof window.constructAgent,
     getStatus: typeof window.constructAgent.getStatus,
+    getNeedsMove: typeof window.constructAgent.getNeedsMove,
   }));
   expect(inRenderer).toEqual({
     require: 'undefined',
@@ -176,6 +177,7 @@ test('the window runs with the isolation settings and the bridge, and without No
     module: 'undefined',
     bridge: 'object',
     getStatus: 'function',
+    getNeedsMove: 'function',
   });
 });
 
@@ -265,4 +267,27 @@ test('the Start at login block shows not registered when nothing registered the 
   await expect(page.getByRole('heading', { name: 'Start at login' })).toBeVisible();
 
   await screenshotBothThemes(page, 'start-at-login-not-registered');
+});
+
+test('the window tells the user to move the app only when the app asks for it', async ({
+  app,
+  page,
+}) => {
+  await expect(page.locator('#agent-status')).toHaveText('running');
+  await expect(page.locator('#needs-move')).toHaveCount(0);
+
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('agent:needs-move');
+    ipcMain.handle('agent:needs-move', () => true);
+  });
+  await page.reload();
+
+  // The notice is an alert for assistive technology, not only a paragraph with an id.
+  const notice = page.getByRole('alert').filter({
+    hasText:
+      'Move Construct Browser to Applications, then reopen it, so the agent starts at login.',
+  });
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toHaveAttribute('id', 'needs-move');
+  await screenshotBothThemes(page, 'needs-move');
 });

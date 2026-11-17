@@ -4,6 +4,7 @@
   "App.Status": "Status",
   "App.Settings": "Settings",
   "App.AgentState": "Agent",
+  "App.NeedsMove": "Move Construct Browser to Applications, then reopen it, so the agent starts at login.",
   "StatusPage.Title": "Construct agent",
   "StatusPage.Agent": "Agent",
   "StatusPage.Checking": "checking",

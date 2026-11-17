@@ -1,4 +1,5 @@
 import {
+  Alert,
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -40,6 +41,10 @@ export function App(): ReactNode {
   }, [page, refresh]);
   // Only an agent that says so has no model; one that cannot be reached is not "without a model".
   const modelSet = status?.state !== 'running' || status.model !== 'not set';
+  const [needsMove, setNeedsMove] = useState(false);
+  useEffect(() => {
+    void window.constructAgent.getNeedsMove().then(setNeedsMove);
+  }, []);
 
   return (
     // `defaultOpen` keeps the sidebar from reading its cookie; it never collapses on its own, and
@@ -117,6 +122,11 @@ export function App(): ReactNode {
       <SidebarInset
         render={<main className={page === 'chat' ? styles.contentChat : styles.content} />}
       >
+        {needsMove ? (
+          <Alert id="needs-move" role="alert">
+            {t('App.NeedsMove')}
+          </Alert>
+        ) : null}
         {page === 'chat' ? (
           <ChatPage
             chat={chat}
