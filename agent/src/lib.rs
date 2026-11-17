@@ -7,6 +7,8 @@ pub mod autostart;
 #[cfg(unix)]
 pub mod chat;
 #[cfg(unix)]
+pub mod dashboard;
+#[cfg(unix)]
 pub mod database;
 pub mod follow;
 #[cfg(unix)]

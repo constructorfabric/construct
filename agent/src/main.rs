@@ -90,6 +90,7 @@ fn run() -> std::io::Result<()> {
     let connectors = Stats::default();
     let model_state = construct_agent::model::ModelState::default();
     let settings = open_settings();
+    write_default_dashboard();
     // Built before the socket server: a chat answer runs on this runtime, driven by the
     // thread of its connection.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -246,6 +247,23 @@ fn open_settings() -> Option<construct_agent::settings::Settings> {
             eprintln!("settings unavailable: {e}");
             None
         }
+    }
+}
+
+/// Writes the default activity dashboard into the workspace when there is none. A failure is
+/// only logged: the dashboard is a document the app can do without.
+#[cfg(unix)]
+fn write_default_dashboard() {
+    use construct_agent::{dashboard, records, workspace::Workspace};
+
+    let written = records::data_dir()
+        .map_err(construct_agent::workspace::Error::from)
+        .and_then(|dir| Workspace::open(&dir))
+        .and_then(|workspace| dashboard::ensure_default(&workspace));
+    match written {
+        Ok(true) => eprintln!("the default activity dashboard written"),
+        Ok(false) => {}
+        Err(e) => eprintln!("the default activity dashboard not written: {e}"),
     }
 }
 
