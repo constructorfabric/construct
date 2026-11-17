@@ -739,6 +739,21 @@ mod tests {
             sink.append(&mark_with("s1", "2026-11-11T10:01:00Z", &["Grep"]))
                 .unwrap()
         );
+        // The second and third mark are stored as only the names they add.
+        let raw = fs::read_to_string(dir.join("records/claude/s1.jsonl")).unwrap();
+        let ends: Vec<&str> = raw
+            .lines()
+            .map(|l| l.rsplit(r#""tools":"#).next().unwrap_or(l))
+            .collect();
+        assert_eq!(
+            ends,
+            [
+                r#"["Read"]}"#,
+                r#"["bash:gh"]}"#,
+                r#"["bash:glab"]}"#,
+                r#"["Grep"]}"#
+            ]
+        );
         let expected = vec![
             (
                 "2026-11-11T10:00:05Z".to_owned(),

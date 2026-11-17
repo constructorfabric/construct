@@ -675,10 +675,30 @@ mod tests {
     fn a_call_output_and_other_lines_give_no_names() {
         let output = item(
             "response_item",
-            r#"{"type":"function_call_output","call_id":"c1","output":"shell"}"#,
+            r#"{"type":"function_call_output","call_id":"c1","name":"shell","output":"shell"}"#,
         );
         assert!(call_tools(&output).is_empty());
         let event = item("event_msg", r#"{"type":"exec_command_end","name":"shell"}"#);
         assert!(call_tools(&event).is_empty());
+        // The same call under another line type is not a call.
+        let call_in_event = item(
+            "event_msg",
+            r#"{"type":"function_call","name":"shell","arguments":"{}"}"#,
+        );
+        assert!(call_tools(&call_in_event).is_empty());
+    }
+
+    #[test]
+    fn every_shell_tool_name_gives_the_program_from_a_command_string_too() {
+        for name in ["shell", "shell_command", "exec_command", "container.exec"] {
+            let line = call("function_call", name, r#"{"command":"gh pr list"}"#);
+            assert_eq!(call_tools(&line), ["bash:gh"], "{name}");
+        }
+        let other = call(
+            "function_call",
+            "update_plan",
+            r#"{"command":"gh pr list"}"#,
+        );
+        assert_eq!(call_tools(&other), ["update_plan"]);
     }
 }

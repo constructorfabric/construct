@@ -43,13 +43,32 @@ pub fn plain_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Str
     })
 }
 
+/// Whether a word holds anything a shell reads as quoting or substitution. The command is
+/// split on spaces without understanding such syntax, so a word that holds any of it may be
+/// only a piece of an argument.
+fn is_quoted(word: &str) -> bool {
+    word.contains(['"', '\'', '\\', '$', '`', '(', ')'])
+}
+
 /// The program a command line starts with: the first word without its folder, after any
-/// `NAME=value` settings. `None` when it is not a plain program name, so a stray argument
-/// is never kept.
+/// `NAME=value` settings. `None` when it is not a plain program name, or when a setting or the
+/// word itself uses quoting or substitution, so a piece of an argument is never kept.
 fn first_word(command: &str) -> Option<&str> {
-    let word = command
-        .split_whitespace()
-        .find(|w| !w.split_once('=').is_some_and(|(name, _)| is_setting(name)))?;
+    let mut words = command.split_whitespace();
+    let word = loop {
+        let word = words.next()?;
+        match word.split_once('=') {
+            Some((name, value)) if is_setting(name) => {
+                if is_quoted(value) {
+                    return None;
+                }
+            }
+            _ => break word,
+        }
+    };
+    if is_quoted(word) {
+        return None;
+    }
     let program = word.rsplit('/').next().unwrap_or(word);
     let plain = !program.is_empty()
         && program.len() <= 32
@@ -133,6 +152,23 @@ mod tests {
         assert_eq!(names(&[("Bash", Some("$(evil) x"))]), ["Bash"]);
         assert_eq!(names(&[("Bash", Some("  "))]), ["Bash"]);
         assert_eq!(names(&[("Bash", None)]), ["Bash"]);
+    }
+
+    #[test]
+    fn quoting_and_substitution_never_leave_a_piece_of_an_argument_as_the_program() {
+        for command in [
+            r#"PASSWORD="correct horse battery staple" gh pr list"#,
+            "V=$(git rev-parse HEAD) make",
+            "V=`git rev-parse HEAD` make",
+            r"V=a\ b gh",
+            "'/Users/ann/Secret Project/run.sh' go",
+            r#""gh" pr"#,
+            "$(gh) x",
+            r"my\ tool run",
+        ] {
+            assert_eq!(names(&[("Bash", Some(command))]), ["Bash"], "{command}");
+        }
+        assert_eq!(names(&[("Bash", Some("A=1 B=two gh pr"))]), ["bash:gh"]);
     }
 
     #[test]

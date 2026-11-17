@@ -314,6 +314,7 @@ struct Block {
     kind: String,
     text: Option<String>,
     /// `tool_use` blocks only: the tool's name, and the command when it is a shell tool's.
+    #[serde(default, deserialize_with = "plain_string")]
     name: Option<String>,
     #[serde(default, rename = "input", deserialize_with = "command_of_input")]
     command: Option<String>,
@@ -789,8 +790,32 @@ mod tests {
         let result = line(
             "user",
             "",
-            r#"[{"type":"tool_result","tool_use_id":"a","content":"Bash gh"}]"#,
+            r#"[{"type":"tool_result","tool_use_id":"a","name":"Bash","content":"gh"}]"#,
         );
         assert!(mark_tools(parse(&result)).is_empty());
+        // A block that is not a tool call gives no name, even when it has one.
+        let text = line(
+            "assistant",
+            "",
+            r#"[{"type":"text","name":"Bash","text":"hi"}]"#,
+        );
+        assert!(turn(parse(&text)).tools.is_empty());
+        // A line of a user is never a source of names.
+        let user = line(
+            "user",
+            "",
+            r#"[{"type":"tool_use","name":"Bash","input":{}}]"#,
+        );
+        assert!(mark_tools(parse(&user)).is_empty());
+    }
+
+    #[test]
+    fn a_tool_name_that_is_not_a_string_keeps_the_line() {
+        let l = line(
+            "assistant",
+            "",
+            r#"[{"type":"tool_use","name":7,"input":{}}]"#,
+        );
+        assert!(mark_tools(parse(&l)).is_empty());
     }
 }
