@@ -23,8 +23,12 @@ const HARNESS_TAGS: [&str; 8] = [
     "[Request interrupted",
 ];
 
+/// The folder next to a session file that holds the logs of its subagents.
+const SUBAGENTS_DIR: &str = "subagents";
+
 /// Claude Code: `<config>/projects/<project>/<session>.jsonl`, where `<config>` is
-/// `$CLAUDE_CONFIG_DIR` or `~/.claude`.
+/// `$CLAUDE_CONFIG_DIR` or `~/.claude`. The logs of a session's subagents are in
+/// `<project>/<session>/subagents/*.jsonl`.
 pub struct ClaudeCode;
 
 impl ClaudeCode {
@@ -48,6 +52,51 @@ fn join_text(role: Role, blocks: &[Block]) -> Option<String> {
             .filter_map(|b| b.text.as_deref())
             .filter(|t| role == Role::Assistant || !has_harness_tag(t)),
     )
+}
+
+/// The logs of the subagents of one session: `<session>/subagents/**/agent-*.jsonl`. A
+/// workflow keeps its agents one folder deeper, next to files that are no agent's log.
+/// Their lines are sidechain lines that carry the parent's session id, so they read as
+/// marks of it.
+fn subagent_files(session_dir: &Path, listing: &mut Listing) {
+    list_agents(&session_dir.join(SUBAGENTS_DIR), listing);
+}
+
+fn list_agents(dir: &Path, listing: &mut Listing) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // Most sessions ran no subagent, and a folder may go away after the listing.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+        Err(e) => {
+            listing
+                .problems
+                .push(format!("cannot list {}: {e}", dir.display()));
+            return;
+        }
+    };
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                // `file_type` does not follow a link, so a loop of links is not walked.
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => list_agents(&path, listing),
+                    Ok(kind) if kind.is_file() && is_agent_log(&path) => listing.files.push(path),
+                    _ => {}
+                }
+            }
+            Err(e) => listing
+                .problems
+                .push(format!("cannot list {}: {e}", dir.display())),
+        }
+    }
+}
+
+fn is_agent_log(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "jsonl")
+        && path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("agent-"))
 }
 
 impl Tool for ClaudeCode {
@@ -96,6 +145,8 @@ impl Tool for ClaudeCode {
                         let file = file.path();
                         if file.extension().is_some_and(|e| e == "jsonl") && file.is_file() {
                             listing.files.push(file);
+                        } else if file.is_dir() {
+                            subagent_files(&file, &mut listing);
                         }
                     }
                     Err(e) => listing
@@ -109,9 +160,16 @@ impl Tool for ClaudeCode {
     }
 
     fn open_file(&self, path: &Path) -> FileState {
+        // A subagent's file belongs to the session whose folder holds its `subagents` folder.
+        let owner = path
+            .ancestors()
+            .skip(1)
+            .find(|dir| dir.file_name().is_some_and(|n| n == SUBAGENTS_DIR))
+            .and_then(Path::parent)
+            .and_then(Path::file_name);
         FileState {
-            session: path
-                .file_stem()
+            session: owner
+                .or_else(|| path.file_stem())
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             ..FileState::default()
@@ -502,6 +560,48 @@ mod tests {
             ClaudeCode::root_in(home, Some("/cfg".into())),
             Path::new("/cfg/projects")
         );
+    }
+
+    #[test]
+    fn finds_the_logs_of_subagents_and_files_them_under_the_parent_session() {
+        let dir =
+            std::env::temp_dir().join(format!("claude-code-subagents-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let side = dir.join("-w-app/s-1/subagents");
+        let flow = side.join("workflows/wf_1");
+        fs::create_dir_all(&flow).unwrap();
+        fs::write(dir.join("-w-app/s-1.jsonl"), "").unwrap();
+        for name in ["agent-a1.jsonl", "agent-a1.meta.json", "agent-a2.jsonl.txt"] {
+            fs::write(side.join(name), "").unwrap();
+        }
+        for name in ["agent-b1.jsonl", "agent-b1.meta.json", "journal.jsonl"] {
+            fs::write(flow.join(name), "").unwrap();
+        }
+        fs::create_dir_all(dir.join("-w-app/s-2")).unwrap();
+        let listing = ClaudeCode.find_files(&dir).unwrap();
+        assert!(listing.problems.is_empty(), "{:?}", listing.problems);
+        let mut files = listing.files;
+        files.sort();
+        let mut want = [
+            side.join("agent-a1.jsonl"),
+            flow.join("agent-b1.jsonl"),
+            dir.join("-w-app/s-1.jsonl"),
+        ];
+        want.sort();
+        assert_eq!(files, want);
+        // Before its first line says otherwise, the file is the parent's.
+        for log in [side.join("agent-a1.jsonl"), flow.join("agent-b1.jsonl")] {
+            assert_eq!(ClaudeCode.open_file(&log).session, "s-1");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_subagent_line_without_a_session_id_is_a_mark_of_the_parent() {
+        let mut st = ClaudeCode.open_file(Path::new("/h/.claude/projects/p/s-1/subagents/a.jsonl"));
+        let c = r#"[{"type":"text","text":"subagent answer"}]"#;
+        let l = line("assistant", r#","isSidechain":true"#, c).replace(r#","sessionId":"s-1""#, "");
+        assert_mark(&ClaudeCode.parse_line(&mut st, &l));
     }
 
     /// Makes `dir` unreadable; false when that does nothing (root reads everything).

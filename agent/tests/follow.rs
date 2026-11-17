@@ -566,6 +566,96 @@ fn a_codex_minute_with_only_a_prompt_or_a_reply_has_one_mark() {
     assert_eq!(stored_minutes(&s, "codex", id), (marks, turns));
 }
 
+/// A line of a subagent that works in the session `sess-1` at `time` (`10:15:30`), with
+/// text that must never be stored.
+fn subagent_line(time: &str) -> String {
+    format!(
+        r#"{{"type":"assistant","isSidechain":true,"timestamp":"2026-11-11T{time}Z","cwd":"/w","sessionId":"sess-1","message":{{"role":"assistant","content":[{{"type":"text","text":"subagent secret"}}]}}}}"#
+    )
+}
+
+/// One subagent line for each of the 20 minutes from 10:01 to 10:20.
+fn subagent_run() -> String {
+    (1..=20)
+        .map(|m| subagent_line(&format!("10:{m:02}:30")) + "\n")
+        .collect()
+}
+
+/// The parent prompts at 10:00 and ends at 10:21, so a minute the subagent covers is the
+/// only thing between them.
+fn parent_around_a_run(log: &Path, middle: &str) {
+    let at = |time: &str| claude_user("go").replace("10:15:30", time);
+    append(
+        log,
+        &format!("{}\n{middle}{}\n", at("10:00:30"), at("10:21:30")),
+    );
+}
+
+fn assert_no_hole(s: &Setup) {
+    let (marks, turns) = stored_minutes(s, "claude-code", "sess-1");
+    let all: Vec<String> = (0..=21).map(|m| format!("2026-11-11T10:{m:02}")).collect();
+    let mut sorted = marks.clone();
+    sorted.sort();
+    assert_eq!(sorted, all, "one mark for each minute, none missing");
+    assert_eq!(turns.len(), 2, "only the parent's prompts are turns");
+    let stored = fs::read_to_string(s.data.join("records/claude-code/sess-1.jsonl")).unwrap();
+    assert!(!stored.contains("subagent secret"));
+}
+
+#[test]
+fn a_subagent_run_in_the_parent_file_leaves_no_hole_in_the_parent_minutes() {
+    let s = Setup::new("subagent-same-file");
+    let log = s.home.join(".claude/projects/project/sess-1.jsonl");
+    fs::create_dir_all(log.parent().unwrap()).unwrap();
+    parent_around_a_run(&log, &subagent_run());
+    let stats = Stats::default();
+    s.follower_of(real_registry(), &stats).pass().unwrap();
+    assert_no_hole(&s);
+    // A restart replays nothing twice.
+    s.follower_of(real_registry(), &stats).pass().unwrap();
+    assert_no_hole(&s);
+}
+
+#[test]
+fn a_subagent_run_in_files_of_its_own_leaves_no_hole_in_the_parent_minutes() {
+    let s = Setup::new("subagent-own-file");
+    let project = s.home.join(".claude/projects/project");
+    let log = project.join("sess-1.jsonl");
+    let side = project.join("sess-1/subagents/agent-a1.jsonl");
+    let flow = project.join("sess-1/subagents/workflows/wf_1");
+    fs::create_dir_all(&flow).unwrap();
+    parent_around_a_run(&log, "");
+    // The lines name no session: only the folder says whose they are. The second half of
+    // the run is a workflow's agent, one folder deeper.
+    let own = |range: std::ops::RangeInclusive<u32>| -> String {
+        range
+            .map(|m| {
+                subagent_line(&format!("10:{m:02}:30")).replace(r#""sessionId":"sess-1","#, "")
+                    + "\n"
+            })
+            .collect()
+    };
+    append(&side, &own(1..=10));
+    append(&flow.join("agent-b1.jsonl"), &own(11..=20));
+    // A workflow's journal is no agent's log: its minute must not become a mark.
+    append(
+        &flow.join("journal.jsonl"),
+        &(subagent_line("10:50:30") + "\n"),
+    );
+    let stats = Stats::default();
+    s.follower_of(real_registry(), &stats).pass().unwrap();
+    assert_no_hole(&s);
+    s.follower_of(real_registry(), &stats).pass().unwrap();
+    assert_no_hole(&s);
+    // The subagent files add no session of their own.
+    assert_eq!(
+        fs::read_dir(s.data.join("records/claude-code"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
 /// A real tool that looks for its files under a directory of the test's home instead of
 /// the one its environment variable names; everything else is the tool's own.
 struct Under<T>(T, &'static str);
