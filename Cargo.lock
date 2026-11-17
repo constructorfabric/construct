@@ -1746,6 +1746,7 @@ dependencies = [
  "globset",
  "hex",
  "http",
+ "libc",
  "postgresql_embedded",
  "reqwest",
  "serde",

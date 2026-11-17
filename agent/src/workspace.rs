@@ -17,7 +17,9 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use cap_std::ambient_authority;
-use cap_std::fs::Dir;
+use cap_std::fs::{
+    Dir, DirBuilder, DirBuilderExt, OpenOptions, OpenOptionsExt, Permissions, PermissionsExt,
+};
 use cap_tempfile::TempFile;
 use globset::GlobBuilder;
 
@@ -25,6 +27,11 @@ use crate::ipc::create_private_dir;
 
 /// Name of the folder inside the data directory.
 pub const DIR_NAME: &str = "workspace";
+
+/// Mode of the folders the workspace makes: the user only.
+const DIR_MODE: u32 = 0o700;
+/// Mode of the files the workspace makes: the user only.
+const FILE_MODE: u32 = 0o600;
 
 /// Why a workspace call failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +50,8 @@ pub enum Error {
     Unchanged,
     /// The text to replace is not in the file.
     NoMatch,
+    /// The file changed between reading it and replacing it, so the edit was not made.
+    Changed,
     /// The text to replace occurs more than once and `replace_all` is not set.
     NotUnique,
     /// The glob pattern is not valid.
@@ -61,6 +70,7 @@ impl fmt::Display for Error {
             Self::EmptyOld => f.write_str("the text to replace is empty"),
             Self::Unchanged => f.write_str("the old and the new text are the same"),
             Self::NoMatch => f.write_str("the text to replace was not found"),
+            Self::Changed => f.write_str("the file changed while it was edited"),
             Self::NotUnique => f.write_str("the text to replace occurs more than once"),
             Self::InvalidPattern => f.write_str("the glob pattern is not valid"),
             Self::Io(kind) => write!(f, "file system error: {kind}"),
@@ -141,10 +151,14 @@ impl Workspace {
             Err(error) => return Err(error.into()),
         }
         if !parent.as_os_str().is_empty() {
-            self.root.create_dir_all(parent)?;
+            let mut builder = DirBuilder::new();
+            builder.recursive(true).mode(DIR_MODE);
+            self.root.create_dir_with(parent, &builder)?;
         }
         let dir = self.dir(parent)?;
         let mut file = TempFile::new(&dir)?;
+        file.as_file_mut()
+            .set_permissions(Permissions::from_mode(FILE_MODE))?;
         file.as_file_mut().write_all(content.as_bytes())?;
         file.replace(name)?;
         Ok(())
@@ -155,8 +169,21 @@ impl Workspace {
     ///
     /// # Errors
     /// The file cannot be read, `old` is empty, equals `new`, is not found, or occurs more than
-    /// once while `replace_all` is not set.
+    /// once while `replace_all` is not set, or the file changed while it was edited
+    /// ([`Error::Changed`]).
     pub fn edit(&self, path: &str, old: &str, new: &str, replace_all: bool) -> Result<(), Error> {
+        self.edit_with(path, old, new, replace_all, || {})
+    }
+
+    /// `edit`, with `between` run after the file is read and before it is checked again.
+    fn edit_with(
+        &self,
+        path: &str,
+        old: &str,
+        new: &str,
+        replace_all: bool,
+        between: impl FnOnce(),
+    ) -> Result<(), Error> {
         let path = relative(path)?;
         if old.is_empty() {
             return Err(Error::EmptyOld);
@@ -174,6 +201,13 @@ impl Workspace {
             _ if replace_all => text.replace(old, new),
             _ => return Err(Error::NotUnique),
         };
+        between();
+        // The file is read again just before it is replaced: an edit made on a text that is no
+        // longer in the file would throw the other change away. A change in the short time between
+        // this read and the replacement cannot be seen without a lock on the file.
+        if self.read_text(&path)? != text {
+            return Err(Error::Changed);
+        }
         self.write(&path.to_string_lossy(), &updated)
     }
 
@@ -225,7 +259,11 @@ impl Workspace {
     }
 
     fn read_text(&self, path: &Path) -> Result<String, Error> {
-        let mut file = self.root.open(path)?;
+        // Not blocking: a named pipe with no writer is opened at once and refused below instead of
+        // holding the call for ever.
+        let mut options = OpenOptions::new();
+        options.read(true).custom_flags(libc::O_NONBLOCK);
+        let mut file = self.root.open_with(path, &options)?;
         if !file.metadata()?.is_file() {
             return Err(Error::NotRegularFile);
         }
@@ -428,6 +466,28 @@ mod tests {
         assert_eq!(ws.edit("e.txt", "x", "x", false), Err(Error::Unchanged));
         assert_eq!(ws.edit("e.txt", "", "x", false), Err(Error::EmptyOld));
         assert_eq!(ws.read("e.txt", None, None).unwrap(), ["x x"]);
+    }
+
+    #[test]
+    fn edit_notices_a_change_between_the_read_and_the_replacement() {
+        let (data, ws) = open();
+        ws.write("e.txt", "alpha beta").unwrap();
+        let file = data.path().join("workspace/e.txt");
+        let result = ws.edit_with("e.txt", "beta", "gamma", false, || {
+            fs::write(&file, "alpha beta, changed by another program").unwrap();
+        });
+        assert_eq!(result, Err(Error::Changed));
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "alpha beta, changed by another program"
+        );
+
+        // The file is removed in that time.
+        let result = ws.edit_with("e.txt", "beta", "gamma", false, || {
+            fs::remove_file(&file).unwrap();
+        });
+        assert_eq!(result, Err(Error::NotFound));
+        assert!(!file.exists());
     }
 
     #[test]
