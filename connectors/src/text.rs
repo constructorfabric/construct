@@ -61,7 +61,10 @@ fn is_plain(word: &str) -> bool {
 /// `NAME=value` settings. `None` when it is not a plain program name, or when a setting or the
 /// word itself holds anything but plain characters, so a piece of an argument is never kept.
 fn first_word(command: &str) -> Option<&str> {
-    let mut words = command.split_whitespace();
+    // A shell splits on these four only; any other space stays in its word and fails `is_plain`.
+    let mut words = command
+        .split([' ', '\t', '\n', '\r'])
+        .filter(|w| !w.is_empty());
     let word = loop {
         let word = words.next()?;
         match word.split_once('=') {
@@ -173,6 +176,15 @@ mod tests {
             r#""gh" pr"#,
             "$(gh) x",
             r"my\ tool run",
+            "A=a|gh b",
+            "TOKEN=x;curl -H y",
+            "V=1&&gh auth login",
+            ">/tmp/ann-secret.txt gh",
+            "--out=/home/ann/Secret gh",
+            "TOKEN=abc\u{a0}secret gh",
+            "TOKEN=abc\u{2028}secret gh",
+            "TOKEN=abc\u{c}secret gh",
+            "TOKEN=abc\u{b}secret gh",
         ] {
             assert_eq!(names(&[("Bash", Some(command))]), ["Bash"], "{command}");
         }
