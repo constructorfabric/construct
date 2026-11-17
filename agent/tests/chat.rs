@@ -14,7 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use connectors::{Record, ToolCall, ToolResult, compare_times};
-use construct_agent::chat::{Chat, Deadlines, ToolRunner};
+use construct_agent::chat::tool::{ChatTool, ChatTools};
+use construct_agent::chat::{Chat, Deadlines};
 use construct_agent::ipc::Server;
 use construct_agent::records::{FileSink, Sink};
 use construct_agent::settings::{Settings, Update};
@@ -26,6 +27,73 @@ use common::{chunk, done, head, hold, raw_chunk, read_request, status};
 
 const KEY: &str = "sk-test-key-4f9a";
 const MESSAGE: &str = "my secret plan is the blue door";
+
+/// What a fake tool does with its name and the arguments text.
+type Runner = Arc<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>;
+
+/// A tool that hands its call to a `Runner`.
+struct Fakeware {
+    name: &'static str,
+    runner: Runner,
+}
+
+impl ChatTool for Fakeware {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "A tool for the tests."
+    }
+
+    fn schema(&self) -> &'static str {
+        r#"{"type":"object","properties":{"q":{"type":"string"}}}"#
+    }
+
+    fn run(&self, arguments: &str) -> Result<String, String> {
+        (self.runner)(self.name, arguments)
+    }
+}
+
+/// The names the tests call; each is a tool that goes to the same runner.
+const NAMES: [&str; 7] = ["fail", "first", "lookup", "now", "other", "quick", "slow"];
+
+// The callers hand over their runner.
+#[allow(clippy::needless_pass_by_value)]
+fn registry(runner: Runner) -> ChatTools {
+    ChatTools::new(
+        NAMES
+            .iter()
+            .map(|&name| {
+                Arc::new(Fakeware {
+                    name,
+                    runner: Arc::clone(&runner),
+                }) as Arc<dyn ChatTool>
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+/// A runner whose calls to `only` (every call when `None`) block until the test lets them go, or
+/// for five seconds at most. The receiver gets a note when a call starts, the sender releases.
+fn blocking(only: Option<&'static str>) -> (Runner, mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let started_tx = Mutex::new(started_tx);
+    let release_rx = Mutex::new(release_rx);
+    let runner: Runner = Arc::new(move |name, _| {
+        if only.is_none_or(|only| only == name) {
+            let _ = started_tx.lock().unwrap().send(());
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        }
+        Ok(format!("{name} done"))
+    });
+    (runner, started_rx, release_tx)
+}
 
 /// What the fake provider does with one request: write to the connection.
 type Script = Arc<dyn Fn(usize, &mut TcpStream) + Send + Sync>;
@@ -88,8 +156,8 @@ impl Env {
         Self::build(name, base_url, deadlines, None)
     }
 
-    fn with_tools(name: &str, base_url: &str, runner: ToolRunner) -> Self {
-        Self::assemble(name, base_url, short(), None, Some(runner))
+    fn with_tools(name: &str, base_url: &str, runner: Runner) -> Self {
+        Self::assemble(name, base_url, short(), None, Some(registry(runner)))
     }
 
     fn build(name: &str, base_url: &str, deadlines: Deadlines, wire_limit: Option<usize>) -> Self {
@@ -101,7 +169,7 @@ impl Env {
         base_url: &str,
         deadlines: Deadlines,
         wire_limit: Option<usize>,
-        tools: Option<ToolRunner>,
+        tools: Option<ChatTools>,
     ) -> Self {
         let base =
             std::env::temp_dir().join(format!("construct-chat-{name}-{}", std::process::id()));
@@ -121,8 +189,8 @@ impl Env {
         if let Some(limit) = wire_limit {
             chat = chat.with_wire_limit(limit);
         }
-        if let Some(runner) = tools {
-            chat = chat.with_tools(runner);
+        if let Some(tools) = tools {
+            chat = chat.with_tools(tools);
         }
         let server = Server::bind(&socket)
             .unwrap()
@@ -986,7 +1054,7 @@ fn kinds(records: &[Value]) -> Vec<&str> {
 }
 
 /// A runner that answers `name` with the arguments it got, and notes the order of the calls.
-fn noting(seen: &Arc<Mutex<Vec<String>>>) -> ToolRunner {
+fn noting(seen: &Arc<Mutex<Vec<String>>>) -> Runner {
     let seen = Arc::clone(seen);
     Arc::new(move |name, arguments| {
         seen.lock().unwrap().push(format!("{name} {arguments}"));
@@ -1029,8 +1097,8 @@ fn a_call_is_run_and_its_result_goes_in_the_next_request() {
 
     let bodies = fake.bodies();
     assert_eq!(bodies.len(), 2);
-    // No tool is declared yet, and the second request holds the call and its result.
-    assert!(bodies.iter().all(|b| !b.contains("\"tools\"")));
+    // The tools are declared in both, and the second request holds the call and its result.
+    assert!(bodies.iter().all(|b| b.contains("\"tools\"")));
     let sent = messages(&bodies[1]);
     assert_eq!(sent.len(), 4);
     assert_eq!(sent[2]["tool_calls"][0]["id"], "call_a");
@@ -1281,6 +1349,24 @@ fn an_unknown_tool_is_a_result_and_the_model_goes_on() {
 }
 
 #[test]
+fn an_unknown_name_is_a_result_even_when_the_chat_has_tools() {
+    let fake = Fake::start(turns(vec![
+        whole_call("call_a", "nothing_like_it", "{}"),
+        vec![text_chunk("sorry"), finish("stop")],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("unknown-listed", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let (conversation, _, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "done" }));
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(
+        env.get(&conversation)[2]["text"],
+        "Error: unknown tool nothing_like_it"
+    );
+}
+
+#[test]
 fn the_ninth_call_is_not_run_and_the_answer_says_so() {
     // The model asks for one more call in every turn.
     let fake = Fake::start(Arc::new(|n, s| {
@@ -1345,19 +1431,7 @@ fn stop_while_a_call_runs_answers_every_call_and_ends_within_two_seconds() {
         ],
         vec![text_chunk("after the stop"), finish("stop")],
     ]));
-    let (started_tx, started_rx) = mpsc::channel::<()>();
-    let (release_tx, release_rx) = mpsc::channel::<()>();
-    let started_tx = Mutex::new(started_tx);
-    let release_rx = Mutex::new(release_rx);
-    // The call waits until the test lets it go, or for a few seconds at most.
-    let runner: ToolRunner = Arc::new(move |_, _| {
-        let _ = started_tx.lock().unwrap().send(());
-        let _ = release_rx
-            .lock()
-            .unwrap()
-            .recv_timeout(Duration::from_secs(5));
-        Ok("late".into())
-    });
+    let (runner, started_rx, release_tx) = blocking(Some("slow"));
     let env = Env::with_tools("stop-call", &fake.url(), runner);
     let mut lines = env.send("", MESSAGE);
     let conversation = lines.next().unwrap()["conversation"]
@@ -1440,20 +1514,7 @@ fn stop_during_a_later_call_keeps_the_real_results_before_it() {
         call_chunk(2, Some("call_c"), Some("slow"), "{}"),
         finish("tool_calls"),
     ]]));
-    let (started_tx, started_rx) = mpsc::channel::<()>();
-    let (release_tx, release_rx) = mpsc::channel::<()>();
-    let started_tx = Mutex::new(started_tx);
-    let release_rx = Mutex::new(release_rx);
-    let runner: ToolRunner = Arc::new(move |name, _| {
-        if name == "slow" {
-            let _ = started_tx.lock().unwrap().send(());
-            let _ = release_rx
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(5));
-        }
-        Ok(format!("{name} done"))
-    });
+    let (runner, started_rx, release_tx) = blocking(Some("slow"));
     let env = Env::with_tools("stop-later", &fake.url(), runner);
     let mut lines = env.send("", MESSAGE);
     let conversation = lines.next().unwrap()["conversation"]
@@ -1484,4 +1545,109 @@ fn stop_during_a_later_call_keeps_the_real_results_before_it() {
             "call_c stopped by the user"
         ]
     );
+}
+
+/// The `tools` array of a request body as written, which ends the body after `stream`.
+fn tools_text(body: &str) -> &str {
+    let (_, rest) = body.split_once(r#""stream":true,"tools":"#).unwrap();
+    rest.strip_suffix('}').unwrap()
+}
+
+#[test]
+fn the_tools_array_is_the_same_bytes_in_every_request_of_a_conversation() {
+    let fake = Fake::start(turns(vec![
+        whole_call("call_a", "lookup", r#"{"q":"one"}"#),
+        whole_call("call_b", "other", r#"{"q":"two"}"#),
+        vec![text_chunk("done"), finish("stop")],
+    ]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("tools-bytes", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    let bodies = fake.bodies();
+    assert_eq!(bodies.len(), 3);
+    let expected = |name: &str| {
+        format!(
+            r#"{{"type":"function","function":{{"name":"{name}","description":"A tool for the tests.","parameters":{{"type":"object","properties":{{"q":{{"type":"string"}}}}}}}}}}"#
+        )
+    };
+    let listed: Vec<String> = NAMES.iter().map(|name| expected(name)).collect();
+    let first = tools_text(&bodies[0]);
+    assert_eq!(first, format!("[{}]", listed.join(",")));
+    assert_eq!(tools_text(&bodies[1]), first);
+    assert_eq!(tools_text(&bodies[2]), first);
+}
+
+#[test]
+fn without_tools_the_body_has_no_tools_field() {
+    let fake = Fake::start(replying(&["ok"]));
+    let env = Env::new("no-tools-field", &fake.url(), short());
+    env.send("", MESSAGE).rest();
+    let body = &fake.bodies()[0];
+    assert!(body.ends_with(r#""stream":true}"#), "{body}");
+    assert!(!body.contains("\"tools\""), "{body}");
+}
+
+#[test]
+fn a_blocked_tool_holds_neither_the_agent_nor_the_stop() {
+    let fake = Fake::start(turns(vec![
+        whole_call("call_a", "slow", "{}"),
+        vec![text_chunk("after"), finish("stop")],
+    ]));
+    let (runner, started_rx, release_tx) = blocking(None);
+    let env = Env::with_tools("blocked-tool", &fake.url(), runner);
+    let mut lines = env.send("", MESSAGE);
+    let conversation = lines.next().unwrap()["conversation"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    let at = Instant::now();
+    assert_eq!(env.connect("status").rest()[0]["status"], "running");
+    assert!(env.connect("chat-list").rest()[0]["conversations"].is_array());
+    assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+
+    let at = Instant::now();
+    assert_eq!(
+        env.connect(&format!("chat-stop {conversation}")).rest(),
+        vec![json!({ "stopped": true })]
+    );
+    assert_eq!(
+        lines.rest(),
+        vec![json!({ "event": "done", "stopped": true })]
+    );
+    assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+
+    // The abandoned call still holds its thread, and the next answer does not wait for it.
+    let at = Instant::now();
+    let events = env.send(&conversation, "and then?").rest();
+    assert_eq!(
+        events.last().unwrap(),
+        &json!({ "event": "done" }),
+        "{events:?}"
+    );
+    assert!(at.elapsed() < Duration::from_secs(2), "{:?}", at.elapsed());
+    let _ = release_tx.send(());
+}
+
+#[test]
+fn a_result_of_100_kib_is_cut_at_64_kib_with_the_note() {
+    let fake = Fake::start(turns(vec![
+        whole_call("call_a", "lookup", "{}"),
+        vec![text_chunk("ok"), finish("stop")],
+    ]));
+    let runner: Runner = Arc::new(|_, _| Ok(format!("a{}", "é".repeat(50 * 1024))));
+    let env = Env::with_tools("long-result", &fake.url(), runner);
+    let events = env.send("", MESSAGE).rest();
+    assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    let sent = messages(&fake.bodies()[1]);
+    let result = sent.iter().find(|m| m["role"] == "tool").unwrap()["content"]
+        .as_str()
+        .unwrap();
+    // 100 KiB of two-byte characters: a single-byte start puts the room for the text inside a character, so the cut falls back one byte
+    // to a character boundary, and the whole result is under 64 KiB.
+    assert_eq!(result.len(), 64 * 1024 - 1);
+    assert!(result.ends_with(" [cut]"));
+    assert!(result.starts_with("aéé"));
 }

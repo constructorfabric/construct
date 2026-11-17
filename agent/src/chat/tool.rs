@@ -1,0 +1,214 @@
+//! The tools the model may call: a trait, and the fixed list the chat offers.
+//!
+//! The list is part of the request the provider caches, so it is built once, in the order the
+//! tools were given, from text that never changes: no time, no random order, no map. A new tool is
+//! a change in the code; there is no setting for it.
+
+use std::fmt;
+use std::sync::Arc;
+
+use serde::Serialize;
+use serde_json::value::RawValue;
+
+use super::recall::VALUE_CUT as CUT_NOTE;
+
+/// Longest result of a call, in bytes, the note included. A longer one is cut and ends with
+/// [`CUT_NOTE`].
+const MAX_RESULT: usize = 64 * 1024;
+
+/// One tool the model may call.
+pub trait ChatTool: Send + Sync {
+    /// The name the model calls it by.
+    fn name(&self) -> &str;
+
+    /// What the tool does and when to use it, in plain English for the model.
+    fn description(&self) -> &str;
+
+    /// The JSON Schema of the arguments, as a constant text written by hand.
+    fn schema(&self) -> &str;
+
+    /// Run the call with the arguments text as the model wrote it. It may block: the chat runs it
+    /// on a thread of its own. The error text is given to the model as the result.
+    ///
+    /// # Errors
+    /// With a text that tells the model what went wrong.
+    fn run(&self, arguments: &str) -> Result<String, String>;
+}
+
+/// A tool the list cannot hold.
+#[derive(Debug)]
+pub struct InvalidTool {
+    pub name: String,
+    pub reason: &'static str,
+}
+
+impl fmt::Display for InvalidTool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "tool `{}`: {}", self.name, self.reason)
+    }
+}
+
+impl std::error::Error for InvalidTool {}
+
+/// The tools in a fixed order, which is the order of the list the model is given. Cheap to clone.
+#[derive(Clone, Default)]
+pub struct ChatTools {
+    tools: Vec<Arc<dyn ChatTool>>,
+    /// The `tools` array of the request, written once; `None` for an empty list.
+    listing: Option<Arc<RawValue>>,
+}
+
+#[derive(Serialize)]
+struct Listed<'a> {
+    r#type: &'static str,
+    function: Described<'a>,
+}
+
+#[derive(Serialize)]
+struct Described<'a> {
+    name: &'a str,
+    description: &'a str,
+    /// The schema text, byte for byte.
+    parameters: &'a RawValue,
+}
+
+impl ChatTools {
+    /// The list over `tools`, in that order.
+    ///
+    /// # Errors
+    /// When a tool has no name, two tools share a name, or a schema is not a JSON object.
+    pub fn new(tools: Vec<Arc<dyn ChatTool>>) -> Result<Self, InvalidTool> {
+        if tools.is_empty() {
+            return Ok(Self::default());
+        }
+        let mut schemas = Vec::with_capacity(tools.len());
+        for (at, tool) in tools.iter().enumerate() {
+            let name = tool.name();
+            let invalid = |reason| InvalidTool {
+                name: name.to_string(),
+                reason,
+            };
+            if name.is_empty() {
+                return Err(invalid("the name is empty"));
+            }
+            if tools[..at].iter().any(|earlier| earlier.name() == name) {
+                return Err(invalid("another tool has the name"));
+            }
+            let schema = RawValue::from_string(tool.schema().to_string())
+                .map_err(|_| invalid("the schema is not JSON"))?;
+            if !schema.get().trim_start().starts_with('{') {
+                return Err(invalid("the schema is not a JSON object"));
+            }
+            schemas.push(schema);
+        }
+        let listed: Vec<Listed> = tools
+            .iter()
+            .zip(&schemas)
+            .map(|(tool, schema)| Listed {
+                r#type: "function",
+                function: Described {
+                    name: tool.name(),
+                    description: tool.description(),
+                    parameters: schema,
+                },
+            })
+            .collect();
+        let listing = serde_json::value::to_raw_value(&listed).map_err(|_| InvalidTool {
+            name: String::new(),
+            reason: "the list cannot be written",
+        })?;
+        Ok(Self {
+            tools,
+            listing: Some(Arc::from(listing)),
+        })
+    }
+
+    /// The `tools` array of the request; `None` when there is no tool.
+    pub(super) fn listing(&self) -> Option<&RawValue> {
+        self.listing.as_deref()
+    }
+
+    /// The tool called `name`.
+    pub(super) fn find(&self, name: &str) -> Option<Arc<dyn ChatTool>> {
+        self.tools.iter().find(|tool| tool.name() == name).cloned()
+    }
+}
+
+/// `text` as it goes to the model: at most [`MAX_RESULT`] bytes, cut at a character boundary,
+/// with [`CUT_NOTE`] at the end when something was cut.
+pub(super) fn limited(mut text: String) -> String {
+    if text.len() <= MAX_RESULT {
+        return text;
+    }
+    text.truncate(text.floor_char_boundary(MAX_RESULT - CUT_NOTE.len()));
+    text.push_str(CUT_NOTE);
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Named(&'static str, &'static str);
+
+    impl ChatTool for Named {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        fn description(&self) -> &'static str {
+            "A tool."
+        }
+
+        fn schema(&self) -> &str {
+            self.1
+        }
+
+        fn run(&self, _: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    fn list(tools: &[(&'static str, &'static str)]) -> Result<ChatTools, InvalidTool> {
+        ChatTools::new(
+            tools
+                .iter()
+                .map(|&(name, schema)| Arc::new(Named(name, schema)) as Arc<dyn ChatTool>)
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn the_list_keeps_the_order_it_was_given() {
+        let tools = list(&[("b", "{}"), ("a", "{}"), ("c", "{}")]).unwrap();
+        let text = tools.listing().unwrap().get();
+        let at = |name: &str| text.find(&format!("\"name\":\"{name}\"")).unwrap();
+        assert!(at("b") < at("a") && at("a") < at("c"), "{text}");
+        assert!(list(&[]).unwrap().listing().is_none());
+    }
+
+    #[test]
+    fn a_list_that_a_provider_would_refuse_is_not_built() {
+        for (tools, reason) in [
+            (vec![("a", "{}"), ("a", "{}")], "another tool has the name"),
+            (vec![("", "{}")], "the name is empty"),
+            (vec![("a", "{not json")], "the schema is not JSON"),
+            (vec![("a", "[]")], "the schema is not a JSON object"),
+        ] {
+            assert_eq!(list(&tools).err().unwrap().reason, reason);
+        }
+    }
+
+    #[test]
+    fn a_short_result_is_kept_and_a_long_one_is_cut_at_a_character() {
+        assert_eq!(limited("ok".into()), "ok");
+        let exact = "a".repeat(MAX_RESULT);
+        assert_eq!(limited(exact.clone()), exact);
+        // Two-byte characters: the limit for the kept text falls inside one.
+        let cut = limited(format!("a{}", "é".repeat(MAX_RESULT)));
+        let kept = cut.strip_suffix(CUT_NOTE).unwrap();
+        assert_eq!(kept.len(), MAX_RESULT - CUT_NOTE.len() - 1);
+        assert!(kept.starts_with('a') && kept.ends_with('é'));
+        assert!(cut.len() <= MAX_RESULT);
+    }
+}
