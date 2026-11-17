@@ -25,7 +25,8 @@ configure yourself.
 - **Keeps working after you close the window.** The installed app registers the agent to start at login, as a
   systemd user service on Linux and a LaunchAgent on macOS.
 - **Shows what the agent is doing.** The Status page shows whether the agent is running, its version, its
-  process id, the model in use and whether it starts at login.
+  process id, the model in use (`not set` until the address, the name and the key are all saved, and again
+  after the key is removed) and whether it starts at login.
 - **Talks to the model you choose.** The Settings page takes the address, the name and the API key of a model,
   can test the call, and can remove the key. The key is never written to a log or shown in the status. A
   change applies to the next call, with no restart.

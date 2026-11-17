@@ -422,10 +422,13 @@ mod unix {
             || ("not set".to_string(), ModelHealth::NotConfigured),
             |s| {
                 let model = s.model();
-                (
-                    model.display_name().to_string(),
-                    shared.model.health(&model),
-                )
+                let health = shared.model.health(&model);
+                let name = if health == ModelHealth::NotConfigured {
+                    "not set"
+                } else {
+                    &model.model
+                };
+                (name.to_string(), health)
             },
         );
         match (command, settings) {
