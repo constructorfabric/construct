@@ -268,6 +268,7 @@ fn with_chat(
         .and_then(|dir| {
             Chat::new(settings.clone(), &dir, handle.clone(), Deadlines::default())
                 .map(|chat| chat.with_link(link.clone()))
+                .map(|chat| with_file_tools(chat, &dir))
                 .map(|chat| match manage {
                     Some(manage) => chat.with_observer(manage.observer()),
                     None => chat,
@@ -279,6 +280,30 @@ fn with_chat(
         Err(e) => {
             eprintln!("chat unavailable: {e}");
             server
+        }
+    }
+}
+
+/// `chat` with the file tools over the workspace folder in `dir`. Without the folder the chat has
+/// no tools, and the reason (never a path) is logged.
+#[cfg(unix)]
+fn with_file_tools(
+    chat: construct_agent::chat::Chat,
+    dir: &std::path::Path,
+) -> construct_agent::chat::Chat {
+    use construct_agent::chat::tool::ChatTools;
+    let workspace = match construct_agent::workspace::Workspace::open(dir) {
+        Ok(workspace) => std::sync::Arc::new(workspace),
+        Err(e) => {
+            eprintln!("workspace unavailable: {e}");
+            return chat;
+        }
+    };
+    match ChatTools::new(construct_agent::chat::files::file_tools(&workspace)) {
+        Ok(tools) => chat.with_tools(tools),
+        Err(e) => {
+            eprintln!("file tools unavailable: {e}");
+            chat
         }
     }
 }
