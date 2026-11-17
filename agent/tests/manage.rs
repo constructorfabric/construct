@@ -89,6 +89,7 @@ fn turn(tool: &str, session: &str, time: &str, role: Role, text: &str) -> Turn {
         role,
         author: Author::Unknown,
         text: text.into(),
+        tools: Vec::new(),
     }
 }
 

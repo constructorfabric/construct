@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::text::{join_texts, root_under};
+use crate::text::{add_tool_name, argv_command, join_texts, plain_string, root_under};
 use crate::{Author, FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
 
 /// The tool's own context that Codex writes as user messages. A text block that starts
@@ -72,6 +72,44 @@ fn session_of(path: &Path) -> Option<String> {
         }
     });
     shaped.then(|| id.to_owned())
+}
+
+/// The command line of a shell call, from the JSON text of its arguments: `command` as a
+/// string or a list of words, or `cmd`. Nothing else of the arguments is read.
+fn shell_command(arguments: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Command {
+        Line(String),
+        Words(Vec<String>),
+    }
+    #[derive(Deserialize)]
+    struct Arguments {
+        command: Option<Command>,
+        cmd: Option<String>,
+    }
+    let args = serde_json::from_str::<Arguments>(arguments).ok()?;
+    match args.command {
+        Some(Command::Line(line)) => Some(line),
+        Some(Command::Words(words)) => argv_command(&words).map(str::to_owned),
+        None => args.cmd,
+    }
+}
+
+/// The name of the tool a `function_call` or `custom_tool_call` line asks to run.
+fn tool_names(line_kind: &str, payload: &Payload) -> Vec<String> {
+    let mut tools = Vec::new();
+    if line_kind == "response_item"
+        && matches!(
+            payload.kind.as_deref(),
+            Some("function_call" | "custom_tool_call")
+        )
+        && let Some(name) = payload.name.as_deref()
+    {
+        let command = payload.arguments.as_deref().and_then(shell_command);
+        add_tool_name(&mut tools, name, command.as_deref());
+    }
+    tools
 }
 
 fn collect_files(dir: &Path, depth: u8, listing: &mut Listing) -> io::Result<()> {
@@ -184,6 +222,7 @@ impl Tool for Codex {
             ("response_item", Some("message"), Some("developer")) => return Parsed::Ignored,
             _ => None,
         };
+        let tools = tool_names(&line.kind, &payload);
         let text = role.and_then(|r| join_text(r, &payload.content.unwrap_or_default()));
         match (role, text) {
             (Some(role), Some(text)) => Parsed::Record(Record::Turn(Turn {
@@ -199,6 +238,7 @@ impl Tool for Codex {
                     Author::Unknown
                 },
                 text,
+                tools,
             })),
             _ => Parsed::Record(Record::Mark(Mark {
                 tool: self.name().into(),
@@ -206,6 +246,7 @@ impl Tool for Codex {
                 time,
                 folder: state.folder.clone(),
                 branch: state.branch.clone(),
+                tools,
             })),
         }
     }
@@ -236,13 +277,12 @@ struct Payload {
     originator: Option<String>,
     role: Option<String>,
     content: Option<Vec<Block>>,
-}
-
-fn plain_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(match serde_json::Value::deserialize(d)? {
-        serde_json::Value::String(s) => Some(s),
-        _ => None,
-    })
+    /// `function_call` and `custom_tool_call`: the tool's name, and for a function the
+    /// JSON text of its arguments, of which only a shell command is read.
+    #[serde(default, deserialize_with = "plain_string")]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "plain_string")]
+    arguments: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -587,5 +627,58 @@ mod tests {
             "{:?}",
             listing.problems
         );
+    }
+
+    fn call(kind: &str, name: &str, arguments: &str) -> String {
+        item(
+            "response_item",
+            &format!(
+                r#"{{"type":"{kind}","name":"{name}","arguments":{},"call_id":"c1"}}"#,
+                serde_json::to_string(arguments).unwrap()
+            ),
+        )
+    }
+
+    fn call_tools(l: &str) -> Vec<String> {
+        let mut state = Codex.open_file(&path());
+        match Codex.parse_line(&mut state, l) {
+            Parsed::Record(Record::Mark(m)) => m.tools,
+            other => panic!("not a mark: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_names_of_function_calls_are_on_the_mark_and_arguments_are_not_kept() {
+        let plain = call("function_call", "update_plan", r#"{"plan":"hunter2"}"#);
+        assert_eq!(call_tools(&plain), ["update_plan"]);
+        let custom = call("custom_tool_call", "apply_patch", "*** secret patch");
+        assert_eq!(call_tools(&custom), ["apply_patch"]);
+        let words = call(
+            "function_call",
+            "shell",
+            r#"{"command":["bash","-lc","gh pr list --token hunter2"]}"#,
+        );
+        assert_eq!(call_tools(&words), ["bash:gh"]);
+        let program = call(
+            "function_call",
+            "shell",
+            r#"{"command":["glab","mr","list"]}"#,
+        );
+        assert_eq!(call_tools(&program), ["bash:glab"]);
+        let cmd = call("function_call", "exec_command", r#"{"cmd":"git status"}"#);
+        assert_eq!(call_tools(&cmd), ["bash:git"]);
+        let odd = call("function_call", "shell", "not json");
+        assert_eq!(call_tools(&odd), ["shell"]);
+    }
+
+    #[test]
+    fn a_call_output_and_other_lines_give_no_names() {
+        let output = item(
+            "response_item",
+            r#"{"type":"function_call_output","call_id":"c1","output":"shell"}"#,
+        );
+        assert!(call_tools(&output).is_empty());
+        let event = item("event_msg", r#"{"type":"exec_command_end","name":"shell"}"#);
+        assert!(call_tools(&event).is_empty());
     }
 }

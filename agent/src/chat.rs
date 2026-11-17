@@ -365,6 +365,7 @@ impl Chat {
             role: Role::User,
             author: Author::Unknown,
             text: request.message,
+            tools: Vec::new(),
         });
         if !retry && self.store(&user).is_err() {
             drop(slot);
@@ -553,6 +554,7 @@ impl Chat {
             role: Role::Assistant,
             author: Author::Unknown,
             text,
+            tools: Vec::new(),
         }))
     }
 

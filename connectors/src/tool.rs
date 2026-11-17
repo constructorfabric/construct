@@ -122,6 +122,7 @@ mod tests {
                 role: Role::User,
                 author: Author::Unknown,
                 text: line.to_owned(),
+                tools: Vec::new(),
             }))
         }
     }
