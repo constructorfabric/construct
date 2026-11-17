@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::text::{join_texts, root_under};
-use crate::{FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
+use crate::{Author, FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
 
 /// The tool's own context that Codex writes as user messages. A text block that starts
 /// with one of these is not something the user typed.
@@ -150,6 +150,16 @@ impl Tool for Codex {
                 if let Some(branch) = payload.git.and_then(|g| g.branch) {
                     state.branch = branch;
                 }
+                let source = payload.source;
+                state.author = if source.as_deref() == Some("exec")
+                    || payload.originator.as_deref() == Some("codex_exec")
+                {
+                    Author::Unattended
+                } else if source.is_some() {
+                    Author::Person
+                } else {
+                    Author::Unknown
+                };
                 return Parsed::Ignored;
             }
             "turn_context" => {
@@ -183,6 +193,11 @@ impl Tool for Codex {
                 folder: state.folder.clone(),
                 branch: state.branch.clone(),
                 role,
+                author: if role == Role::User {
+                    state.author
+                } else {
+                    Author::Unknown
+                },
                 text,
             })),
             _ => Parsed::Record(Record::Mark(Mark {
@@ -213,8 +228,21 @@ struct Payload {
     id: Option<String>,
     cwd: Option<String>,
     git: Option<Git>,
+    /// `session_meta` only: where the session was started (`cli`, `exec`, ...). A source
+    /// that is not a plain string (a sub-agent) is read as no source.
+    #[serde(default, deserialize_with = "plain_string")]
+    source: Option<String>,
+    #[serde(default, deserialize_with = "plain_string")]
+    originator: Option<String>,
     role: Option<String>,
     content: Option<Vec<Block>>,
+}
+
+fn plain_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -404,6 +432,74 @@ mod tests {
             Parsed::Skipped
         );
         assert_eq!(Codex.parse_line(&mut st, "not json"), Parsed::Skipped);
+    }
+
+    fn user_author_of(session_meta: &str) -> Author {
+        let mut st = Codex.open_file(&path());
+        Codex.parse_line(&mut st, &item("session_meta", session_meta));
+        turn(Codex.parse_line(&mut st, &message("user", "input_text", "go"))).author
+    }
+
+    fn user_author(meta_extra: &str) -> Author {
+        let mut st = started(&meta(meta_extra));
+        let t = turn(Codex.parse_line(&mut st, &message("user", "input_text", "go")));
+        let a = turn(Codex.parse_line(&mut st, &message("assistant", "output_text", "ok")));
+        assert_eq!(a.author, Author::Unknown);
+        t.author
+    }
+
+    #[test]
+    fn the_session_source_tells_who_wrote_the_prompts() {
+        assert_eq!(user_author(r#","source":"exec""#), Author::Unattended);
+        assert_eq!(user_author(r#","source":"cli""#), Author::Person);
+        assert_eq!(user_author(r#","source":"vscode""#), Author::Person);
+        assert_eq!(user_author(""), Author::Unknown);
+        // Either mark of an unattended run is enough, whatever the other says.
+        assert_eq!(
+            user_author_of(r#"{"id":"x","source":"cli","originator":"codex_exec"}"#),
+            Author::Unattended
+        );
+        // An originator that is not a string is no mark.
+        assert_eq!(
+            user_author_of(r#"{"id":"x","source":"cli","originator":7}"#),
+            Author::Person
+        );
+        let exec = r#"{"id":"x","originator":"codex_exec"}"#;
+        let mut st = Codex.open_file(&path());
+        Codex.parse_line(&mut st, &item("session_meta", exec));
+        let t = turn(Codex.parse_line(&mut st, &message("user", "input_text", "go")));
+        assert_eq!(t.author, Author::Unattended);
+        // A source that is not a plain string is no source: never guessed.
+        assert_eq!(
+            user_author(r#","source":{"subagent":"review"}"#),
+            Author::Unknown
+        );
+    }
+
+    #[test]
+    fn a_session_meta_with_odd_marks_still_gives_its_session() {
+        let mut st = Codex.open_file(&path());
+        let odd = r#"{"id":"x","source":7,"originator":["x"],"git":{"branch":"feat"}}"#;
+        assert_eq!(
+            Codex.parse_line(&mut st, &item("session_meta", odd)),
+            Parsed::Ignored
+        );
+        assert_eq!((st.session.as_str(), st.branch.as_str()), (ID, "feat"));
+        assert_eq!(st.author, Author::Unknown);
+    }
+
+    #[test]
+    fn the_author_survives_a_restart_in_the_middle_of_a_file() {
+        let mut first = started(&meta(r#","source":"exec""#));
+        let saved = serde_json::to_string(&first).unwrap();
+        let _ = Codex.parse_line(&mut first, &message("user", "input_text", "one"));
+        let mut restored: FileState = serde_json::from_str(&saved).unwrap();
+        let t = turn(Codex.parse_line(&mut restored, &message("user", "input_text", "two")));
+        assert_eq!(t.author, Author::Unattended);
+        // A state saved before the field existed reads as unknown.
+        let old: FileState =
+            serde_json::from_str(r#"{"session":"s","folder":"/f","branch":""}"#).unwrap();
+        assert_eq!(old.author, Author::Unknown);
     }
 
     #[test]

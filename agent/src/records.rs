@@ -474,7 +474,7 @@ impl Sink for FileSink {
 
 #[cfg(test)]
 mod tests {
-    use connectors::{Mark, Role, ToolCall, ToolResult};
+    use connectors::{Author, Mark, Role, ToolCall, ToolResult};
 
     use super::*;
 
@@ -493,6 +493,7 @@ mod tests {
             folder: "/work".into(),
             branch: String::new(),
             role: Role::User,
+            author: Author::Person,
             text: text.into(),
         })
     }
@@ -503,6 +504,7 @@ mod tests {
         };
         Record::Turn(Turn {
             role: Role::Assistant,
+            author: Author::Unknown,
             ..user
         })
     }
@@ -607,6 +609,7 @@ mod tests {
                     session: "s1".into(),
                     folder: "/work".into(),
                     branch: "main".into(),
+                    author: Author::Person,
                 },
             },
         );
@@ -672,6 +675,31 @@ mod tests {
             texts(&again.turns_before("claude", "s1", end, 9).unwrap()),
             ["a", "b"]
         );
+    }
+
+    #[test]
+    fn a_stored_person_turn_reads_back_and_a_replay_with_another_author_is_dropped() {
+        let dir = temp("author");
+        let mut sink = FileSink::new(&dir);
+        let first = turn("claude", "s1", "2026-11-11T10:01:06Z", "a");
+        sink.append(&first).unwrap();
+        let path = dir.join("records/claude/s1.jsonl");
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(stored.contains(r#""author":"person""#));
+        assert_eq!(
+            serde_json::from_str::<Record>(stored.trim()).unwrap(),
+            first
+        );
+        // The same turn read again, now without a mark of its author, is the same turn.
+        let Record::Turn(t) = first else {
+            unreachable!()
+        };
+        let again = Record::Turn(Turn {
+            author: Author::Unknown,
+            ..t
+        });
+        FileSink::new(&dir).append(&again).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap().lines().count(), 1);
     }
 
     #[test]

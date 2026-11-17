@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 
 use crate::text::{join_texts, root_under};
-use crate::{FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
+use crate::{Author, FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
 
 /// What the harness puts into user lines that the user did not type.
 const HARNESS_TAGS: [&str; 8] = [
@@ -170,6 +170,11 @@ impl Tool for ClaudeCode {
             ("assistant", Some(Content::Text(t))) if !t.is_empty() => (Role::Assistant, t),
             _ => return mark(),
         };
+        let author = match (role, line.origin_kind) {
+            (Role::Assistant, _) | (_, None) => Author::Unknown,
+            (Role::User, Some(kind)) if kind == "human" => Author::Person,
+            (Role::User, Some(_)) => Author::Unattended,
+        };
         Parsed::Record(Record::Turn(Turn {
             tool: self.name().into(),
             session: state.session.clone(),
@@ -177,6 +182,7 @@ impl Tool for ClaudeCode {
             folder: state.folder.clone(),
             branch: state.branch.clone(),
             role,
+            author,
             text,
         }))
     }
@@ -201,6 +207,20 @@ struct Line {
     #[serde(rename = "isCompactSummary", default)]
     is_compact_summary: bool,
     message: Option<Message>,
+    /// The kind of the line's `origin`. Any other shape reads as no mark, so a label
+    /// never costs the turn.
+    #[serde(default, rename = "origin", deserialize_with = "origin_kind")]
+    origin_kind: Option<String>,
+}
+
+fn origin_kind<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Object(mut o) => match o.remove("kind") {
+            Some(serde_json::Value::String(kind)) => Some(kind),
+            _ => None,
+        },
+        _ => None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -302,6 +322,38 @@ mod tests {
             (t.folder.as_str(), t.branch.as_str(), t.time.as_str()),
             ("/w/app", "feat", T)
         );
+    }
+
+    #[test]
+    fn the_origin_tells_who_wrote_a_prompt() {
+        let author = |extra: &str| turn(parse(&line("user", extra, r#""go""#))).author;
+        assert_eq!(author(r#","origin":{"kind":"human"}"#), Author::Person);
+        assert_eq!(
+            author(r#","origin":{"kind":"task-notification"}"#),
+            Author::Unattended
+        );
+        assert_eq!(author(""), Author::Unknown);
+        assert_eq!(author(r#","origin":{}"#), Author::Unknown);
+        // A shape that is not expected keeps the turn and gives no mark.
+        for odd in [
+            r#""human""#,
+            "7",
+            "null",
+            r#"{"kind":7}"#,
+            r#"{"kind":null}"#,
+        ] {
+            let t = turn(parse(&line(
+                "user",
+                &format!(r#","origin":{odd}"#),
+                r#""go""#,
+            )));
+            assert_eq!((t.author, t.text.as_str()), (Author::Unknown, "go"));
+        }
+        let c = r#"[{"type":"text","text":"go"}]"#;
+        let blocks = line("user", r#","origin":{"kind":"human"}"#, c);
+        assert_eq!(turn(parse(&blocks)).author, Author::Person);
+        let reply = line("assistant", r#","origin":{"kind":"human"}"#, c);
+        assert_eq!(turn(parse(&reply)).author, Author::Unknown);
     }
 
     #[test]

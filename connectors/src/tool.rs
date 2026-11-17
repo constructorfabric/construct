@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ClaudeCode, Codex, Parsed};
+use crate::{Author, ClaudeCode, Codex, Parsed};
 
 /// What a reader remembers about one file between lines. It can be saved and restored,
 /// so reading continues after a restart in the middle of a file.
@@ -13,6 +13,9 @@ pub struct FileState {
     pub folder: String,
     /// Empty when unknown.
     pub branch: String,
+    /// Who wrote the prompts of the whole file, when the tool says it once per session.
+    #[serde(default)]
+    pub author: Author,
 }
 
 /// The session files of a tool, and what could not be listed on the way.
@@ -84,7 +87,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Record, Role, Turn};
+    use crate::{Author, Record, Role, Turn};
 
     /// A tool defined outside the crate's modules: its own type and one line in a list.
     struct Dummy;
@@ -117,6 +120,7 @@ mod tests {
                 folder: state.folder.clone(),
                 branch: state.branch.clone(),
                 role: Role::User,
+                author: Author::Unknown,
                 text: line.to_owned(),
             }))
         }

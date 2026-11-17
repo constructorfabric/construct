@@ -26,7 +26,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use connectors::{Record, Role, ToolCall, ToolResult, Turn};
+use connectors::{Author, Record, Role, ToolCall, ToolResult, Turn};
 use futures_util::StreamExt;
 use http::StatusCode;
 use oagw_sdk::{ServerEvent, ServerEventsResponse, ServerEventsStream, StreamingError};
@@ -334,6 +334,7 @@ impl Chat {
             folder: String::new(),
             branch: String::new(),
             role: Role::User,
+            author: Author::Unknown,
             text: request.message,
         });
         if !retry && self.store(&user).is_err() {
@@ -535,6 +536,7 @@ impl Chat {
             folder: String::new(),
             branch: String::new(),
             role: Role::Assistant,
+            author: Author::Unknown,
             text,
         }))
     }

@@ -16,5 +16,7 @@ pub use claude_code::ClaudeCode;
 pub use codex::Codex;
 pub use lines::{Line, MAX_LINE_BYTES, for_each_line};
 pub use parsed::Parsed;
-pub use record::{Mark, Record, Role, ToolCall, ToolResult, Turn, compare_times, minute_of};
+pub use record::{
+    Author, Mark, Record, Role, ToolCall, ToolResult, Turn, compare_times, minute_of,
+};
 pub use tool::{FileState, Listing, Registry, Tool, tools};
