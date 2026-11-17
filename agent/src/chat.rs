@@ -46,6 +46,7 @@ use crate::records::FileSink;
 use crate::settings::Settings;
 use crate::sync::lock;
 
+pub mod files;
 mod recall;
 pub mod tool;
 mod wire;
@@ -79,7 +80,11 @@ pub const INSTRUCTION: &str = "You are the chat of a person's Construct, the ass
 You cannot save anything yourself. Whatever the user tells you is remembered later by the system, on its own, \
 unless the `recall_facts` tool returns the error that memory is off. So when the user tells you something worth \
 keeping, say that you will remember it, and never say that you have saved it. If `recall_facts` returns the error \
-that memory is off, say that nothing is remembered. Answer in the language of the user.";
+that memory is off, say that nothing is remembered. \
+You have a workspace folder with the user's files, and the files are text. You work in it with `Glob`, `Read`, \
+`Write` and `Edit`. `Read` shows every line with its number and a tab: the numbers are not part of the file, so \
+never put them in the text you give to `Edit` or `Write`. When a tool returns an error, say what the error says, \
+and never say that a change was made when it failed. Answer in the language of the user.";
 
 /// What the client is told while an answer runs, besides how it ends.
 enum Piece<'a> {
