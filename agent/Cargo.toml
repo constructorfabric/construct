@@ -36,6 +36,7 @@ authz-resolver = { package = "cf-gears-authz-resolver", version = "=0.4.2" }
 static-authn-plugin = { package = "cf-gears-static-authn-plugin", version = "=0.4.1" }
 static-authz-plugin = { package = "cf-gears-static-authz-plugin", version = "=0.2.1" }
 api-gateway = { package = "cf-gears-api-gateway", version = "=0.7.4" }
+toolkit-gts = { package = "cf-gears-toolkit-gts", version = "=0.3.0" }
 toolkit-security = { package = "cf-gears-toolkit-security", version = "=0.13.0" }
 toolkit-db = { package = "cf-gears-toolkit-db", version = "=0.17.4" }
 oagw-sdk = { package = "cf-gears-oagw-sdk", version = "=0.5.18" }
@@ -56,6 +57,11 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 uuid = { version = "1", features = ["v4"] }
 getrandom = "0.3"
 hex = "0.4"
+# The dashboard types: `#[gts_type_schema]` generates their schemas from the structs, and a
+# document is checked against them. The versions are the ones the Construct gear already uses.
+gts = "0.16"
+schemars = "1"
+jsonschema = { version = "0.60", default-features = false }
 # The workspace folder: access confined to one open directory, atomic file replacement, globs.
 cap-std = "=4.0.3"
 cap-tempfile = "=4.0.3"
