@@ -327,7 +327,11 @@ fn status_shows_the_saved_model_name_and_whether_the_settings_hold_a_complete_mo
     );
     // A name alone is not a model: the address and the key are missing.
     ask(&path, br#"settings-set {"model":{"model":"m1"}}"#);
-    assert_eq!(status(&path)["model_state"], "not_configured");
+    let v = status(&path);
+    assert_eq!(
+        (v["model"].as_str(), v["model_state"].as_str()),
+        (Some("not set"), Some("not_configured"))
+    );
     let set = format!(
         r#"settings-set {{"model":{{"base_url":"https://api.example.com/v1","api_key":"{KEY}"}}}}"#
     );
@@ -339,7 +343,18 @@ fn status_shows_the_saved_model_name_and_whether_the_settings_hold_a_complete_mo
     );
     assert!(!v.to_string().contains(KEY));
     ask(&path, br#"settings-set {"model":{"remove_key":true}}"#);
-    assert_eq!(status(&path)["model_state"], "not_configured");
+    let v = status(&path);
+    assert_eq!(
+        (v["model"].as_str(), v["model_state"].as_str()),
+        (Some("not set"), Some("not_configured"))
+    );
+    let key = format!(r#"settings-set {{"model":{{"api_key":"{KEY}"}}}}"#);
+    ask(&path, key.as_bytes());
+    let v = status(&path);
+    assert_eq!(
+        (v["model"].as_str(), v["model_state"].as_str()),
+        (Some("m1"), Some("configured"))
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

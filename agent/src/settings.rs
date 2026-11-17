@@ -45,18 +45,6 @@ impl fmt::Debug for Model {
     }
 }
 
-impl Model {
-    /// The model name for `status`, or `not set`.
-    #[must_use]
-    pub fn display_name(&self) -> &str {
-        if self.model.is_empty() {
-            "not set"
-        } else {
-            &self.model
-        }
-    }
-}
-
 /// What the readers collect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -445,7 +433,6 @@ mod tests {
         let dir = scratch("defaults");
         let s = Settings::open(&dir).unwrap();
         assert_eq!(s.model(), Model::default());
-        assert_eq!(s.model().display_name(), "not set");
         assert_eq!(s.collection(), Collection::default());
         assert!(s.collection().enabled && s.collection().claude_code && s.collection().codex);
         assert!(!dir.join(FILE_NAME).exists());

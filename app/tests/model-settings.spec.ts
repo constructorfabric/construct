@@ -130,6 +130,19 @@ test('Save keeps the saved key when the key field is untouched, and Remove key d
   await expect(page.getByRole('button', { name: 'Remove key' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Test' }).click();
   await expect(outcome(page)).toContainText('key refused');
+
+  // Without the key the model is not usable, so Status shows it as not set.
+  await page.getByRole('button', { name: 'Status', exact: true }).click();
+  await expect(page.locator('#agent-model')).toHaveText('model not set', { timeout: 10_000 });
+
+  await openSettings(page, 'Model');
+  await fill(page, { key: goodKey });
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(outcome(page)).toContainText('Saved');
+  await page.getByRole('button', { name: 'Status', exact: true }).click();
+  await expect(page.locator('#agent-model')).toHaveText(`model ${goodModel}`, {
+    timeout: 10_000,
+  });
 });
 
 test('Save with a blank Address and Model name shows what is required and sends nothing', async ({
