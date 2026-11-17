@@ -105,12 +105,6 @@ impl Health {
         (state, if state == State::Ready { None } else { reason })
     }
 
-    /// Why the part is not ready; `None` when it is ready or no reason is known.
-    #[must_use]
-    pub fn reason(&self) -> Option<&'static str> {
-        self.snapshot().1
-    }
-
     /// Set the state and forget the reason of the one before.
     pub fn set(&self, state: State) {
         *crate::sync::lock(&self.0) = (state, None);
@@ -594,7 +588,6 @@ mod tests {
         );
         // A new state drops the reason of the old one.
         health.set(State::Ready);
-        assert_eq!(health.reason(), None);
         assert_eq!(health.to_json(), serde_json::json!({ "state": "ready" }));
     }
 
@@ -612,6 +605,11 @@ mod tests {
         assert_eq!(
             pgvector_reason(&missing, reason::PGVECTOR_INSTALL),
             reason::PGVECTOR_MISSING
+        );
+        let built_for_another_release = io::Error::new(io::ErrorKind::InvalidData, "other release");
+        assert_eq!(
+            pgvector_reason(&built_for_another_release, reason::PGVECTOR_INSTALL),
+            reason::PGVECTOR_MISMATCH
         );
         let other = io::Error::other("disk full");
         assert_eq!(
