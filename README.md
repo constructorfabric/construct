@@ -18,7 +18,7 @@ configure yourself.
 - **Reads your coding tools.** The agent follows the session logs of Claude Code and Codex and turns every
   prompt and answer into a record, within seconds. Log files are only opened for reading.
 - **Keeps the records on your computer.** The agent stores the records as plain files in its data directory.
-- **Runs the Construct gear.** On Linux x86_64 the agent starts the Construct gear inside itself, next to an
+- **Runs the Construct gear.** On Linux x86_64 and on macOS (Apple Silicon) the agent starts the Construct gear inside itself, next to an
   embedded PostgreSQL database with pgvector that serves graph storage. Nothing listens beyond your machine:
   the agent socket and the database socket are open to your user only, and the gear's REST interface is on the
   loopback address and needs a token that only your user can read.
@@ -85,6 +85,8 @@ on if the computer can be lost or shared.
 | Construct gear                                               | yes                  | yes                      | no                                                                     |
 
 `make smoke` installs the Linux package in a clean Ubuntu 24.04 container and starts it there. Tested on Linux x86_64 (Ubuntu 24.04).
+
+The macOS cells for the database and the Construct gear rest on a manual run on an Apple Silicon Mac (macOS 27.2): the packaged agent reported the database and the gear `ready`, and `create extension vector` with the `<->` operator worked. The integration test that starts PostgreSQL (`agent/tests/database.rs`) runs on Linux only. On macOS the agent does not yet recognise a PostgreSQL left running by an agent that was killed outside launchd (it looks the process up in `/proc`), so that case is untested there.
 
 ## Build and test
 
