@@ -198,16 +198,22 @@ export function ModelSettingsForm({
           )}
         </div>
       </form>
-      {outcome !== null && <OutcomeMessage outcome={outcome} />}
+      {outcome !== null && <OutcomeMessage id="model-outcome" outcome={outcome} />}
     </section>
   );
 }
 
-function OutcomeMessage({ outcome }: { readonly outcome: Outcome }): ReactNode {
+export function OutcomeMessage({
+  id,
+  outcome,
+}: {
+  readonly id: string;
+  readonly outcome: Outcome;
+}): ReactNode {
   const { text, ok } = describe(outcome);
   return (
     <Alert
-      id="model-outcome"
+      id={id}
       className={styles.outcome}
       variant={ok ? 'default' : 'destructive'}
       role={ok ? 'status' : 'alert'}

@@ -3,6 +3,7 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import started from 'electron-squirrel-startup';
 import { agentBinaryPath, ensureAgentService, shouldRegisterAgent } from './agent-service';
 import {
+  SETTINGS_COLLECTION_CHANNEL,
   SETTINGS_GET_CHANNEL,
   SETTINGS_REMOVE_KEY_CHANNEL,
   SETTINGS_SAVE_CHANNEL,
@@ -115,6 +116,9 @@ function startApp(): void {
     // goes on to the system browser.
     const openLink = createLinkHandler((address) => shell.openExternal(address));
     ipcMain.handle(OPEN_LINK_CHANNEL, (_event, url: unknown) => openLink(url));
+    ipcMain.handle(SETTINGS_COLLECTION_CHANNEL, (_event, input: unknown) =>
+      settings.saveCollection(input),
+    );
     void registerAgent();
     createWindow();
 

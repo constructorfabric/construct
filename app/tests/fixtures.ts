@@ -21,6 +21,12 @@ export interface Session {
   readonly agent: ChildProcess;
   readonly appArgs: readonly string[];
   readonly env: Record<string, string>;
+  /** The agent's `XDG_CONFIG_HOME`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. */
+  readonly configHome: string;
+  readonly codexHome: string;
+  readonly claudeHome: string;
+  /** Where the agent keeps its records, `records/<tool>/<session>.jsonl`. */
+  readonly recordsDir: string;
   /** Everything the agent has written to its output and error streams, over all its runs. */
   readonly agentLog: () => string;
   readonly stopAgent: () => Promise<void>;
@@ -50,6 +56,30 @@ export async function openApp(session: Session): Promise<OpenedApp> {
   return { app, ...(await prepareWindow(app)) };
 }
 
+/**
+ * Opens the app, runs `check` on its window and closes the app, whatever the check does. Any
+ * `securitypolicyviolation` of the page fails the check.
+ */
+export async function checkInApp(
+  session: Session,
+  check: (page: Page) => Promise<void>,
+): Promise<void> {
+  const { app, page } = await openApp(session);
+  try {
+    await page.getByRole('button', { name: 'Settings', exact: true }).waitFor();
+    await check(page);
+    await expectNoPolicyViolations(page);
+  } finally {
+    await app.close();
+  }
+}
+
+/** Stops the agent and starts it again, as a restart of the machine does. */
+export async function restartAgent(session: Session): Promise<void> {
+  await session.stopAgent();
+  await session.startAgent();
+}
+
 async function prepareWindow(
   app: ElectronApplication,
 ): Promise<Pick<OpenedApp, 'page' | 'output'>> {
@@ -71,6 +101,12 @@ async function prepareWindow(
   });
   await page.reload();
   return { page, output: () => output };
+}
+
+/** Opens the Settings page, once the section with this heading is there. */
+export async function openSettings(page: Page, heading: string): Promise<void> {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByRole('heading', { name: heading })).toBeVisible();
 }
 
 export async function expectNoPolicyViolations(page: Page): Promise<void> {
@@ -130,13 +166,19 @@ export const test = base.extend<{ session: Session; app: ElectronApplication; pa
     // The agent also starts its PostgreSQL; its data goes to a throw-away directory.
     const dataHome = mkdtempSync(path.join(tmpdir(), 'cb-pg-'));
     const logDir = mkdtempSync(path.join(tmpdir(), 'cb-log-'));
+    // The tools' session files are fake and private, whatever the real ones say on this machine.
+    const codexHome = mkdtempSync(path.join(tmpdir(), 'cb-codex-'));
+    const claudeHome = mkdtempSync(path.join(tmpdir(), 'cb-claude-'));
+    const configHome = path.join(homeDir, '.config');
     const logPath = path.join(logDir, 'agent.log');
     const env = stringEnv({
       XDG_RUNTIME_DIR: runtimeDir,
       TMPDIR: runtimeDir,
       XDG_DATA_HOME: dataHome,
       HOME: homeDir,
-      XDG_CONFIG_HOME: path.join(homeDir, '.config'),
+      XDG_CONFIG_HOME: configHome,
+      CODEX_HOME: codexHome,
+      CLAUDE_CONFIG_DIR: claudeHome,
     });
     let agent: ChildProcess | null = null;
 
@@ -170,6 +212,10 @@ export const test = base.extend<{ session: Session; app: ElectronApplication; pa
           return agent;
         },
         env,
+        configHome,
+        codexHome,
+        claudeHome,
+        recordsDir: path.join(dataHome, 'construct', 'records'),
         appArgs: [appDir, ...launchArgs, `--user-data-dir=${userDataDir}`],
         agentLog: () => readFileSync(logPath, 'utf8'),
         stopAgent,
@@ -177,7 +223,15 @@ export const test = base.extend<{ session: Session; app: ElectronApplication; pa
       });
     } finally {
       await stopAgent();
-      for (const dir of [runtimeDir, userDataDir, homeDir, dataHome, logDir]) {
+      for (const dir of [
+        runtimeDir,
+        userDataDir,
+        homeDir,
+        dataHome,
+        logDir,
+        codexHome,
+        claudeHome,
+      ]) {
         rmSync(dir, { recursive: true, force: true });
       }
     }

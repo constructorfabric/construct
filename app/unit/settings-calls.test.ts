@@ -48,7 +48,12 @@ async function withFakeAgent(
   }
 }
 
-const saved = '{"model":{"base_url":"https://x/v1","model":"m","api_key_set":true}}';
+const collection = '"collection":{"enabled":true,"claude_code":true,"codex":false},"notice":null';
+const saved = `{"model":{"base_url":"https://x/v1","model":"m","api_key_set":true},${collection}}`;
+const collectionOut = {
+  collection: { enabled: true, claudeCode: true, codex: false },
+  notice: null,
+};
 
 describe('the settings handlers', () => {
   it('get asks settings-get and gives the settings, without any key', async () => {
@@ -58,6 +63,7 @@ describe('the settings handlers', () => {
         expect(await handlers.get()).toEqual({
           ok: true,
           model: { baseUrl: 'https://x/v1', model: 'm', apiKeySet: true },
+          ...collectionOut,
         });
         expect(lines).toEqual(['settings-get']);
       },
@@ -110,7 +116,7 @@ describe('the settings handlers', () => {
     await withFakeAgent(
       (line) =>
         line === 'settings-get'
-          ? '{"model":{"base_url":"https://x/v1","model":"m","api_key_set":false}}'
+          ? `{"model":{"base_url":"https://x/v1","model":"m","api_key_set":false},${collection}}`
           : saved,
       async (handlers, lines) => {
         await handlers.save({ baseUrl: 'https://other/v1', model: 'm' });
@@ -157,13 +163,45 @@ describe('the settings handlers', () => {
 
   it('removeKey sends the flag', async () => {
     await withFakeAgent(
-      () => '{"model":{"base_url":"u","model":"m","api_key_set":false}}',
+      () => `{"model":{"base_url":"u","model":"m","api_key_set":false},${collection}}`,
       async (handlers, lines) => {
         expect(await handlers.removeKey()).toEqual({
           ok: true,
           model: { baseUrl: 'u', model: 'm', apiKeySet: false },
+          ...collectionOut,
         });
         expect(lines).toEqual(['settings-set {"model":{"remove_key":true}}']);
+      },
+    );
+  });
+
+  it('saveCollection sends the switches under the agent names and gives the answer', async () => {
+    await withFakeAgent(
+      () => saved,
+      async (handlers, lines) => {
+        expect(await handlers.saveCollection({ claudeCode: false, enabled: true })).toEqual({
+          ok: true,
+          model: { baseUrl: 'https://x/v1', model: 'm', apiKeySet: true },
+          ...collectionOut,
+        });
+        expect(lines).toEqual(['settings-set {"collection":{"enabled":true,"claude_code":false}}']);
+      },
+    );
+  });
+
+  it.each([
+    ['null', null],
+    ['text', 'x'],
+    ['no switch', {}],
+    ['a switch that is not a boolean', { codex: 'yes' }],
+    ['a valid switch beside an invalid one', { enabled: true, codex: 'yes' }],
+    ['only a name the app does not know', { claude_code: false }],
+  ])('saveCollection refuses %s without asking the agent', async (_name, value) => {
+    await withFakeAgent(
+      () => saved,
+      async (handlers, lines) => {
+        expect((await handlers.saveCollection(value)).ok).toBe(false);
+        expect(lines).toEqual([]);
       },
     );
   });

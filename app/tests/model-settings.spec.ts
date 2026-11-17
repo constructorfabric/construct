@@ -3,9 +3,12 @@ import type { Page } from '@playwright/test';
 import {
   agentBinary,
   captureTestOutput,
+  checkInApp,
   expectNoPolicyViolations,
   expect,
   openApp,
+  openSettings,
+  restartAgent,
   test as base,
   windowText,
 } from './fixtures';
@@ -16,11 +19,6 @@ import { screenshotBothThemes } from './screenshots';
 const unreachableDeadlineMs = 15_000;
 
 const test = base.extend<{ provider: Provider }>(providerFixture);
-
-async function openSettings(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Model' })).toBeVisible();
-}
 
 async function fill(page: Page, fields: { address?: string; model?: string; key?: string }) {
   if (fields.address !== undefined) {
@@ -37,7 +35,7 @@ async function fill(page: Page, fields: { address?: string; model?: string; key?
 const outcome = (page: Page) => page.locator('#model-outcome');
 
 test('the model section starts with the defaults, and the key field is empty', async ({ page }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
 
   await expect(page.getByLabel('Address')).toHaveValue('https://api.openai.com/v1');
   await expect(page.getByLabel('Model name')).toHaveValue('gpt-6-luna');
@@ -52,7 +50,7 @@ test('Test shows a spinner and then Works with the answer of the model', async (
   provider,
 }) => {
   provider.delayMs = 3000;
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, { address: provider.url, model: goodModel, key: goodKey });
 
   await page.getByRole('button', { name: 'Test' }).click();
@@ -66,7 +64,7 @@ test('Test shows a spinner and then Works with the answer of the model', async (
 });
 
 test('a wrong key shows key refused', async ({ page, provider }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, { address: provider.url, model: goodModel, key: 'sk-wrong' });
 
   await page.getByRole('button', { name: 'Test' }).click();
@@ -75,7 +73,7 @@ test('a wrong key shows key refused', async ({ page, provider }) => {
 });
 
 test('an unknown model shows model not found', async ({ page, provider }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, { address: provider.url, model: 'no-such-model', key: goodKey });
 
   await page.getByRole('button', { name: 'Test' }).click();
@@ -84,7 +82,7 @@ test('an unknown model shows model not found', async ({ page, provider }) => {
 });
 
 test('an address with nothing behind it shows unreachable within 15 seconds', async ({ page }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, {
     address: `http://127.0.0.1:${await closedPort()}/v1`,
     model: goodModel,
@@ -99,7 +97,7 @@ test('an address with nothing behind it shows unreachable within 15 seconds', as
 test('a non-local http address is refused with a clear message, by Test and by Save', async ({
   page,
 }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, { address: 'http://example.com/v1', model: goodModel, key: goodKey });
 
   await page.getByRole('button', { name: 'Test' }).click();
@@ -114,7 +112,7 @@ test('Save keeps the saved key when the key field is untouched, and Remove key d
   page,
   provider,
 }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, { address: provider.url, model: goodModel, key: goodKey });
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(outcome(page)).toContainText('Saved');
@@ -137,7 +135,7 @@ test('Save keeps the saved key when the key field is untouched, and Remove key d
 test('Save with a blank Address and Model name shows what is required and sends nothing', async ({
   page,
 }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, { address: '', model: '', key: goodKey });
   await expect(page.getByText('This field is required')).toHaveCount(2);
 
@@ -154,7 +152,7 @@ test('another address is not sent the saved key, and typing the key again allows
   page,
   provider,
 }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, { address: provider.url, model: goodModel, key: goodKey });
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(outcome(page)).toContainText('Saved');
@@ -180,7 +178,7 @@ test('the Status page shows model not set, then the saved model name', async ({
   await page.getByRole('button', { name: 'Status', exact: true }).click();
   await expect(page.locator('#agent-model')).toHaveText('model not set', { timeout: 10_000 });
 
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await fill(page, { address: provider.url, model: goodModel, key: goodKey });
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(outcome(page)).toContainText('Saved');
@@ -195,39 +193,29 @@ test('after Save, closing the app and the agent and starting both again keeps th
   session,
   provider,
 }) => {
-  const first = await openApp(session);
-  try {
-    await first.page.getByRole('button', { name: 'Settings', exact: true }).waitFor();
-    await openSettings(first.page);
-    await fill(first.page, { address: provider.url, model: goodModel, key: goodKey });
-    await first.page.getByRole('button', { name: 'Save' }).click();
-    await expect(outcome(first.page)).toContainText('Saved');
-    const key = first.page.getByLabel('API key', { exact: true });
+  await checkInApp(session, async (page) => {
+    await openSettings(page, 'Model');
+    await fill(page, { address: provider.url, model: goodModel, key: goodKey });
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(outcome(page)).toContainText('Saved');
+    const key = page.getByLabel('API key', { exact: true });
     await expect(key).toHaveValue('');
     await expect(key).toHaveAttribute('placeholder', '••••••••');
-    await expectNoPolicyViolations(first.page);
-  } finally {
-    await first.app.close();
-  }
-  await session.stopAgent();
-  await session.startAgent();
+  });
+  await restartAgent(session);
 
-  const second = await openApp(session);
-  try {
-    await openSettings(second.page);
-    await expect(second.page.getByLabel('Model name')).toHaveValue(goodModel);
-    await expect(second.page.getByLabel('Address')).toHaveValue(provider.url);
-    const key = second.page.getByLabel('API key', { exact: true });
+  await checkInApp(session, async (page) => {
+    await openSettings(page, 'Model');
+    await expect(page.getByLabel('Model name')).toHaveValue(goodModel);
+    await expect(page.getByLabel('Address')).toHaveValue(provider.url);
+    const key = page.getByLabel('API key', { exact: true });
     await expect(key).toHaveValue('');
     await expect(key).toHaveAttribute('placeholder', '••••••••');
 
     // The saved key still works, though the window never had it.
-    await second.page.getByRole('button', { name: 'Test' }).click();
-    await expect(outcome(second.page)).toContainText('Works');
-    await expectNoPolicyViolations(second.page);
-  } finally {
-    await second.app.close();
-  }
+    await page.getByRole('button', { name: 'Test' }).click();
+    await expect(outcome(page)).toContainText('Works');
+  });
 });
 
 test('the key is nowhere but in the settings file and the request to the provider', async ({
@@ -239,7 +227,7 @@ test('the key is nowhere but in the settings file and the request to the provide
   const logged: string[] = [];
   page.on('console', (message) => logged.push(message.text()));
   try {
-    await openSettings(page);
+    await openSettings(page, 'Model');
     await fill(page, { address: provider.url, model: goodModel, key: goodKey });
     await page.getByRole('button', { name: 'Test' }).click();
     await expect(outcome(page)).toContainText('Works');
@@ -282,7 +270,7 @@ test('the key is nowhere but in the settings file and the request to the provide
 });
 
 test('the page with a saved key looks right in both themes', async ({ page }) => {
-  await openSettings(page);
+  await openSettings(page, 'Model');
   await screenshotBothThemes(page, 'settings-defaults');
 
   await fill(page, {
