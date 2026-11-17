@@ -143,7 +143,7 @@ export function createChatHandlers(
           if (event.event === 'start') {
             current.conversation = event.conversation;
             emit(event);
-          } else if (event.event === 'delta') {
+          } else if (event.event === 'delta' || event.event === 'tool') {
             emit(event);
           } else {
             end(current, event);

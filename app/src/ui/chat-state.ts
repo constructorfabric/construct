@@ -64,6 +64,7 @@ export type ChatAction =
   | { readonly type: 'send-refused'; readonly reason: string }
   | { readonly type: 'started'; readonly conversation: string }
   | { readonly type: 'delta'; readonly text: string }
+  | { readonly type: 'tool'; readonly line: string }
   | { readonly type: 'done'; readonly stopped: boolean }
   | { readonly type: 'failed'; readonly reason: string };
 
@@ -93,6 +94,11 @@ function delta(state: ChatState, text: string): ChatState {
     };
   }
   return { ...state, streaming: true, messages: [...state.messages, { role: 'assistant', text }] };
+}
+
+/** A tool call starts: its line goes after the messages so far, and the next text starts a new one. */
+function tool(state: ChatState, line: string): ChatState {
+  return { ...state, messages: [...state.messages, { role: 'tool', text: line }] };
 }
 
 /** The answer ends: whole, stopped by the user, or with the agent's reason. */
@@ -128,6 +134,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, active: action.conversation, stored: true };
     case 'delta':
       return state.running ? delta(state, action.text) : state;
+    case 'tool':
+      return state.running ? tool(state, action.line) : state;
     case 'done':
       return ended(state, action.stopped ? { kind: 'stopped' } : null);
     case 'failed':

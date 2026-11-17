@@ -9,11 +9,11 @@ export interface ConversationSummary {
 }
 
 /**
- * A message of the thread. The agent also stores tool records, and sends a line of the role `tool`
- * for each call; the window does not show them yet.
+ * A message of the thread. A `tool` message is the short line of one tool call, which the agent
+ * writes; it never holds the call's arguments or result.
  */
 export interface ChatMessage {
-  readonly role: 'user' | 'assistant';
+  readonly role: 'user' | 'assistant' | 'tool';
   readonly text: string;
 }
 
@@ -21,6 +21,7 @@ export interface ChatMessage {
 export type ChatEvent =
   | { readonly event: 'start'; readonly conversation: string }
   | { readonly event: 'delta'; readonly text: string }
+  | { readonly event: 'tool'; readonly line: string }
   | { readonly event: 'done'; readonly stopped: boolean }
   | { readonly event: 'error'; readonly reason: string };
 
@@ -97,8 +98,8 @@ export function chatSendLine(input: ChatInput): string {
 }
 
 /**
- * One line of a `chat-send` answer: `null` for an event the window does not know (the agent also
- * says when a tool call starts), an error for anything else.
+ * One line of a `chat-send` answer: `null` for an event the window does not know, an error for
+ * anything else.
  */
 export function parseChatEvent(line: string): ChatEvent | null {
   const reply = parseLine(line);
@@ -113,6 +114,11 @@ export function parseChatEvent(line: string): ChatEvent | null {
         throw new Error('the agent event has no text');
       }
       return { event: 'delta', text: reply.text };
+    case 'tool':
+      if (typeof reply.line !== 'string') {
+        throw new Error('the agent event has no line');
+      }
+      return { event: 'tool', line: reply.line };
     case 'done':
       return { event: 'done', stopped: reply.stopped === true };
     case 'error':
@@ -153,8 +159,8 @@ export function parseListReply(line: string): ListResult {
 }
 
 /**
- * Turns the lines of `chat-get` into a result: the turns of the user and the assistant, without
- * the tool records and without turns of a role the window does not know.
+ * Turns the lines of `chat-get` into a result: the turns of the user, the assistant and the tool
+ * lines, without the tool records and without turns of a role the window does not know.
  */
 export function parseGetLines(lines: readonly string[]): GetResult {
   const messages: ChatMessage[] = [];
@@ -170,7 +176,7 @@ export function parseGetLines(lines: readonly string[]): GetResult {
     if (typeof record.role !== 'string' || typeof record.text !== 'string') {
       throw new Error('the agent sent a turn in a form the app does not accept');
     }
-    if (record.role === 'user' || record.role === 'assistant') {
+    if (record.role === 'user' || record.role === 'assistant' || record.role === 'tool') {
       messages.push({ role: record.role, text: record.text });
     }
   }

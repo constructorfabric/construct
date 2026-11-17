@@ -22,6 +22,36 @@ describe('chatReducer', () => {
     expect(state.active).toBe('c1');
   });
 
+  it('puts a tool line between the messages and starts a new one with the next text', () => {
+    const state = run([
+      { type: 'sending', message: 'hi' },
+      { type: 'started', conversation: 'c1' },
+      { type: 'delta', text: 'Let me look.' },
+      { type: 'tool', line: 'Read notes.txt' },
+      { type: 'tool', line: 'Wrote out.txt' },
+      { type: 'delta', text: 'Done' },
+      { type: 'delta', text: '.' },
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', text: 'hi' },
+      { role: 'assistant', text: 'Let me look.' },
+      { role: 'tool', text: 'Read notes.txt' },
+      { role: 'tool', text: 'Wrote out.txt' },
+      { role: 'assistant', text: 'Done.' },
+    ]);
+  });
+
+  it('keeps a tool line that ends the answer, and ignores one when no answer runs', () => {
+    const ended = run([
+      { type: 'sending', message: 'hi' },
+      { type: 'tool', line: 'Read notes.txt' },
+      { type: 'done', stopped: false },
+    ]);
+    expect(ended.messages.at(-1)).toEqual({ role: 'tool', text: 'Read notes.txt' });
+    expect(ended.running).toBe(false);
+    expect(chatReducer(ended, { type: 'tool', line: 'late' })).toBe(ended);
+  });
+
   it('keeps the part after Stop and offers Try again', () => {
     const state = run([
       { type: 'sending', message: 'hi' },

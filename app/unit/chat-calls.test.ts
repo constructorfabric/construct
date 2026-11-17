@@ -76,8 +76,9 @@ async function withFakeAgent(
 
 const answering: Behaviour = (_line, client) => {
   client.write(`{"event":"start","conversation":"${id}"}\n`);
-  // The line of a tool call is not forwarded: the window does not show it yet.
+  // An event the window does not know is skipped, not an error.
   client.write('{"event":"delta","text":"Hel"}\n{"event":"tool","line":"Read notes.txt"}\n');
+  client.write('{"event":"other"}\n');
   client.write('{"event":"delta","text":"lo"}\n');
   client.end('{"event":"done"}\n');
 };
@@ -90,6 +91,7 @@ describe('the chat handlers', () => {
       expect(events).toEqual([
         { event: 'start', conversation: id },
         { event: 'delta', text: 'Hel' },
+        { event: 'tool', line: 'Read notes.txt' },
         { event: 'delta', text: 'lo' },
         { event: 'done', stopped: false },
       ]);

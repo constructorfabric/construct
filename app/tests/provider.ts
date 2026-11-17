@@ -14,6 +14,12 @@ export interface Script {
   readonly forever?: boolean;
 }
 
+/** A tool call the model makes: the tool's name and the arguments as an object. */
+export interface ToolCall {
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+}
+
 export interface Seen {
   readonly authorization: string | undefined;
   readonly model: string;
@@ -28,6 +34,8 @@ export interface Provider {
   delayMs: number;
   /** What a streamed answer is made of. */
   script: Script;
+  /** Tool calls for the next streamed requests, one call for each: a request takes the first. */
+  calls: ToolCall[];
   /** How many pieces the provider has sent, over all requests. */
   readonly sent: () => number;
   /** Streamed requests the client closed before the provider was done. */
@@ -75,6 +83,7 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
     seen,
     delayMs: 0,
     script: { chunks: ['pong'], pauseMs: 0 },
+    calls: [],
     sent: () => sent,
     aborted: () => aborted,
     release: () => {
@@ -106,6 +115,24 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
     response.end('data: [DONE]\n\n');
   };
 
+  const streamCall = (response: ServerResponse, call: ToolCall): void => {
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const delta = {
+      tool_calls: [
+        {
+          index: 0,
+          id: `call_${String(seen.length)}`,
+          type: 'function',
+          function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+        },
+      ],
+    };
+    response.write(`data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`);
+    const finish = { choices: [{ delta: {}, finish_reason: 'tool_calls' }] };
+    response.write(`data: ${JSON.stringify(finish)}\n\n`);
+    response.end('data: [DONE]\n\n');
+  };
+
   const server = createServer((request, response) => {
     void readBody(request).then((raw) => {
       const body = Object(JSON.parse(raw) as unknown) as Record<string, unknown>;
@@ -124,7 +151,12 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
         answer(404, { error: { message: `no such model, request ${raw}` } });
       } else if (body.stream === true) {
         newGate();
-        void stream(response, provider.script);
+        const call = provider.calls.shift();
+        if (call === undefined) {
+          void stream(response, provider.script);
+        } else {
+          streamCall(response, call);
+        }
       } else {
         answer(200, { choices: [{ message: { role: 'assistant', content: 'pong' } }] });
       }
