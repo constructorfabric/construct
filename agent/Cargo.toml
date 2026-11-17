@@ -56,6 +56,10 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 uuid = { version = "1", features = ["v4"] }
 getrandom = "0.3"
 hex = "0.4"
+# The workspace folder: access confined to one open directory, atomic file replacement, globs.
+cap-std = "=4.0.3"
+cap-tempfile = "=4.0.3"
+globset = "=0.4.21"
 # The readiness probe of the host (plain HTTP) and the model Test call (rustls only, no OpenSSL).
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
