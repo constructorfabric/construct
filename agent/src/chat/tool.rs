@@ -16,6 +16,13 @@ use super::recall::VALUE_CUT as CUT_NOTE;
 /// [`CUT_NOTE`].
 const MAX_RESULT: usize = 64 * 1024;
 
+/// The line of a call to a name that is no tool of the list: the name is whatever the model wrote,
+/// so it is not shown.
+const UNKNOWN_LINE: &str = "unknown tool";
+
+/// Most characters of the line a call shows. A longer line is cut and ends with an ellipsis.
+const MAX_LINE: usize = 80;
+
 /// One tool the model may call.
 pub trait ChatTool: Send + Sync {
     /// The name the model calls it by.
@@ -26,6 +33,15 @@ pub trait ChatTool: Send + Sync {
 
     /// The JSON Schema of the arguments, as a constant text written by hand.
     fn schema(&self) -> &str;
+
+    /// The short line the window shows for a call, for example `Read notes.txt`: what the tool does
+    /// and to what, from the arguments text as the model wrote it. It never holds content (a file's
+    /// text, a search's results). When the arguments cannot be read it is the name of the tool,
+    /// which is what this gives unless a tool says more.
+    fn line(&self, arguments: &str) -> String {
+        let _ = arguments;
+        self.name().to_string()
+    }
 
     /// Run the call with the arguments text as the model wrote it. It may block: the chat runs it
     /// on a thread of its own. The error text is given to the model as the result.
@@ -128,6 +144,26 @@ impl ChatTools {
         self.listing.as_deref()
     }
 
+    /// The line for a call to `name` with `arguments`: the tool's own, or a fixed text when no tool has
+    /// it. One line of at most [`MAX_LINE`] characters whatever the tool wrote.
+    pub(super) fn line(&self, name: &str, arguments: &str) -> String {
+        let line = self
+            .find(name)
+            .map_or_else(|| UNKNOWN_LINE.to_string(), |tool| tool.line(arguments));
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        let line = if line.is_empty() {
+            name.to_string()
+        } else {
+            line
+        };
+        if line.chars().count() <= MAX_LINE {
+            return line;
+        }
+        let mut cut: String = line.chars().take(MAX_LINE - 1).collect();
+        cut.push('…');
+        cut
+    }
+
     /// The tool called `name`.
     pub(super) fn find(&self, name: &str) -> Option<Arc<dyn ChatTool>> {
         self.tools.iter().find(|tool| tool.name() == name).cloned()
@@ -197,6 +233,51 @@ mod tests {
         ] {
             assert_eq!(list(&tools).err().unwrap().reason, reason);
         }
+    }
+
+    struct Reading;
+
+    impl ChatTool for Reading {
+        fn name(&self) -> &'static str {
+            "read"
+        }
+
+        fn description(&self) -> &'static str {
+            "A tool."
+        }
+
+        fn schema(&self) -> &'static str {
+            "{}"
+        }
+
+        fn line(&self, arguments: &str) -> String {
+            serde_json::from_str::<serde_json::Value>(arguments)
+                .ok()
+                .and_then(|v| v["path"].as_str().map(|p| format!("Read {p}")))
+                .unwrap_or_else(|| self.name().to_string())
+        }
+
+        fn run(&self, _: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn a_line_is_one_short_line_and_falls_back_to_the_name() {
+        let tools = ChatTools::new(vec![Arc::new(Reading) as Arc<dyn ChatTool>]).unwrap();
+        assert_eq!(
+            tools.line("read", r#"{"path":"notes.txt"}"#),
+            "Read notes.txt"
+        );
+        assert_eq!(tools.line("read", "{not json"), "read");
+        assert_eq!(tools.line("nothing", "{}"), UNKNOWN_LINE);
+        assert_eq!(tools.line("read", r#"{"path":"a\nb\tc"}"#), "Read a b c");
+        let long = tools.line("read", &format!(r#"{{"path":"{}"}}"#, "x".repeat(500)));
+        assert_eq!(long.chars().count(), MAX_LINE);
+        assert!(long.ends_with('…'));
+        // A tool that gives no line of its own shows its name, whatever the arguments hold.
+        let plain = list(&[("plain", "{}")]).unwrap();
+        assert_eq!(plain.line("plain", r#"{"q":"secret"}"#), "plain");
     }
 
     #[test]

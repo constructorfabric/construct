@@ -34,8 +34,14 @@ describe('parseChatEvent', () => {
 
   it('refuses what is not an event', () => {
     expect(() => parseChatEvent('{"event":"delta"}')).toThrow();
-    expect(() => parseChatEvent('{"event":"other"}')).toThrow();
+    expect(() => parseChatEvent('{"event":5}')).toThrow();
+    expect(() => parseChatEvent('{}')).toThrow();
     expect(() => parseChatEvent('[]')).toThrow();
+  });
+
+  it('skips an event it does not know', () => {
+    expect(parseChatEvent('{"event":"tool","line":"Read notes.txt"}')).toBeNull();
+    expect(parseChatEvent('{"event":"other"}')).toBeNull();
   });
 });
 
@@ -99,6 +105,23 @@ describe('the replies', () => {
       ok: false,
       error: 'unknown conversation',
     });
+  });
+
+  it('skips a turn of a role it does not know', () => {
+    const lines = [
+      '{"kind":"turn","role":"user","time":"1","text":"hi"}',
+      '{"kind":"turn","role":"tool","time":"2","text":"Read notes.txt"}',
+      '{"kind":"turn","role":"other","time":"3","text":"x"}',
+      '{"kind":"turn","role":"assistant","time":"4","text":"hello"}',
+    ];
+    expect(parseGetLines(lines)).toEqual({
+      ok: true,
+      messages: [
+        { role: 'user', text: 'hi' },
+        { role: 'assistant', text: 'hello' },
+      ],
+    });
+    expect(() => parseGetLines(['{"kind":"turn","role":5,"text":"x"}'])).toThrow();
   });
 
   it('reads a delete reply', () => {
