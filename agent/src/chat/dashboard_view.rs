@@ -7,13 +7,12 @@
 //! the result of its own edit.
 //!
 //! The numbers come from [`crate::dashboard_numbers::numbers`], the function the page's command
-//! uses, and are rounded the way the page rounds them. The days of a period come from the window:
-//! each `chat-send` may carry the calendar of the person's time zone (see [`RawWindow`]), and
-//! without one the tool says it cannot tell, it never guesses a zone. The text is short and has a
-//! fixed shape; it holds no text of a message.
+//! uses, and are rounded the way the page rounds them. The days of a period are counted in the
+//! time zone of this computer, from its clock, at every call; the tool never guesses a zone. The
+//! text is short and has a fixed shape; it holds no text of a message.
 
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -26,42 +25,42 @@ use crate::dashboard_numbers::{
     Answer, MAX_DAYS, Payload, RawDay, Spec, numbers, payload_of, spec_of, spec_without_widget,
     whole_minute,
 };
-use crate::sync::lock;
 
 /// The name the model calls the tool by.
 pub const NAME: &str = "render_dashboard";
-
-/// The most days a window may give. The days it must hold run from the earlier of the first day
-/// of the previous month and 29 days before today (`last_30_days`) to the end of the current
-/// month and of the current week: at most 70 or so, so 100 leaves room.
-pub const MAX_WINDOW: usize = 100;
 
 const BAD_ARGUMENTS: &str = "the arguments are not valid for this tool: give period and group_by \
 together, or neither; period is one of today, this_week, last_week, this_month, last_month, \
 last_7_days, last_30_days; sessions is one of own, unattended, all; group_by is one of project, \
 ticket, tool, day; filter has projects, tickets and tools, each a list of names";
 
-const NO_CALENDAR: &str = "the window has not told which days belong to which period yet, so the \
-numbers cannot be counted; ask the person to try again from the window";
+const NO_CALENDAR: &str = "the clock or the time zone of this computer cannot be read, so the \
+numbers cannot be counted";
 
 /// How the tool reads the sessions of the activity store.
 pub type SessionSource = Arc<dyn Fn() -> Result<Vec<SessionMinutes>, &'static str> + Send + Sync>;
 
-/// The calendar the window gave with its last message, shared by the chat and the tool.
-#[derive(Clone, Default)]
-pub struct Calendar(Arc<Mutex<Option<Window>>>);
+/// The calendar of the person's days: the days of a period, in the time zone of this computer.
+#[derive(Clone)]
+pub struct Calendar(Arc<dyn Fn() -> Option<Window> + Send + Sync>);
 
-struct Window {
+impl Default for Calendar {
+    /// Reads the clock and the time zone of this computer at every call, so a day that has passed
+    /// or a changed zone are seen at once.
+    fn default() -> Self {
+        Self(Arc::new(|| window_in(&chrono::Local::now())))
+    }
+}
+
+#[derive(Clone)]
+pub struct Window {
     today: Date,
     days: Vec<Day>,
 }
 
-/// The calendar as a `chat-send` carries it: `today` and the consecutive `days` of the person's
-/// time zone, oldest first, each with its label (`2026-11-18`) and its start and end in UTC on a
-/// whole minute. It holds at least the days of every period the tool may ask for: from the earlier
-/// of the first day of the previous month and 29 days before today, to the end of the current
-/// month and of the current week. The window sends it with every message; a message without it
-/// clears the calendar.
+/// A calendar given by the caller: `today` and the consecutive `days`, oldest first, each with its
+/// label (`2026-11-18`) and its start and end in UTC on a whole minute. It must hold the days of
+/// every period the tool may ask for.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawWindow {
@@ -89,16 +88,13 @@ fn label_of(date: Date) -> String {
 }
 
 impl Calendar {
-    /// Keeps the calendar of the window.
+    /// A calendar that never changes, for a test or a caller that knows its days.
     ///
     /// # Errors
     /// When the labels are not consecutive dates, a day is not on a whole minute in UTC, two days
     /// overlap, or `today` is not one of the days.
-    pub fn set(&self, window: RawWindow) -> Result<(), &'static str> {
+    pub fn fixed(window: RawWindow) -> Result<Self, &'static str> {
         const INVALID: &str = "invalid window";
-        if window.days.is_empty() || window.days.len() > MAX_WINDOW {
-            return Err(INVALID);
-        }
         let today = date_of(&window.today).ok_or(INVALID)?;
         let mut days = Vec::with_capacity(window.days.len());
         let mut expected: Option<Date> = None;
@@ -118,19 +114,13 @@ impl Calendar {
         if !days.iter().any(|d| date_of(&d.label) == Some(today)) {
             return Err(INVALID);
         }
-        *lock(&self.0) = Some(Window { today, days });
-        Ok(())
-    }
-
-    /// Forgets the calendar: the tool then says it cannot tell, until a window gives one again.
-    pub fn clear(&self) {
-        *lock(&self.0) = None;
+        let window = Window { today, days };
+        Ok(Self(Arc::new(move || Some(window.clone()))))
     }
 
     /// The days of `period`, in order.
     fn days_of(&self, period: Period) -> Result<Vec<Day>, String> {
-        let guard = lock(&self.0);
-        let window = guard.as_ref().ok_or_else(|| NO_CALENDAR.to_owned())?;
+        let window = (self.0)().ok_or_else(|| NO_CALENDAR.to_owned())?;
         let (first, last) = bounds(window.today, period);
         let mut days = Vec::new();
         let mut date = first;
@@ -174,6 +164,48 @@ fn bounds(today: Date, period: Period) -> (Date, Date) {
         Period::Last7Days => (today - Duration::days(6), today),
         Period::Last30Days => (today - Duration::days(29), today),
     }
+}
+
+/// The days from the earlier of the first of the previous month and 29 days before today, to the
+/// end of the current month and of the current week: every period the tool may ask for. A day
+/// runs from the midnight of `now`'s zone to the next one, so it is 23 or 25 hours when the clocks
+/// change. `None` when a midnight does not exist or an offset is not a whole minute.
+fn window_in<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> Option<Window> {
+    use chrono::Datelike;
+    let today = Date::from_calendar_date(
+        now.year(),
+        Month::try_from(u8::try_from(now.month()).ok()?).ok()?,
+        u8::try_from(now.day()).ok()?,
+    )
+    .ok()?;
+    let first = bounds(today, Period::LastMonth)
+        .0
+        .min(bounds(today, Period::Last30Days).0);
+    let last = bounds(today, Period::ThisMonth)
+        .1
+        .max(bounds(today, Period::ThisWeek).1);
+    let midnight = |date: Date| -> Option<String> {
+        let naive = chrono::NaiveDate::from_ymd_opt(
+            date.year(),
+            u32::from(u8::from(date.month())),
+            u32::from(date.day()),
+        )?
+        .and_hms_opt(0, 0, 0)?;
+        let start = now.timezone().from_local_datetime(&naive).earliest()?;
+        Some(start.to_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    };
+    let mut days = Vec::new();
+    let mut date = first;
+    while date <= last {
+        let (start, end) = (midnight(date)?, midnight(date.next_day()?)?);
+        days.push(Day {
+            label: label_of(date),
+            start: whole_minute(&start)?,
+            end: whole_minute(&end)?,
+        });
+        date = date.next_day()?;
+    }
+    Some(Window { today, days })
 }
 
 const fn period_name(period: Period) -> &'static str {
@@ -465,6 +497,53 @@ mod tests {
 
     fn date(label: &str) -> Date {
         date_of(label).unwrap()
+    }
+
+    #[test]
+    fn the_days_start_at_the_midnight_of_the_zone_not_of_utc() {
+        use chrono::TimeZone;
+        // 2026-11-18 01:00 in +05:30 is still the 17th in UTC.
+        let zone = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+        let now = zone.with_ymd_and_hms(2026, 11, 18, 1, 0, 0).unwrap();
+        let window = window_in(&now).unwrap();
+        assert_eq!(label_of(window.today), "2026-11-18");
+        let today = window
+            .days
+            .iter()
+            .find(|d| d.label == "2026-11-18")
+            .unwrap();
+        // Midnight +05:30 is 18:30Z the evening before.
+        assert_eq!(whole_minute("2026-11-17T18:30:00Z"), Some(today.start));
+        assert_eq!(whole_minute("2026-11-18T18:30:00Z"), Some(today.end));
+        // From the first of last month (Oct 1) to the end of this month (Nov 30), whole.
+        assert_eq!(window.days.first().unwrap().label, "2026-10-01");
+        assert_eq!(window.days.last().unwrap().label, "2026-11-30");
+        assert_eq!(window.days.len(), 61);
+    }
+
+    #[test]
+    fn the_window_reaches_back_for_last_30_days_on_the_first_of_march() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2027, 3, 1, 12, 0, 0).unwrap();
+        let window = window_in(&now).unwrap();
+        assert_eq!(window.days.first().unwrap().label, "2027-01-31");
+        assert!(window.days.len() <= 100);
+    }
+
+    #[test]
+    fn the_clock_of_this_computer_gives_the_days_of_every_period() {
+        let calendar = Calendar::default();
+        for period in [
+            Period::Today,
+            Period::ThisWeek,
+            Period::LastWeek,
+            Period::ThisMonth,
+            Period::LastMonth,
+            Period::Last7Days,
+            Period::Last30Days,
+        ] {
+            assert!(calendar.days_of(period).is_ok(), "{period:?}");
+        }
     }
 
     #[test]

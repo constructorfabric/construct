@@ -106,7 +106,6 @@ fn run() -> std::io::Result<()> {
         .with_activity(activity.clone())
         .with_model(model_state.clone())
         .with_service(login_service());
-    let calendar = construct_agent::chat::dashboard_view::Calendar::default();
     let (server, render_tool) = match dashboard {
         Some(dashboard) => {
             let numbers = construct_agent::dashboard_numbers::Numbers::new(
@@ -118,7 +117,7 @@ fn run() -> std::io::Result<()> {
             let tool = construct_agent::chat::dashboard_view::tool(
                 dashboard.clone(),
                 std::sync::Arc::new(move || read.read_sessions()),
-                calendar.clone(),
+                construct_agent::chat::dashboard_view::Calendar::default(),
             );
             (
                 server.with_numbers(numbers).with_dashboard(dashboard),
@@ -134,7 +133,7 @@ fn run() -> std::io::Result<()> {
         &link,
         manage.as_ref(),
         &activity,
-        (&calendar, render_tool),
+        render_tool,
     );
     eprintln!(
         "construct-agent {} listening on {}",
@@ -317,13 +316,9 @@ fn with_chat(
     link: &construct_agent::chat::Link,
     manage: Option<&construct_agent::manage::Manager>,
     activity: &construct_agent::activity::Feed,
-    dashboard: (
-        &construct_agent::chat::dashboard_view::Calendar,
-        Option<std::sync::Arc<dyn construct_agent::chat::tool::ChatTool>>,
-    ),
+    render_tool: Option<std::sync::Arc<dyn construct_agent::chat::tool::ChatTool>>,
 ) -> construct_agent::ipc::Server {
     use construct_agent::chat::{Chat, Deadlines};
-    let (calendar, render_tool) = dashboard;
     let Some(settings) = settings else {
         return server;
     };
@@ -335,9 +330,7 @@ fn with_chat(
                     chat.with_link(link.clone())
                         .with_recorder(activity.recorder())
                 })
-                .map(|chat| {
-                    with_file_tools(chat.with_calendar(calendar.clone()), &dir, render_tool)
-                })
+                .map(|chat| with_file_tools(chat, &dir, render_tool))
                 .map(|chat| match manage {
                     Some(manage) => chat.with_observer(manage.observer()),
                     None => chat,

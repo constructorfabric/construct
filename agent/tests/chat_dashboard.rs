@@ -79,7 +79,7 @@ fn fixture() -> Vec<SessionMinutes> {
     ]
 }
 
-/// `count` days from `from` (a UTC date), as a window would send them: the labels are the dates and
+/// `count` days from `from` (a UTC date), as a calendar gives them: the labels are the dates and
 /// the bounds are the UTC midnights.
 fn days(from: &str, count: usize) -> Value {
     let first = at(&format!("{from}T00:00"));
@@ -104,7 +104,7 @@ fn days(from: &str, count: usize) -> Value {
         .collect()
 }
 
-/// The window of the tests: Wednesday the 11th of November, and the days from the first of October
+/// The calendar of the tests: Wednesday the 11th of November, and the days from the first of October
 /// to the end of November.
 fn window() -> Value {
     json!({ "today": "2026-11-11", "days": days("2026-10-01", 61) })
@@ -132,16 +132,15 @@ impl Stand {
             .unwrap();
         let workspace = Arc::new(Workspace::open(&data).unwrap());
         let dashboard = Dashboard::open(Arc::clone(&workspace));
-        let calendar = Calendar::default();
+        let calendar = Calendar::fixed(serde_json::from_value(window()).unwrap()).unwrap();
         let mut tools = file_tools(&workspace);
         tools.push(dashboard_view::tool(
             dashboard.clone(),
             Arc::new(|| Ok(fixture())),
-            calendar.clone(),
+            calendar,
         ));
         let chat = Chat::new(settings.clone(), &data, rt.handle().clone(), deadlines())
             .unwrap()
-            .with_calendar(calendar)
             .with_tools(ChatTools::new(tools).unwrap());
         let server = Server::bind(&socket)
             .unwrap()
@@ -157,12 +156,9 @@ impl Stand {
         }
     }
 
-    /// Sends the message with `window` and returns the events of the answer.
-    fn say(&self, window: Option<Value>) -> Vec<Value> {
-        let mut request = json!({ "message": MESSAGE });
-        if let Some(window) = window {
-            request["window"] = window;
-        }
+    /// Sends the message and returns the events of the answer.
+    fn say(&self) -> Vec<Value> {
+        let request = json!({ "message": MESSAGE });
         connect(&self.socket, &format!("chat-send {request}"))
     }
 
@@ -296,7 +292,7 @@ fn a_question_about_the_week_renders_the_numbers_of_the_pages_command() {
         Turn::Text("Here is your week."),
     ]);
     let document = default_activity();
-    let events = stand.say(Some(window()));
+    let events = stand.say();
     is_done(&events);
     assert_eq!(Stand::lines(&events), ["Looked at your dashboard"]);
 
@@ -348,7 +344,7 @@ fn a_period_with_a_grouping_renders_that_table_and_leaves_the_file_alone() {
     ]);
     let before = stand.file();
     let document = default_activity();
-    let events = stand.say(Some(window()));
+    let events = stand.say();
     is_done(&events);
     assert_eq!(
         Stand::lines(&events),
@@ -390,7 +386,7 @@ fn a_document_with_errors_returns_them_with_their_places() {
     let mut broken = default_activity();
     broken["payload"]["period"] = json!("next_year");
     stand.write(&broken.to_string());
-    let events = stand.say(Some(window()));
+    let events = stand.say();
     is_done(&events);
     assert_eq!(Stand::lines(&events), ["Checked your dashboard file"]);
     let results = stand.results();
@@ -411,7 +407,7 @@ fn a_file_that_is_not_json_is_told_with_its_line_and_the_last_good_version_stays
         Turn::Text("It does not parse."),
     ]);
     stand.write("{\n  \"type\": ,\n}");
-    let events = stand.say(Some(window()));
+    let events = stand.say();
     is_done(&events);
     let results = stand.results();
     assert_eq!(
@@ -438,75 +434,13 @@ fn a_bad_argument_is_a_result_with_a_plain_reason() {
         ]),
         Turn::Text("I could not do that."),
     ]);
-    is_done(&stand.say(Some(window())));
+    is_done(&stand.say());
     let results = stand.results();
     assert_eq!(results.len(), 3);
     for result in &results {
         assert!(result.starts_with(NOT_VALID), "{result}");
         assert!(result.contains("period is one of"), "{result}");
         assert_eq!(result, &results[0]);
-    }
-}
-
-#[test]
-fn without_a_window_the_days_are_not_guessed() {
-    let stand = Stand::new(vec![
-        Turn::Calls(vec![("render_dashboard", json!({}))]),
-        Turn::Text("I cannot tell."),
-    ]);
-    is_done(&stand.say(None));
-    let results = stand.results();
-    assert!(
-        results[0].starts_with("Error: the window has not told which days belong to which period"),
-        "{results:?}"
-    );
-}
-
-#[test]
-fn a_message_without_a_window_forgets_the_days_of_the_last_one() {
-    let stand = Stand::new(vec![
-        Turn::Calls(vec![("render_dashboard", json!({}))]),
-        Turn::Text("Done."),
-        Turn::Calls(vec![("render_dashboard", json!({}))]),
-        Turn::Text("I cannot tell."),
-    ]);
-    is_done(&stand.say(Some(window())));
-    assert!(
-        stand.results()[0].starts_with("Dashboard "),
-        "{:?}",
-        stand.results()
-    );
-    is_done(&stand.say(None));
-    let results = stand.results();
-    assert!(
-        results
-            .last()
-            .unwrap()
-            .starts_with("Error: the window has not told which days"),
-        "{results:?}"
-    );
-}
-
-#[test]
-fn a_window_that_is_not_a_calendar_is_refused() {
-    let stand = Stand::new(vec![]);
-    for window in [
-        json!({ "today": "2026-11-11", "days": [] }),
-        // Today is not one of the days.
-        json!({ "today": "2026-12-25", "days": days("2026-11-09", 7) }),
-        // A day that is not a whole minute in UTC.
-        json!({ "today": "2026-11-09", "days": [
-            { "label": "2026-11-09", "start": "2026-11-09T00:00:30Z", "end": "2026-11-10T00:00:00Z" }] }),
-        // A gap between two days.
-        json!({ "today": "2026-11-09", "days": [
-            { "label": "2026-11-09", "start": "2026-11-09T00:00:00Z", "end": "2026-11-10T00:00:00Z" },
-            { "label": "2026-11-11", "start": "2026-11-11T00:00:00Z", "end": "2026-11-12T00:00:00Z" }] }),
-    ] {
-        let events = stand.say(Some(window));
-        assert_eq!(
-            events,
-            [json!({ "event": "error", "reason": "invalid request" })]
-        );
     }
 }
 
@@ -520,7 +454,7 @@ fn the_tool_list_is_the_same_in_every_request_and_holds_the_tool_once() {
         )]),
         Turn::Text("Done."),
     ]);
-    is_done(&stand.say(Some(window())));
+    is_done(&stand.say());
     let lists = tool_lists(&stand);
     assert_eq!(lists.len(), 3);
     assert!(lists.iter().all(|list| list == &lists[0]));
