@@ -53,6 +53,8 @@ export type DashboardResult =
       readonly sessionCount: number;
       readonly days: readonly DayMinutes[];
       readonly groups: readonly GroupMinutes[];
+      /** How many hidden projects have time in the days: what the totals leave out. */
+      readonly hiddenProjects: number;
     }
   | {
       readonly ok: false;
@@ -102,6 +104,10 @@ export interface DashboardDocument {
   readonly period: Period;
   readonly sessions: Whose;
   readonly widgets: readonly Widget[];
+  /** The projects the page leaves out, as the document names them. */
+  readonly hiddenProjects: readonly string[];
+  /** The name the page shows for a project, by the name the document gives the project. */
+  readonly projectNames: Readonly<Record<string, string>>;
 }
 
 /** Why the file as it is now is not used, and where: a line and column or a JSON pointer. */
@@ -120,9 +126,16 @@ export type DocumentResult =
     }
   | { readonly ok: false; readonly error: string };
 
+/** A change of the projects the page shows: hide one, show one again, or show one under a name. */
+export type ProjectChange =
+  | { readonly action: 'hide' | 'show'; readonly project: string }
+  | { readonly action: 'rename'; readonly project: string; readonly name: string };
+
 export interface DashboardApi {
   readonly getDashboardNumbers: (input: DashboardInput) => Promise<DashboardResult>;
   readonly getDashboardDocument: () => Promise<DocumentResult>;
+  /** Writes the change into the dashboard document; the answer is the document as it is then. */
+  readonly changeDashboardProject: (change: ProjectChange) => Promise<DocumentResult>;
 }
 
 /** What the agent answers while it builds the activity time from the history. */
@@ -130,6 +143,7 @@ export const readingHistoryError = 'the activity time is being built';
 
 export const DASHBOARD_NUMBERS_CHANNEL = 'dashboard:numbers';
 export const DASHBOARD_DOCUMENT_CHANNEL = 'dashboard:document';
+export const DASHBOARD_PROJECT_CHANNEL = 'dashboard:project';
 
 /** The most days one call may ask for: the agent's own limit. */
 export const maxDays = 62;
@@ -137,7 +151,7 @@ const maxLabelChars = 32;
 const wholeMinuteUtc = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:00)?Z$/;
 const widgetId = /^[a-z0-9_-]{1,64}$/;
 const maxFilterNames = 100;
-const maxNameChars = 512;
+export const maxNameChars = 512;
 
 export function isWhose(value: unknown): value is Whose {
   return whoseValues.some((whose) => whose === value);
@@ -244,6 +258,39 @@ export function dashboardNumbersLine(input: DashboardInput): string {
 
 export const dashboardGetLine = 'dashboard-get';
 
+const actions = ['hide', 'show', 'rename'] as const;
+
+function isProjectText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '' && value.length <= maxNameChars;
+}
+
+/** The change of a bridge call, which comes from the window and so is checked. */
+export function parseProjectChange(value: unknown): ProjectChange | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const { action, project, name } = value;
+  const known = actions.find((candidate) => candidate === action);
+  if (known === undefined || !isProjectText(project)) {
+    return null;
+  }
+  if (known === 'rename') {
+    return isProjectText(name) && Object.keys(value).length === 3
+      ? { action: known, project, name: name.trim() }
+      : null;
+  }
+  return Object.keys(value).length === 2 ? { action: known, project } : null;
+}
+
+/** `dashboard-hide {...}`, `dashboard-show {...}` or `dashboard-rename {...}`. */
+export function projectChangeLine(change: ProjectChange): string {
+  const request =
+    change.action === 'rename'
+      ? { project: change.project, name: change.name }
+      : { project: change.project };
+  return `dashboard-${change.action} ${JSON.stringify(request)}`;
+}
+
 function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -286,7 +333,8 @@ export function parseDashboardReply(line: string): DashboardResult {
     !isNumber(reply.total_minutes) ||
     !isNumber(reply.session_count) ||
     !Array.isArray(reply.days) ||
-    !Array.isArray(reply.groups)
+    !Array.isArray(reply.groups) ||
+    !isNumber(reply.hidden_project_count)
   ) {
     throw new Error('the agent reply has no numbers');
   }
@@ -298,6 +346,7 @@ export function parseDashboardReply(line: string): DashboardResult {
     sessionCount: reply.session_count,
     days: days.map(parseDayMinutes),
     groups: groups.map(parseGroup),
+    hiddenProjects: reply.hidden_project_count,
   };
 }
 
@@ -365,11 +414,24 @@ function parseDocument(value: unknown): DashboardDocument {
     throw new Error('the agent reply has a document with no widgets');
   }
   const widgets: unknown[] = payload.widgets;
-  return {
+  const parsed = {
     title: value.title,
     period: oneOf(periods, payload.period, 'a period'),
     sessions: oneOf(whoseValues, payload.sessions, 'a choice of sessions'),
     widgets: widgets.map(parseWidget),
+  };
+  const hidden: unknown = payload.hidden_projects;
+  const names: unknown = payload.project_names;
+  if (!Array.isArray(hidden) || !hidden.every((project) => typeof project === 'string')) {
+    throw new Error('the agent reply has hidden projects that are not a list of names');
+  }
+  if (!isRecord(names) || !Object.values(names).every((name) => typeof name === 'string')) {
+    throw new Error('the agent reply has project names that are not names');
+  }
+  return {
+    ...parsed,
+    hiddenProjects: hidden as string[],
+    projectNames: names as Record<string, string>,
   };
 }
 

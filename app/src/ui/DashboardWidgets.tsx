@@ -15,12 +15,14 @@ import {
   TableRow,
 } from '@gears-frontx/ui-kit';
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts';
+import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import type {
   DashboardDocument,
   DayMinutes,
   GroupBy,
   GroupMinutes,
+  ProjectChange,
   Whose,
   Widget,
 } from '../dashboard-protocol';
@@ -28,6 +30,9 @@ import { t } from '../translation';
 import styles from './app.module.css';
 import { formatMinutes } from './dashboard-period';
 import type { Split, WidgetNumbers } from './useDashboard';
+import { takeRowsBack } from './focus-after-show';
+import { ProjectMenu } from './ProjectMenu';
+import type { ProjectActions } from './ProjectMenu';
 import { useSize } from './useSize';
 
 /** The colours of the two series, from the kit's chart tokens. */
@@ -175,15 +180,59 @@ function byTime(groups: readonly GroupMinutes[]): GroupMinutes[] {
   return [...groups].sort((a, b) => b.minutes - a.minutes || a.key.localeCompare(b.key));
 }
 
+/** The names the document gives a row: the projects shown under it by a name of the page. */
+function projectsOf(document: DashboardDocument, name: string): string[] {
+  const named = Object.entries(document.projectNames)
+    .filter(([, shown]) => shown === name)
+    .map(([project]) => project);
+  // A project the document has not named is known by the name the row has.
+  return Object.hasOwn(document.projectNames, name) ? named : [name, ...named];
+}
+
 function GroupTable({
   id,
   groupBy,
   groups,
+  actions,
 }: {
   readonly id: string;
   readonly groupBy: GroupBy;
   readonly groups: readonly GroupMinutes[];
+  /** What a row of projects can do; tables of other groupings have none. */
+  readonly actions: ProjectActions | null;
 }): ReactNode {
+  // Where the focus goes once the rows are counted again: the row with this name, or the first
+  // one when there is none. A row hidden or renamed is gone, with the button that had the focus.
+  const focusAfter = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const wanted = focusAfter.current;
+    if (wanted === undefined) {
+      return;
+    }
+    focusAfter.current = undefined;
+    const buttons = [...window.document.querySelectorAll<HTMLElement>(`#${id} [data-project]`)];
+    (buttons.find((button) => button.dataset.project === wanted) ?? buttons[0])?.focus();
+  }, [groups, id]);
+  // The Show button of the page took the focus away when the rows came back: it goes to the first.
+  useEffect(() => {
+    if (takeRowsBack() && actions !== null) {
+      window.document.querySelector<HTMLElement>(`#${id} [data-project]`)?.focus();
+    }
+    // Only when the table is drawn for the first time.
+  }, []);
+  const rowActions: ProjectActions | null =
+    actions === null
+      ? null
+      : {
+          hide: (name) => {
+            focusAfter.current = null;
+            actions.hide(name);
+          },
+          rename: (name, to) => {
+            focusAfter.current = to;
+            actions.rename(name, to);
+          },
+        };
   if (groups.length === 0) {
     return <p className={styles.tableEmpty}>{t('DashboardPage.Table.Empty')}</p>;
   }
@@ -207,7 +256,12 @@ function GroupTable({
           const percent = Math.round(group.share * 100);
           return (
             <TableRow key={group.key}>
-              <TableCell>{group.key}</TableCell>
+              <TableCell>
+                <span className={styles.groupName}>
+                  {group.key}
+                  {rowActions !== null && <ProjectMenu name={group.key} actions={rowActions} />}
+                </span>
+              </TableCell>
               <TableCell>{formatMinutes(group.minutes)}</TableCell>
               <TableCell>
                 <span className={styles.share}>
@@ -233,10 +287,12 @@ export function DashboardWidget({
   document,
   widget,
   numbers,
+  onChange,
 }: {
   readonly document: DashboardDocument;
   readonly widget: Widget;
   readonly numbers: WidgetNumbers | undefined;
+  readonly onChange: (changes: readonly ProjectChange[]) => void;
 }): ReactNode {
   const period = t(`DashboardPage.Period.${widget.period ?? document.period}`);
   const sessions = widget.sessions ?? document.sessions;
@@ -247,6 +303,20 @@ export function DashboardWidget({
       : widget.kind === 'bars_per_day'
         ? t('DashboardPage.Widget.Bars')
         : t('DashboardPage.Widget.Total');
+  const actions: ProjectActions | null =
+    groupBy === 'project'
+      ? {
+          hide: (name) => onChange([{ action: 'hide', project: name }]),
+          rename: (name, to) =>
+            onChange(
+              projectsOf(document, name).map((project) => ({
+                action: 'rename',
+                project,
+                name: to,
+              })),
+            ),
+        }
+      : null;
   return (
     <WidgetCard title={title} period={period}>
       {numbers === undefined ? null : !numbers.ok ? (
@@ -263,7 +333,12 @@ export function DashboardWidget({
           sessions={sessions}
         />
       ) : (
-        <GroupTable id={`table-${widget.id}`} groupBy={groupBy} groups={numbers.numbers.groups} />
+        <GroupTable
+          id={`table-${widget.id}`}
+          groupBy={groupBy}
+          groups={numbers.numbers.groups}
+          actions={actions}
+        />
       )}
     </WidgetCard>
   );

@@ -4,6 +4,7 @@ import type { Whose } from '../src/dashboard-protocol';
 import { dayLabel, formatMinutes, mondayOf } from '../src/ui/dashboard-period';
 import { expect, test, withStandIn } from './fixtures';
 import type { Session } from './fixtures';
+import { firstCells, now, settingsReply } from './dashboard-shared';
 import { screenshotBothThemes } from './screenshots';
 
 interface Request {
@@ -165,20 +166,12 @@ function numbersReply(agent: Agent, request: Request): string {
   });
 }
 
-function settingsReply(agent: Agent): string {
+function agentSettingsReply(agent: Agent): string {
   if (agent.settingsError !== null) {
     return JSON.stringify({ error: agent.settingsError });
   }
-  const collecting = agent.collecting;
-  return JSON.stringify({
-    model: { base_url: 'https://example.invalid/v1', model: 'example-model', api_key_set: false },
-    collection: { enabled: collecting, claude_code: collecting, codex: collecting },
-    notice: null,
-  });
+  return settingsReply(agent.collecting);
 }
-
-/** The window's clock stands at Wednesday 18 November 2026, so the week is a known one. */
-const now = new Date(2026, 10, 18, 10, 0, 0);
 
 /** Answers the window's calls with `agent` and opens the Dashboard page. */
 async function withAgent(
@@ -207,7 +200,7 @@ async function withAgent(
         });
       }
       if (line === 'settings-get') {
-        return settingsReply(agent);
+        return agentSettingsReply(agent);
       }
       return JSON.stringify({
         status: 'running',
@@ -279,11 +272,6 @@ async function placeOf(page: Page, id: string): Promise<number[]> {
 }
 
 const rowStep = 56 + 16;
-
-/** The text of the first cell of each row of a table, in the order shown. */
-async function firstCells(page: Page, id: string): Promise<string[]> {
-  return page.locator(`#table-${id} tbody tr td:first-child`).allTextContents();
-}
 
 /** The week total the stand-in gives for the user's own time. */
 const ownWeek = formatMinutes([0, 1, 2, 3, 4, 5, 6].reduce((sum, i) => sum + ownMinutes(i), 0));
