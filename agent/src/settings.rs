@@ -45,6 +45,9 @@ impl fmt::Debug for Model {
     }
 }
 
+/// The tools that have a switch of their own, by the name their sessions carry in the store.
+pub const TOOLS: [&str; 2] = ["claude-code", "codex"];
+
 /// What the readers collect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -369,6 +372,16 @@ impl Settings {
             }
     }
 
+    /// The tools whose sessions are not stored now: all of them while collection is off, else the
+    /// ones with their own switch off.
+    #[must_use]
+    pub fn tools_off(&self) -> Vec<&'static str> {
+        TOOLS
+            .into_iter()
+            .filter(|tool| !self.collects(tool))
+            .collect()
+    }
+
     /// Change settings and save them. The change is visible to every reader once this
     /// returns `Ok`; on an error nothing changed, in memory or on disk.
     ///
@@ -486,9 +499,11 @@ mod tests {
         s.apply(update(r#"{"collection":{"codex":false}}"#))
             .unwrap();
         assert!(s.collects("claude-code") && !s.collects("codex"));
+        assert_eq!(s.tools_off(), ["codex"]);
         s.apply(update(r#"{"collection":{"enabled":false,"codex":true}}"#))
             .unwrap();
         assert!(!s.collects("claude-code") && !s.collects("codex"));
+        assert_eq!(s.tools_off(), ["claude-code", "codex"]);
         let _ = fs::remove_dir_all(dir);
     }
 

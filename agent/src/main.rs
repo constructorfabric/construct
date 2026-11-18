@@ -119,10 +119,16 @@ fn run() -> std::io::Result<()> {
                 std::sync::Arc::new(move || read.read_sessions()),
                 construct_agent::chat::dashboard_view::Calendar::default(),
             );
-            (
-                server.with_numbers(numbers).with_dashboard(dashboard),
-                Some(tool),
-            )
+            let server = server
+                .with_numbers(numbers)
+                .with_details(construct_agent::dashboard_details::Details::new(
+                    activity.clone(),
+                    dashboard.clone(),
+                    settings.clone(),
+                    rt.handle().clone(),
+                ))
+                .with_dashboard(dashboard);
+            (server, Some(tool))
         }
         None => (server, None),
     };

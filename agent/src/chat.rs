@@ -54,8 +54,10 @@ use crate::records::FileSink;
 use crate::settings::Settings;
 use crate::sync::lock;
 
+mod bash;
 pub mod dashboard_view;
 pub mod files;
+pub mod machine;
 mod recall;
 pub mod subagent;
 pub mod tool;

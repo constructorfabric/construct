@@ -119,16 +119,18 @@ impl Answer {
     }
 }
 
-/// The time of `sessions` in `days` as the page shows it: by the time rules, after the hidden
-/// projects and the filter of `spec` have left sessions out.
-///
-/// # Errors
-/// Fails when a day is empty or two days overlap.
-pub fn numbers(
-    sessions: &[SessionMinutes],
-    days: &[Day],
-    spec: &Spec,
-) -> Result<Answer, DaysError> {
+/// The sessions a page counts, and what it calls their projects.
+pub(crate) struct Selection {
+    /// The sessions that stay, cut to the minutes near the days.
+    pub kept: Vec<SessionMinutes>,
+    /// The name the page shows for each project the store keeps.
+    pub shown: BTreeMap<String, String>,
+    /// How many hidden projects have time in the days.
+    pub hidden_projects: usize,
+}
+
+/// Leaves out the sessions of hidden projects and those the filter of `spec` does not keep.
+pub(crate) fn select(sessions: &[SessionMinutes], days: &[Day], spec: &Spec) -> Selection {
     // Projects are named over all the sessions, so that a name does not depend on what is left.
     let labels = assign::project_labels(sessions.iter().map(|s| s.project.as_str()));
     let shown: BTreeMap<String, String> = labels
@@ -209,6 +211,29 @@ pub fn numbers(
                 .is_ok_and(|report| report.total_parts > 0)
         })
         .count();
+
+    Selection {
+        kept,
+        shown,
+        hidden_projects: hidden,
+    }
+}
+
+/// The time of `sessions` in `days` as the page shows it: by the time rules, after the hidden
+/// projects and the filter of `spec` have left sessions out.
+///
+/// # Errors
+/// Fails when a day is empty or two days overlap.
+pub fn numbers(
+    sessions: &[SessionMinutes],
+    days: &[Day],
+    spec: &Spec,
+) -> Result<Answer, DaysError> {
+    let Selection {
+        kept,
+        shown,
+        hidden_projects,
+    } = select(sessions, days, spec);
     let kind = spec.kind.unwrap_or(Kind::Person);
     let report = |grouping| calculate_named(&kept, days, kind, grouping, &shown);
     let per_day = report(Grouping::Day)?;
@@ -226,16 +251,16 @@ pub fn numbers(
             .into_iter()
             .map(|g| (g.key, minutes(g.parts)))
             .collect(),
-        hidden_projects: hidden,
+        hidden_projects,
     })
 }
 
 /// A request line, read.
-struct Request {
-    spec: Spec,
-    days: Vec<Day>,
+pub(crate) struct Request {
+    pub spec: Spec,
+    pub days: Vec<Day>,
     /// What the widget draws, when the request names one.
-    widget: Option<(String, WidgetKind)>,
+    pub widget: Option<(String, WidgetKind)>,
 }
 
 #[derive(Deserialize)]
@@ -365,7 +390,7 @@ fn widget_spec(payload: &Payload, id: &str) -> Result<(Spec, WidgetKind), String
     Ok((spec_of(widget, payload), widget.kind))
 }
 
-fn read_request(argument: &str, document: Option<&Value>) -> Result<Request, String> {
+pub(crate) fn read_request(argument: &str, document: Option<&Value>) -> Result<Request, String> {
     let raw: RawRequest = serde_json::from_str(argument)
         .map_err(|_| "the request is not a JSON object the command knows".to_owned())?;
     let days = read_days(raw.days)?;

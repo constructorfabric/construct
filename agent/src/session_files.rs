@@ -53,22 +53,23 @@ pub struct SessionFiles<'a> {
     removed: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize)]
 struct Remote {
     name: String,
     url: String,
 }
 
-#[derive(Serialize)]
-struct Folder {
-    folder: String,
+#[derive(Serialize, serde::Deserialize)]
+pub(crate) struct Folder {
+    pub(crate) folder: String,
     /// Empty when the folder is gone from this machine or is not a git repository.
     remotes: Vec<Remote>,
 }
 
-#[derive(Serialize)]
-struct Folders {
-    folders: Vec<Folder>,
+/// The content of `history/folders.json`, written here and read by the tools of the machine.
+#[derive(Serialize, serde::Deserialize)]
+pub(crate) struct Folders {
+    pub(crate) folders: Vec<Folder>,
 }
 
 impl<'a> SessionFiles<'a> {
@@ -338,7 +339,7 @@ static RULES: LazyLock<Vec<(Regex, String)>> = LazyLock::new(|| {
 /// address, or the word after a flag of that name), a well-known token shape, and the user name
 /// and password of a web address. A loose rule that may hide too much: the files are never kept,
 /// and a hidden word costs less than a leaked secret.
-fn mask_secrets(text: &str) -> String {
+pub(crate) fn mask_secrets(text: &str) -> String {
     let mut text = strip_userinfo(text);
     for (rule, with) in RULES.iter() {
         text = rule.replace_all(&text, with.as_str()).into_owned();
