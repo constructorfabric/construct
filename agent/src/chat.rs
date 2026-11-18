@@ -14,6 +14,9 @@
 //! [`Chat::with_tools`]): a fixed list, offered to the model in every request; a call to a name
 //! that is not in it is answered with an error text. A result is cut at 64 KiB, note included.
 //!
+//! The `render_dashboard` tool counts the days of a period in the time zone of this computer (see
+//! [`dashboard_view`]).
+//!
 //! The list may hold the `run_subagent` tool (see [`subagent`]): a call to it runs a second,
 //! separate conversation of the same model inside the call, with the other tools of the list. The
 //! bytes sent to the provider and received from it by an answer, sub-agents included, are counted
@@ -52,6 +55,7 @@ use crate::settings::Settings;
 use crate::sync::lock;
 
 mod bash;
+pub mod dashboard_view;
 pub mod files;
 pub mod machine;
 mod recall;

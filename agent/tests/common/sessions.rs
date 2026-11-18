@@ -30,3 +30,40 @@ pub fn session(
 pub fn run(start: i64, count: i64) -> Vec<i64> {
     (start..start + count).collect()
 }
+
+/// Sessions in three projects over the 9th to the 11th of November 2026: `/w/shop` and `/w/blog`
+/// overlap in time on the 10th, and `/w/lab` is a script's.
+pub fn fixture() -> Vec<SessionMinutes> {
+    let mut lab = session(
+        "claude",
+        "lab",
+        "/w/lab",
+        "LAB-1",
+        &run(at("2026-11-10T09:00"), 30),
+    );
+    lab.unattended = true;
+    vec![
+        session(
+            "claude",
+            "shop-1",
+            "/w/shop",
+            "SHOP-7",
+            &run(at("2026-11-09T09:00"), 40),
+        ),
+        session(
+            "claude",
+            "shop-2",
+            "/w/shop",
+            "SHOP-7",
+            &run(at("2026-11-10T10:00"), 20),
+        ),
+        session(
+            "codex",
+            "blog-1",
+            "/w/blog",
+            "",
+            &run(at("2026-11-10T10:10"), 30),
+        ),
+        lab,
+    ]
+}

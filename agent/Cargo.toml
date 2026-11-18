@@ -55,6 +55,9 @@ figment = "0.10"
 tokio-util = "0.7"
 futures-util = "0.3"
 time = { version = "0.3", features = ["formatting", "parsing"] }
+# The local time zone for the days of the dashboard tool: `time` refuses to read the local offset in
+# a process with several threads, and `chrono` reads it for every date.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 getrandom = "0.3"
 hex = "0.4"
@@ -73,6 +76,10 @@ regex = "1"
 libc = "0.2"
 # The readiness probe of the host (plain HTTP) and the model Test call (rustls only, no OpenSSL).
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+# Zones with a clock change, for the tests of the days.
+chrono-tz = "0.10"
 
 [lints]
 workspace = true

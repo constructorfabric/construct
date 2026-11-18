@@ -38,7 +38,9 @@ use crate::activity::rules::{
     Day, DaysError, Group, Grouping, Kind, PARTS_PER_MINUTE, REACH, SessionMinutes,
     calculate_named, check_days, minute_number,
 };
-use crate::dashboard::{ActivityDashboardV1, DashboardV1, Filter, GroupBy, Sessions, WidgetKind};
+use crate::dashboard::{
+    ActivityDashboardV1, DashboardV1, Filter, GroupBy, Sessions, Widget, WidgetKind,
+};
 use crate::dashboard_document::Dashboard;
 
 /// The most days one request may ask for: a month and a half is more than any period of a page.
@@ -263,10 +265,10 @@ pub(crate) struct Request {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawDay {
-    label: String,
-    start: String,
-    end: String,
+pub(crate) struct RawDay {
+    pub(crate) label: String,
+    pub(crate) start: String,
+    pub(crate) end: String,
 }
 
 #[derive(Deserialize)]
@@ -279,7 +281,7 @@ struct RawRequest {
     group_by: Option<GroupBy>,
 }
 
-fn kind_of(sessions: Sessions) -> Kind {
+pub(crate) fn kind_of(sessions: Sessions) -> Kind {
     match sessions {
         Sessions::Own => Kind::Person,
         Sessions::Unattended => Kind::Unattended,
@@ -287,7 +289,7 @@ fn kind_of(sessions: Sessions) -> Kind {
     }
 }
 
-fn grouping_of(group_by: GroupBy) -> Grouping {
+pub(crate) fn grouping_of(group_by: GroupBy) -> Grouping {
     match group_by {
         GroupBy::Project => Grouping::Project,
         GroupBy::Ticket => Grouping::Ticket,
@@ -297,7 +299,7 @@ fn grouping_of(group_by: GroupBy) -> Grouping {
 }
 
 /// A UTC time that is a whole minute: `2026-11-11T00:00:00Z`, or `2026-11-11T00:00Z`.
-fn whole_minute(time: &str) -> Option<i64> {
+pub(crate) fn whole_minute(time: &str) -> Option<i64> {
     let seconds = time.get(16..)?;
     if !matches!(seconds, "Z" | ":00Z") {
         return None;
@@ -333,9 +335,9 @@ fn read_days(raw: Vec<RawDay>) -> Result<Vec<Day>, String> {
 
 /// The payload of the dashboard document, read once and typed. The document passed its type, so
 /// a payload that does not read is a fault of the agent, and the request is refused.
-type Payload = ActivityDashboardV1;
+pub(crate) type Payload = ActivityDashboardV1;
 
-fn payload_of(document: Option<&Value>) -> Result<Payload, String> {
+pub(crate) fn payload_of(document: Option<&Value>) -> Result<Payload, String> {
     let document = document.ok_or("the dashboard document is not available")?;
     serde_json::from_value::<DashboardV1<Payload>>(document.clone())
         .map(|typed| typed.payload)
@@ -344,8 +346,40 @@ fn payload_of(document: Option<&Value>) -> Result<Payload, String> {
 
 /// What a widget of the document counts: its own sessions or the page's, its filter and, for a
 /// table, what it groups by; the summary of the day groups by project.
-fn widget_spec(payload: Payload, id: &str) -> Result<(Spec, WidgetKind), String> {
-    let Some(widget) = payload.widgets.into_iter().find(|w| w.id == id) else {
+pub(crate) fn spec_of(widget: &Widget, payload: &Payload) -> Spec {
+    let grouping = match widget.kind {
+        WidgetKind::Table => widget.group_by.map(grouping_of),
+        WidgetKind::DaySummary => Some(Grouping::Project),
+        WidgetKind::Total | WidgetKind::BarsPerDay => None,
+    };
+    Spec {
+        kind: Some(kind_of(widget.sessions.unwrap_or(payload.sessions))),
+        grouping,
+        filter: widget.filter.clone().unwrap_or_default(),
+        hidden_projects: payload.hidden_projects.clone(),
+        project_names: payload.project_names.clone(),
+    }
+}
+
+/// The counting the page applies to a period asked for without a widget: the hidden projects and
+/// the names are the page's, whatever is counted.
+pub(crate) fn spec_without_widget(
+    payload: &Payload,
+    sessions: Sessions,
+    grouping: Option<GroupBy>,
+    filter: Filter,
+) -> Spec {
+    Spec {
+        kind: Some(kind_of(sessions)),
+        grouping: grouping.map(grouping_of),
+        filter,
+        hidden_projects: payload.hidden_projects.clone(),
+        project_names: payload.project_names.clone(),
+    }
+}
+
+fn widget_spec(payload: &Payload, id: &str) -> Result<(Spec, WidgetKind), String> {
+    let Some(widget) = payload.widgets.iter().find(|w| w.id == id) else {
         let shown = if id.chars().count() <= MAX_ECHO {
             format!("there is no widget {id:?} in the dashboard")
         } else {
@@ -353,21 +387,7 @@ fn widget_spec(payload: Payload, id: &str) -> Result<(Spec, WidgetKind), String>
         };
         return Err(shown);
     };
-    let grouping = match widget.kind {
-        WidgetKind::Table => widget.group_by.map(grouping_of),
-        WidgetKind::DaySummary => Some(Grouping::Project),
-        WidgetKind::Total | WidgetKind::BarsPerDay => None,
-    };
-    Ok((
-        Spec {
-            kind: Some(kind_of(widget.sessions.unwrap_or(payload.sessions))),
-            grouping,
-            filter: widget.filter.unwrap_or_default(),
-            hidden_projects: payload.hidden_projects,
-            project_names: payload.project_names,
-        },
-        widget.kind,
-    ))
+    Ok((spec_of(widget, payload), widget.kind))
 }
 
 pub(crate) fn read_request(argument: &str, document: Option<&Value>) -> Result<Request, String> {
@@ -379,22 +399,19 @@ pub(crate) fn read_request(argument: &str, document: Option<&Value>) -> Result<R
         if raw.sessions.is_some() || raw.filter.is_some() || raw.group_by.is_some() {
             return Err("a request names a widget or the counting, not both".to_owned());
         }
-        let (spec, kind) = widget_spec(payload, &id)?;
+        let (spec, kind) = widget_spec(&payload, &id)?;
         return Ok(Request {
             spec,
             days,
             widget: Some((id, kind)),
         });
     }
-    let sessions = raw.sessions.unwrap_or(Sessions::Own);
-    // The hidden projects and the names are the page's, whatever is counted.
-    let spec = Spec {
-        kind: Some(kind_of(sessions)),
-        grouping: raw.group_by.map(grouping_of),
-        filter: raw.filter.unwrap_or_default(),
-        hidden_projects: payload.hidden_projects,
-        project_names: payload.project_names,
-    };
+    let spec = spec_without_widget(
+        &payload,
+        raw.sessions.unwrap_or(Sessions::Own),
+        raw.group_by,
+        raw.filter.unwrap_or_default(),
+    );
     Ok(Request {
         spec,
         days,
@@ -426,12 +443,20 @@ impl Numbers {
     pub fn answer(&self, argument: &str) -> String {
         let document = self.dashboard.to_json()["document"].clone();
         respond(argument, (!document.is_null()).then_some(&document), || {
-            let store = self.feed.readable_store()?;
-            self.runtime.block_on(store.session_minutes()).map_err(|e| {
-                // The reason stays in the agent's log, as the activity store's own failures do.
-                eprintln!("dashboard numbers: {e}");
-                "the activity time could not be read"
-            })
+            self.read_sessions()
+        })
+    }
+
+    /// The sessions of the activity store, as the time rules take them.
+    ///
+    /// # Errors
+    /// With a plain reason when the store is not ready or cannot be read.
+    pub fn read_sessions(&self) -> Result<Vec<SessionMinutes>, &'static str> {
+        let store = self.feed.readable_store()?;
+        self.runtime.block_on(store.session_minutes()).map_err(|e| {
+            // The reason stays in the agent's log, as the activity store's own failures do.
+            eprintln!("dashboard numbers: {e}");
+            "the activity time could not be read"
         })
     }
 }
