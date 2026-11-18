@@ -22,6 +22,8 @@ pub fn session(
         project: project.to_owned(),
         ticket: ticket.to_owned(),
         unattended: false,
+        area: String::new(),
+        collection: String::new(),
         minutes: minutes.to_vec(),
     }
 }

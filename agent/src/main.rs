@@ -572,7 +572,15 @@ async fn start_activity(
             Ok::<_, String>((store, FileSink::new(&data_dir)))
         };
         match opened.await {
-            Ok((store, files)) => feed.run(&store, &files).await,
+            Ok((store, files)) => {
+                if let Ok(workspace) = records::data_dir()
+                    .map_err(construct_agent::workspace::Error::from)
+                    .and_then(|dir| construct_agent::workspace::Workspace::open(&dir))
+                {
+                    feed.watch_findings(std::sync::Arc::new(workspace));
+                }
+                feed.run(&store, &files).await;
+            }
             Err(e) => {
                 eprintln!("activity store off: {e}");
                 feed.off(&e);
