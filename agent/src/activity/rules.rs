@@ -28,7 +28,7 @@ use connectors::minute_of;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use super::assign;
+use super::{assign, findings};
 
 /// The longest pause, in silent minutes, that still joins two active minutes into one block.
 pub const MAX_PAUSE: i64 = 5;
@@ -64,6 +64,9 @@ pub enum Grouping {
     Ticket,
     /// The tool that wrote a session.
     Tool,
+    /// The grouping the setup findings gave a session (a client, a course, a topic); sessions
+    /// in none are grouped as [`findings::NO_GROUP`].
+    Collection,
     /// The ticket of a session; a session without one is grouped by its project, as
     /// `No ticket (project)`. This is the grouping of the summary of a day.
     TicketOrProject,
@@ -80,6 +83,11 @@ pub struct SessionMinutes {
     pub project: String,
     /// The ticket kept in the store, empty when the session has none.
     pub ticket: String,
+    /// The project of a tracker the setup findings tie the folder to, empty when they tie it to
+    /// none. A report names the project by it (see [`project_names`]).
+    pub area: String,
+    /// The grouping the setup findings give the session, empty when they give none.
+    pub collection: String,
     /// True when every prompt of the session came from a script. A session with a prompt by a
     /// person, or by an author that is not known, counts as the user's own.
     pub unattended: bool,
@@ -229,8 +237,32 @@ pub fn calculate(
     grouping: Grouping,
 ) -> Result<Report, DaysError> {
     // Named over all the sessions given, so that a project keeps its name whatever the period.
-    let names = assign::project_labels(sessions.iter().map(|s| s.project.as_str()));
+    let names = project_names(sessions);
     calculate_named(sessions, days, kind, grouping, &names)
+}
+
+/// What to call each project the store keeps: the project of its tracker when the setup findings
+/// tie the folder to one, else the plain label of [`assign::project_labels`]. Folders tied to one
+/// project have one name, so a report groups them together.
+#[must_use]
+pub fn project_names(sessions: &[SessionMinutes]) -> BTreeMap<String, String> {
+    with_areas(
+        assign::project_labels(sessions.iter().map(|s| s.project.as_str())),
+        sessions,
+    )
+}
+
+/// `labels`, the plain label of each project, with the project of its tracker in place of the
+/// label wherever the setup findings tie the folder to one.
+#[must_use]
+pub fn with_areas(
+    mut labels: BTreeMap<String, String>,
+    sessions: &[SessionMinutes],
+) -> BTreeMap<String, String> {
+    for session in sessions.iter().filter(|s| !s.area.is_empty()) {
+        labels.insert(session.project.clone(), session.area.clone());
+    }
+    labels
 }
 
 /// [`calculate`] with the name of each project given by the caller, by the project the store
@@ -321,6 +353,10 @@ pub fn calculate_spans(
                 }
                 Grouping::Ticket | Grouping::TicketOrProject => sessions[index].ticket.clone(),
                 Grouping::Tool => sessions[index].tool.clone(),
+                Grouping::Collection if sessions[index].collection.is_empty() => {
+                    findings::NO_GROUP.to_owned()
+                }
+                Grouping::Collection => sessions[index].collection.clone(),
                 Grouping::Day => day.label.clone(),
             };
             by_key.entry(key).or_default().push(index);
