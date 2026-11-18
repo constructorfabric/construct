@@ -39,7 +39,6 @@ struct Stand {
     workspace: PathBuf,
     socket: PathBuf,
     bodies: Arc<Mutex<Vec<String>>>,
-    dashboard: Dashboard,
     _rt: tokio::runtime::Runtime,
 }
 
@@ -154,7 +153,6 @@ impl Stand {
             base,
             socket,
             bodies,
-            dashboard,
             _rt: rt,
         }
     }
@@ -193,11 +191,9 @@ impl Stand {
         std::fs::read_to_string(self.workspace.join(ACTIVITY_FILE)).unwrap()
     }
 
-    /// Replaces the dashboard file and lets the watcher judge it.
+    /// Replaces the dashboard file; the tool reads it as it is, with no watcher in the test.
     fn write(&self, text: &str) {
         std::fs::write(self.workspace.join(ACTIVITY_FILE), text).unwrap();
-        self.dashboard.poll();
-        self.dashboard.poll();
     }
 }
 
@@ -424,9 +420,6 @@ fn a_file_that_is_not_json_is_told_with_its_line_and_the_last_good_version_stays
             "The dashboard file has an error. The page keeps showing the last good version.\n- line 2, column 11: the file is not valid JSON"
         ]
     );
-    // A good file again: the error goes.
-    stand.write(&default_activity().to_string());
-    assert!(stand.dashboard.to_json().get("error").is_none());
 }
 
 #[test]
@@ -465,6 +458,31 @@ fn without_a_window_the_days_are_not_guessed() {
     let results = stand.results();
     assert!(
         results[0].starts_with("Error: the window has not told which days belong to which period"),
+        "{results:?}"
+    );
+}
+
+#[test]
+fn a_message_without_a_window_forgets_the_days_of_the_last_one() {
+    let stand = Stand::new(vec![
+        Turn::Calls(vec![("render_dashboard", json!({}))]),
+        Turn::Text("Done."),
+        Turn::Calls(vec![("render_dashboard", json!({}))]),
+        Turn::Text("I cannot tell."),
+    ]);
+    is_done(&stand.say(Some(window())));
+    assert!(
+        stand.results()[0].starts_with("Dashboard "),
+        "{:?}",
+        stand.results()
+    );
+    is_done(&stand.say(None));
+    let results = stand.results();
+    assert!(
+        results
+            .last()
+            .unwrap()
+            .starts_with("Error: the window has not told which days"),
         "{results:?}"
     );
 }

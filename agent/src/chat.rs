@@ -416,11 +416,15 @@ impl Chat {
             out(&event_error("empty message"));
             return;
         }
-        if let Some(window) = request.window
-            && inner.calendar.set(window).is_err()
-        {
-            out(&event_error("invalid request"));
-            return;
+        match request.window {
+            Some(window) => {
+                if inner.calendar.set(window).is_err() {
+                    out(&event_error("invalid request"));
+                    return;
+                }
+            }
+            // A message without a calendar must not leave an older day standing as "today".
+            None => inner.calendar.clear(),
         }
         let new = request.conversation.is_empty();
         let conversation = if new {

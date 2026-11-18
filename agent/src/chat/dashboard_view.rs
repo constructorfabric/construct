@@ -31,7 +31,9 @@ use crate::sync::lock;
 /// The name the model calls the tool by.
 pub const NAME: &str = "render_dashboard";
 
-/// The most days a window may give: the previous month, this month and the rest of this week.
+/// The most days a window may give. The days it must hold run from the earlier of the first day
+/// of the previous month and 29 days before today (`last_30_days`) to the end of the current
+/// month and of the current week: at most 70 or so, so 100 leaves room.
 pub const MAX_WINDOW: usize = 100;
 
 const BAD_ARGUMENTS: &str = "the arguments are not valid for this tool: give period and group_by \
@@ -56,8 +58,10 @@ struct Window {
 
 /// The calendar as a `chat-send` carries it: `today` and the consecutive `days` of the person's
 /// time zone, oldest first, each with its label (`2026-11-18`) and its start and end in UTC on a
-/// whole minute. It holds at least the days of every period the tool may ask for: from the first
-/// day of the previous month to the end of the current month and of the current week.
+/// whole minute. It holds at least the days of every period the tool may ask for: from the earlier
+/// of the first day of the previous month and 29 days before today, to the end of the current
+/// month and of the current week. The window sends it with every message; a message without it
+/// clears the calendar.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawWindow {
@@ -116,6 +120,11 @@ impl Calendar {
         }
         *lock(&self.0) = Some(Window { today, days });
         Ok(())
+    }
+
+    /// Forgets the calendar: the tool then says it cannot tell, until a window gives one again.
+    pub fn clear(&self) {
+        *lock(&self.0) = None;
     }
 
     /// The days of `period`, in order.
@@ -327,6 +336,7 @@ struct RenderDashboard {
 
 impl RenderDashboard {
     fn render(&self, ask: &Ask) -> Result<String, String> {
+        self.dashboard.settle();
         let current = self.dashboard.to_json();
         if current.get("error").is_some() {
             return Ok(errors_text(&current["error"]));
@@ -411,6 +421,7 @@ says that the page keeps the last good version: call it after every edit of the 
     }
 
     fn line(&self, arguments: &str) -> String {
+        self.dashboard.settle();
         if self.dashboard.to_json().get("error").is_some() {
             return "Checked your dashboard file".to_owned();
         }

@@ -82,6 +82,16 @@ impl Dashboard {
         self.pass(false);
     }
 
+    /// Brings the state level with the file as it is now, without waiting for the watcher: a
+    /// change is judged on the second identical read, so this looks twice. For a reader that must
+    /// see what was just written.
+    pub fn settle(&self) {
+        self.guarded(|| {
+            self.poll();
+            self.poll();
+        });
+    }
+
     /// Looks at the file every [`POLL_INTERVAL`] on a thread of its own, for as long as the
     /// agent runs.
     pub fn watch(&self) {
