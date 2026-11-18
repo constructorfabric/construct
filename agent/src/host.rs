@@ -11,8 +11,10 @@
 use api_gateway as _;
 use authn_resolver as _;
 use authz_resolver as _;
+use cluster as _;
 use construct as _;
 use graph_storage as _;
+use grpc_hub as _;
 use static_authn_plugin as _;
 use static_authz_plugin as _;
 use types_registry as _;
@@ -119,6 +121,16 @@ impl Connection {
     pub fn manage_url(&self) -> String {
         format!(
             "http://127.0.0.1:{}/construct/v1/subjects/{DEFAULT_SUBJECT_ID}/facts/manage",
+            self.port
+        )
+    }
+
+    /// The URL of a route of the static identity's own data: `rest` is `settings`, `erasure`,
+    /// `facts` or `facts/<id>`.
+    #[must_use]
+    pub fn subject_url(&self, rest: &str) -> String {
+        format!(
+            "http://127.0.0.1:{}/construct/v1/subjects/{DEFAULT_SUBJECT_ID}/{rest}",
             self.port
         )
     }
@@ -329,6 +341,11 @@ pub fn build_config(
                 "tokens": [ { "token": token, "identity": {} } ],
             } },
             "static-authz-plugin": { "config": { "vendor": "constructorfabric", "priority": 100 } },
+            // The gear's deletion job, which runs an erasure and removes what is past retention,
+            // takes its lead from the cluster gear. One process is its own cluster: the leader
+            // election lives in memory. The cluster gear talks to the hub over a Unix socket.
+            "grpc-hub": { "config": { "listen_addr": format!("uds://{}", socket_dir.join("grpc-hub").display()) } },
+            "cluster": { "config": { "profiles": { "construct": { "cache": { "provider": "standalone" } } } } },
             "graph-storage": {
                 "database": { "server": "pg_graph", "dbname": GRAPH_DBNAME },
                 // The fake provider ranks nothing; Construct reads and writes by key.
@@ -339,6 +356,12 @@ pub fn build_config(
                 "config": {
                     "processing_identity": PROCESSING_IDENTITY,
                     "profile_category_check": "per_category",
+                    // An erasure waits 140 seconds after its request, so that a write that was
+                    // already under way cannot land after it, and then runs at the next pass of
+                    // the job. The gear checks every 300 seconds by default; this host serves one
+                    // person and has one subject to look at, so it checks every 10 seconds (the
+                    // lowest the gear takes) and an erasure ends about 150 seconds after the request.
+                    "deletion": { "job_interval_secs": 10 },
                 },
             },
         },

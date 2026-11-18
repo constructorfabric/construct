@@ -184,6 +184,14 @@ struct CollectionUpdate {
 }
 
 impl Update {
+    /// Whether the request switches all collection on.
+    #[must_use]
+    pub fn turns_collection_on(&self) -> bool {
+        self.collection
+            .as_ref()
+            .is_some_and(|c| c.enabled == Some(true))
+    }
+
     /// Read a request body.
     ///
     /// # Errors

@@ -9,6 +9,7 @@
 //! `settings-get`, `settings-set <JSON object>` (the fields to change; see `settings`), and
 //! `settings-test [JSON object]` (the checks on the model; see `model_test`).
 //! `backfill [JSON object]` sends the prompts of the past to Construct (see `manage`).
+//! `memory-erase` switches all collection off and has Construct erase everything about the person.
 //! `dashboard-get` answers the current dashboard document and, when the file does not pass its
 //! type, the error with its place (see `dashboard_document`). `dashboard-hide <JSON object>`,
 //! `dashboard-show <JSON object>` (`{"project": <folder>}`) and `dashboard-rename <JSON object>`
@@ -577,11 +578,20 @@ mod unix {
             ),
             ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
             ("settings-set", Some(s)) => {
-                match Update::parse(argument).and_then(|update| s.apply(update)) {
+                let update = Update::parse(argument).map_err(|e| e.as_str().to_string());
+                let applied = update.and_then(|update| match shared.manage {
+                    Some(manage) => manage.apply_settings(update),
+                    None => s.apply(update).map_err(|e| e.as_str().to_string()),
+                });
+                match applied {
                     Ok(()) => s.get_response(),
-                    Err(e) => error_response(e.as_str()),
+                    Err(reason) => error_response(&reason),
                 }
             }
+            ("memory-erase", _) if argument.is_empty() => shared.manage.map_or_else(
+                || error_response("memory-erase is not available"),
+                Manager::erase,
+            ),
             ("settings-get" | "settings-set", None) => error_response("settings are not available"),
             _ => unknown_command_response(line),
         }

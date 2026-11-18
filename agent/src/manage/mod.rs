@@ -20,11 +20,13 @@
 //! never sent: it is marked as refused in the journal, and `status` counts it as `refused`. A
 //! prompt that collection refuses later, one queued when it went off or one from history, is not
 //! marked: a live one is queued again at the next start, a history one goes out in a backfill, and
-//! a backfill that is running stops.
+//! a backfill that is running stops. The exception is the person's erasure (`memory-erase`): it
+//! marks every live prompt stored so far as refused, so none of them goes out later.
 
 mod call;
 mod input;
 mod journal;
+mod person;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io;
@@ -41,7 +43,7 @@ use crate::host::Connection;
 use crate::ipc::{create_private_dir, error_response};
 use crate::model::Target;
 use crate::records::{FileSink, Sink, fnv};
-use crate::settings::Settings;
+use crate::settings::{Settings, Update};
 use crate::sync::lock;
 use call::{Answer, Reply, call};
 use input::input;
@@ -177,6 +179,12 @@ struct Inner {
     queue: Mutex<Queue>,
     wake: Condvar,
     counts: Mutex<Counts>,
+    /// Held while the agent reads or changes the person's settings in the host, so an erasure
+    /// and a switch-on never overlap.
+    person: Mutex<()>,
+    /// Keys of the live prompts that were stored at any erasure of the person: one that was being
+    /// sent at that moment and then fails is not given back for a later start.
+    erased: Mutex<HashSet<u64>>,
 }
 
 /// The prompts the user typed, sent to the host. Cheap to clone.
@@ -219,6 +227,8 @@ impl Manager {
                 queue: Mutex::new(Queue::default()),
                 wake: Condvar::new(),
                 counts: Mutex::new(Counts::default()),
+                person: Mutex::new(()),
+                erased: Mutex::new(HashSet::new()),
             }),
         })
     }
@@ -257,6 +267,88 @@ impl Manager {
             Ok(reply) => reply.to_string(),
             Err(message) => error_response(&message),
         }
+    }
+
+    /// The `memory-erase` command: collection goes off, then the host is asked to erase the
+    /// person. The host answers at once and erases in the background. While an erasure runs,
+    /// the request changes nothing. The answer is one JSON line.
+    #[must_use]
+    pub fn erase(&self) -> String {
+        let _held = lock(&self.inner.person);
+        let Some(connection) = self.inner.link.get() else {
+            return error_response("the Construct host is not ready yet");
+        };
+        match person::read(&connection) {
+            Err(reason) => return error_response(&reason),
+            Ok(gear) if gear.erasure_in_progress => {
+                return json!({ "erasure": "running", "collection_enabled": self.collection_on() })
+                    .to_string();
+            }
+            Ok(_) => {}
+        }
+        // Off first: from here on nothing new is sent to the host, whatever happens next.
+        if self.set_collection(false).is_err() {
+            return error_response("the settings file could not be written, so nothing was erased");
+        }
+        // What was typed before and not yet sent must not come back after a switch-on.
+        self.inner.forget_unsent();
+        match person::request_erasure(&connection) {
+            Ok(()) => json!({ "erasure": "started", "collection_enabled": false }).to_string(),
+            Err(reason) => error_response(&format!(
+                "collection is off, but the erasure did not start: {reason}"
+            )),
+        }
+    }
+
+    /// Change the settings. Switching all collection from off to on first turns personalization
+    /// on in the host, because an erasure leaves it off, and only then lets the readers collect.
+    /// It is refused while an erasure runs, and when the host cannot be asked: collection then
+    /// stays off. The error is a fixed plain reason.
+    ///
+    /// # Errors
+    /// The reason the change was refused.
+    pub fn apply_settings(&self, update: Update) -> Result<(), String> {
+        if !update.turns_collection_on() {
+            return self
+                .inner
+                .settings
+                .apply(update)
+                .map_err(|e| e.as_str().into());
+        }
+        let _held = lock(&self.inner.person);
+        // Read under the lock: an erasure that ran meanwhile has switched collection off.
+        if self.collection_on() {
+            return self
+                .inner
+                .settings
+                .apply(update)
+                .map_err(|e| e.as_str().into());
+        }
+        let Some(connection) = self.inner.link.get() else {
+            return Err("collection stays off: the Construct host is not ready yet".into());
+        };
+        let gear = person::read(&connection)
+            .map_err(|reason| format!("collection stays off: {reason}"))?;
+        if gear.erasure_in_progress {
+            return Err("collection stays off: an erasure is still running".into());
+        }
+        if !gear.personalization_enabled {
+            person::turn_personalization_on(&connection)
+                .map_err(|reason| format!("collection stays off: {reason}"))?;
+        }
+        self.inner
+            .settings
+            .apply(update)
+            .map_err(|e| e.as_str().into())
+    }
+
+    fn collection_on(&self) -> bool {
+        self.inner.settings.collection().enabled
+    }
+
+    fn set_collection(&self, on: bool) -> Result<(), crate::settings::Error> {
+        let update = json!({ "collection": { "enabled": on } }).to_string();
+        Update::parse(&update).and_then(|update| self.inner.settings.apply(update))
     }
 
     /// What `status` shows as `facts`: counts and states, never a prompt.
@@ -331,6 +423,29 @@ impl Inner {
         }
         all.sort_by(|a, b| compare_times(&a.time, &b.time));
         Ok(all)
+    }
+
+    /// Drops the queued live prompts and marks every live prompt that was stored and not sent as
+    /// refused, so that no later start or switch-on sends what the person asked to erase.
+    fn forget_unsent(&self) {
+        {
+            let mut queue = lock(&self.queue);
+            queue.live.clear();
+            queue.queued.clear();
+        }
+        match self.prompts() {
+            Ok(all) => {
+                let mut journal = lock(&self.journal);
+                let mut erased = lock(&self.erased);
+                for prompt in all.iter().filter(|p| self.is_live(p)) {
+                    erased.insert(prompt.key());
+                    if let Err(e) = journal.refuse(prompt.key()) {
+                        self.note_error(&format!("cannot write the journal: {e}"));
+                    }
+                }
+            }
+            Err(e) => self.note_error(&format!("cannot read the records: {e}")),
+        }
     }
 
     /// Queues the live prompts that were stored but not sent before the agent stopped.
@@ -713,8 +828,99 @@ impl Inner {
     }
 
     fn take_back(&self, key: u64) {
-        if let Err(e) = lock(&self.journal).undo(key) {
+        let mut journal = lock(&self.journal);
+        // Read under the journal lock, which `forget_unsent` also holds while it records the keys:
+        // an erase either comes before this read, or finds the prompt marked as sent and not given
+        // back yet, and then this call sees its key.
+        let erased = lock(&self.erased).contains(&key);
+        // A prompt that was being sent when the person erased is not given back: it would be
+        // queued again at the next start.
+        let result = journal
+            .undo(key)
+            .and_then(|()| if erased { journal.refuse(key) } else { Ok(()) });
+        if let Err(e) = result {
+            drop(journal);
             self.note_error(&format!("cannot write the journal: {e}"));
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // a failed `unwrap` in a test is a failed test
+mod tests {
+    use super::*;
+
+    fn manager(name: &str) -> Manager {
+        let dir = std::env::temp_dir().join(format!("cb-manage-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let settings = Settings::open(&dir.join("config")).unwrap();
+        Manager::open_with(
+            &dir.join("data"),
+            settings,
+            Link::default(),
+            Timing::default(),
+        )
+        .unwrap()
+    }
+
+    fn prompt() -> Prompt {
+        Prompt {
+            tool: "claude-code".into(),
+            session: "s".into(),
+            time: "2099-01-01T00:00:00Z".into(),
+            text: "t".into(),
+        }
+    }
+
+    #[test]
+    fn an_erasure_during_a_send_makes_a_failing_prompt_refused_not_given_back() {
+        let manager = manager("forget-in-flight");
+        let inner = &manager.inner;
+        let mut stored = prompt();
+        stored.time = "2099-01-01T00:00:00Z".into();
+        let turn = Turn {
+            tool: stored.tool.clone(),
+            session: stored.session.clone(),
+            time: stored.time.clone(),
+            folder: String::new(),
+            branch: String::new(),
+            role: Role::User,
+            author: connectors::Author::Unknown,
+            text: stored.text.clone(),
+            tools: Vec::new(),
+        };
+        let mut sink = FileSink::new(&inner.data_dir);
+        sink.append(&connectors::Record::Turn(turn)).unwrap();
+        sink.save_progress(&crate::records::Progress::default())
+            .unwrap();
+
+        // The prompt is being sent when the person erases, and its calls then fail.
+        let key = stored.key();
+        assert!(lock(&inner.journal).begin(key).unwrap());
+        inner.forget_unsent();
+        inner.take_back(key);
+        let journal = lock(&inner.journal);
+        assert!(journal.is_done(key));
+        assert!(!journal.sent.contains(&key));
+    }
+
+    #[test]
+    fn a_prompt_whose_calls_fail_is_given_back_unless_the_person_erased_meanwhile() {
+        let manager = manager("take-back");
+        let inner = &manager.inner;
+        let key = prompt().key();
+
+        // Sent, then given back: it can be queued again at the next start.
+        assert!(lock(&inner.journal).begin(key).unwrap());
+        inner.take_back(key);
+        assert!(!lock(&inner.journal).is_done(key));
+
+        // The same prompt in flight when the person erased: it ends refused, never given back.
+        assert!(lock(&inner.journal).begin(key).unwrap());
+        lock(&inner.erased).insert(key);
+        inner.take_back(key);
+        let journal = lock(&inner.journal);
+        assert!(journal.is_done(key));
+        assert!(!journal.sent.contains(&key));
     }
 }

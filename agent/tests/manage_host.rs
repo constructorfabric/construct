@@ -29,6 +29,9 @@ const LANGUAGE_AND_REPOSITORY: &str =
 
 const REMEMBER_CATS: &str = "remember that I love cats";
 
+/// A request to remember something else; the fake model answers it as it answers `REMEMBER_CATS`.
+const REMEMBER_CATS_AGAIN: &str = "remember that I love cats, again";
+
 /// A model server that answers the planner: a prompt that names a repository gets two facts, a
 /// request to remember something gets a note, any other prompt gets "nothing changed". It counts
 /// the conversations the planner started.
@@ -241,6 +244,63 @@ impl Stand {
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
         serde_json::from_str(&response.body_mut().read_to_string().unwrap()).unwrap()
+    }
+
+    /// One call to a route of the person's own data, as the app makes it: the answer's status and its
+    /// JSON body (`Null` when there is none).
+    fn own(&self, method: &str, rest: &str, body: Option<&Value>) -> (u16, Value) {
+        let (port, token) = self.connection();
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let subject = toolkit_security::constants::DEFAULT_SUBJECT_ID;
+        let url = format!("http://127.0.0.1:{port}/construct/v1/subjects/{subject}/{rest}");
+        let auth = format!("Bearer {token}");
+        let mut response = match (method, body) {
+            ("GET", _) => agent.get(&url).header("Authorization", auth).call(),
+            ("DELETE", _) => agent.delete(&url).header("Authorization", auth).call(),
+            ("POST", _) => agent.post(&url).header("Authorization", auth).send_empty(),
+            ("PUT", Some(body)) => agent
+                .put(&url)
+                .header("Authorization", auth)
+                .header("Content-Type", "application/json")
+                .send(body.to_string()),
+            _ => panic!("no such call: {method}"),
+        }
+        .unwrap();
+        let status = response.status().as_u16();
+        let text = response.body_mut().read_to_string().unwrap();
+        (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
+    /// The facts the person sees in the list, as `(fact_id, property)`.
+    fn listed(&self) -> Vec<(String, String)> {
+        let (status, page) = self.own("GET", "facts", None);
+        assert_eq!(status, 200, "{page}");
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f["fact_id"].as_str().unwrap().to_string(),
+                    f["property"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Whether the reader of the Claude Code log has saved a position at the end of it.
+    fn log_is_read_to_the_end(&self) -> bool {
+        let sink = construct_agent::records::FileSink::new(&self.root.join("data/construct"));
+        let length = std::fs::metadata(self.claude_log()).unwrap().len();
+        construct_agent::records::Sink::load_progress(&sink)
+            .unwrap()
+            .files
+            .iter()
+            .any(|(path, progress)| path.ends_with("cc1.jsonl") && progress.offset == length)
     }
 
     fn postmaster_pid(&self) -> Option<u32> {
@@ -550,4 +610,115 @@ fn a_request_to_remember_lands_in_the_remembered_notes_property() {
         .map(|c| c["facts"].as_array().unwrap().len())
         .sum();
     assert_eq!(facts, 1, "{profile}");
+}
+
+/// Stop the agent and PostgreSQL the hard way and wait until both are gone.
+fn kill_agent_and_database(stand: &Stand, agent: &mut Agent) {
+    let postmaster = stand.postmaster_pid().unwrap();
+    kill_9(agent);
+    Command::new("kill")
+        .args(["-9", &postmaster.to_string()])
+        .status()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while alive(postmaster) {
+        assert!(Instant::now() < deadline, "PostgreSQL did not die");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+#[ignore = "starts PostgreSQL and the Construct host; run with --ignored"]
+fn the_persons_own_routes_answer_to_the_token_and_the_erasure_empties_the_list() {
+    // The erasure cannot be undone: it runs here only against the host of this test, which lives
+    // in a scratch directory of its own.
+    let stand = Stand::new("mf-own");
+    let model = FakeModel::start();
+    stand.write_history();
+    let mut agent = stand.agent();
+    stand.set_model(&model.url);
+    stand.wait_ready();
+    stand.wait("the first scan", scanned);
+
+    // The settings route answers, and personalization is on.
+    let (status, settings) = stand.own("GET", "settings", None);
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!(settings["personalization_enabled"], true);
+    assert_eq!(settings["erasure_in_progress"], false);
+
+    // Two facts from one prompt: the list shows them, and the delete route removes one.
+    stand.type_live_prompt(LANGUAGE_AND_REPOSITORY);
+    stand.wait("the live prompt", |s| s["facts"]["live"]["stored"] == 1);
+    let facts = stand.listed();
+    assert_eq!(facts.len(), 2, "{facts:?}");
+    let (repository_id, _) = facts.iter().find(|(_, p)| p == "repositories").unwrap();
+    let (status, _) = stand.own("DELETE", &format!("facts/{repository_id}"), None);
+    assert_eq!(status, 204);
+    assert!(stand.listed().iter().all(|(_, p)| p != "repositories"));
+
+    // The same prompt is read again after a restart: the journal of what was sent keeps the
+    // deleted fact from being made again.
+    kill_agent_and_database(&stand, &mut agent);
+    let _agent = stand.agent();
+    stand.wait_ready();
+    stand.wait("the first scan again", scanned);
+
+    // A second prompt, then the erasure: collection goes off and the list ends up empty. Prompts
+    // go out oldest first, so once the second one has been sent, a resend of the first would
+    // already have been counted: the model has seen exactly two.
+    stand.type_live_prompt(REMEMBER_CATS);
+    wait_until("the second prompt", || model.conversations() >= 2);
+    wait_until("its fact", || stand.listed().len() == 2);
+    assert_eq!(model.conversations(), 2, "the first prompt was sent again");
+    assert!(stand.listed().iter().all(|(_, p)| p != "repositories"));
+    let erased = stand.ask("memory-erase");
+    assert_eq!(erased["erasure"], "started", "{erased}");
+    assert_eq!(erased["collection_enabled"], false);
+    assert_eq!(stand.ask("settings-get")["collection"]["enabled"], false);
+    wait_until("the erasure to end", || {
+        let (status, settings) = stand.own("GET", "settings", None);
+        status == 200 && settings["erasure_in_progress"] == false
+    });
+    assert!(stand.listed().is_empty());
+    // Personalization stays off in the host until the person turns collection on again.
+    assert_eq!(
+        stand.own("GET", "settings", None).1["personalization_enabled"],
+        false
+    );
+
+    // A prompt typed while collection is off is read and passed over: the reader's saved position
+    // reaches the end of the log, and nothing is stored or sent.
+    stand.type_live_prompt("I started a repository called gears-rust-two");
+    wait_until("the reader to pass the prompt", || {
+        stand.log_is_read_to_the_end()
+    });
+    assert_eq!(model.conversations(), 2);
+
+    // The switch-on turns personalization on in the host first; a new prompt makes a fact again.
+    let on = stand.ask(r#"settings-set {"collection":{"enabled":true}}"#);
+    assert!(on.get("error").is_none(), "{on}");
+    assert_eq!(on["collection"]["enabled"], true);
+    assert_eq!(
+        stand.own("GET", "settings", None).1["personalization_enabled"],
+        true
+    );
+    // A reader decides at the start of a pass whether it stores: it has to have seen the switch.
+    stand.wait("the readers to see the switch", |s| {
+        s["connectors"]["claude-code"].get("off").is_none()
+    });
+    stand.type_live_prompt(REMEMBER_CATS_AGAIN);
+    wait_until("the new prompt", || model.conversations() == 3);
+    wait_until("a fact again", || stand.listed().len() == 1);
+    // The refused prompt names a repository: if it had been sent, the model would have made one.
+    assert_eq!(model.conversations(), 3);
+    assert!(stand.listed().iter().all(|(_, p)| p != "repositories"));
+}
+
+/// Waits until `done`, five minutes at most.
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(300);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(200));
+    }
 }
