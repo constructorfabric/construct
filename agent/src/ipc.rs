@@ -10,7 +10,10 @@
 //! `settings-test [JSON object]` (the checks on the model; see `model_test`).
 //! `backfill [JSON object]` sends the prompts of the past to Construct (see `manage`).
 //! `dashboard-get` answers the current dashboard document and, when the file does not pass its
-//! type, the error with its place (see `dashboard_document`).
+//! type, the error with its place (see `dashboard_document`). `dashboard-hide <JSON object>`,
+//! `dashboard-show <JSON object>` (`{"project": <folder>}`) and `dashboard-rename <JSON object>`
+//! (`{"project": <folder>, "name": <name to show>}`) change the document in the file and answer
+//! as `dashboard-get` does once the change is read back; an error is a plain text.
 //! `settings-test` answers with several JSON lines when its request has `"progress": true`.
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
@@ -151,6 +154,7 @@ mod unix {
     use crate::activity::Feed;
     use crate::chat::{self, Chat};
     use crate::dashboard_document::Dashboard;
+    use crate::dashboard_projects::Edit;
     use crate::database::Health;
     use crate::follow::Stats;
     use crate::manage::Manager;
@@ -510,6 +514,18 @@ mod unix {
                 || error_response("the dashboard is not available"),
                 Dashboard::to_json_line,
             ),
+            ("dashboard-hide" | "dashboard-show" | "dashboard-rename", _) => {
+                shared.dashboard.map_or_else(
+                    || error_response("the dashboard is not available"),
+                    |dashboard| match Edit::parse(command, argument)
+                        .map_err(str::to_owned)
+                        .and_then(|edit| dashboard.edit(&edit))
+                    {
+                        Ok(()) => dashboard.to_json_line(),
+                        Err(message) => error_response(&message),
+                    },
+                )
+            }
             ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
             ("settings-set", Some(s)) => {
                 match Update::parse(argument).and_then(|update| s.apply(update)) {

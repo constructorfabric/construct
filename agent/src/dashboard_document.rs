@@ -19,6 +19,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::dashboard::{ACTIVITY_FILE, ensure_default, validate_activity};
+use crate::dashboard_projects::Edit;
 use crate::sync::lock;
 use crate::workspace::{Error, Workspace};
 
@@ -26,6 +27,8 @@ use crate::workspace::{Error, Workspace};
 pub const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// The longest file the agent reads: far more than a page of widgets needs.
 pub const MAX_BYTES: u64 = 1024 * 1024;
+/// How many times an edit starts over when the file changes under it.
+const EDIT_TRIES: usize = 5;
 
 #[derive(Default)]
 struct State {
@@ -51,6 +54,8 @@ struct Refusal {
 struct Inner {
     workspace: Arc<Workspace>,
     state: Mutex<State>,
+    /// Held while an edit reads the file and writes it, so two edits never start from one text.
+    editing: Mutex<()>,
 }
 
 /// The current dashboard document and the error of the file, shared between the watcher and the
@@ -66,6 +71,7 @@ impl Dashboard {
         let dashboard = Self(Arc::new(Inner {
             workspace,
             state: Mutex::new(State::default()),
+            editing: Mutex::new(()),
         }));
         dashboard.guarded(|| dashboard.pass(true));
         dashboard
@@ -159,6 +165,68 @@ impl Dashboard {
         }
     }
 
+    /// Changes the projects of the document in the file and reads the file back, so the answer
+    /// of [`Self::to_json`] shows the change. The edit starts from the file as it is now, not
+    /// from the last good document, so a change made by the chat a moment ago stays, and edits
+    /// follow one another. A file that does not pass is not edited: the user fixes it first.
+    /// An edit that changes nothing leaves the file as it is, and a result longer than
+    /// [`MAX_BYTES`], which the reader would refuse, is not written.
+    ///
+    /// The file is read again just before it is replaced, and the edit starts over on a text that
+    /// changed meanwhile, so a change of the chat made while the edit was worked out is not
+    /// thrown away. A change in the instant between that read and the replacement cannot be seen
+    /// without a lock on the file, the same as for the file tools of the chat.
+    ///
+    /// # Errors
+    /// A plain text: the file cannot be read, does not pass, is too long with the change, keeps
+    /// changing, or cannot be written.
+    pub fn edit(&self, edit: &Edit) -> Result<(), String> {
+        self.edit_with(edit, || {})
+    }
+
+    /// [`Self::edit`], with `between` run after the change is worked out and before the file is
+    /// read again, as many times as the edit starts over.
+    fn edit_with(&self, edit: &Edit, mut between: impl FnMut()) -> Result<(), String> {
+        let _one_at_a_time = lock(&self.0.editing);
+        for _ in 0..EDIT_TRIES {
+            let text = self
+                .read()
+                .map_err(|e| format!("the file cannot be read: {e}"))?;
+            let mut document = check(&text).map_err(|r| {
+                format!(
+                    "the dashboard file does not pass its type, so it is not changed: {}",
+                    r.message
+                )
+            })?;
+            let before = document.clone();
+            edit.apply(&mut document);
+            if document == before {
+                self.guarded(|| self.pass(true));
+                return Ok(());
+            }
+            let mut updated = serde_json::to_string_pretty(&document)
+                .map_err(|_| "the dashboard cannot be written".to_owned())?;
+            updated.push('\n');
+            if updated.len() as u64 > MAX_BYTES {
+                return Err("the change would make the dashboard file too long".to_owned());
+            }
+            between();
+            let again = self
+                .read()
+                .map_err(|e| format!("the file cannot be read: {e}"))?;
+            if again != text {
+                continue;
+            }
+            self.0
+                .workspace
+                .write(ACTIVITY_FILE, &updated)
+                .map_err(|e| format!("the file cannot be written: {e}"))?;
+            self.guarded(|| self.pass(true));
+            return Ok(());
+        }
+        Err("the dashboard file keeps changing, so it is not changed".to_owned())
+    }
+
     /// The answer to `dashboard-get`: the last good `document` (`null` when there was none) and,
     /// when the file as it is now does not pass, the `error` with its `kind`, `place` and
     /// `message`.
@@ -206,6 +274,61 @@ fn check(text: &str) -> Result<Value, Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dashboard::default_activity;
+
+    fn stand(name: &str) -> (Dashboard, Arc<Workspace>, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("cb-document-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = Arc::new(Workspace::open(&root).unwrap_or_else(|_| std::process::abort()));
+        let _ = ensure_default(&workspace);
+        (Dashboard::open(Arc::clone(&workspace)), workspace, root)
+    }
+
+    fn file(workspace: &Workspace) -> Value {
+        let text = workspace
+            .read_whole(ACTIVITY_FILE, MAX_BYTES)
+            .unwrap_or_default();
+        serde_json::from_str(&text).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_change_made_while_an_edit_is_worked_out_is_not_thrown_away() {
+        let (dashboard, workspace, root) = stand("reread");
+        let mut changed = file(&workspace);
+        changed["title"] = json!("Changed meanwhile");
+        let mut calls = 0;
+        let result = dashboard.edit_with(&Edit::Hide("/work/api".to_owned()), || {
+            calls += 1;
+            // Once: the chat writes the file after the edit read it.
+            if calls == 1 {
+                let _ = workspace.write(ACTIVITY_FILE, &changed.to_string());
+            }
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, 2, "the edit starts over once");
+        let document = file(&workspace);
+        assert_eq!(document["title"], "Changed meanwhile");
+        assert_eq!(document["payload"]["hidden_projects"], json!(["/work/api"]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_that_keeps_changing_is_not_overwritten() {
+        let (dashboard, workspace, root) = stand("keeps-changing");
+        let mut n = 0;
+        let result = dashboard.edit_with(&Edit::Hide("/work/api".to_owned()), || {
+            n += 1;
+            let mut changed = default_activity();
+            changed["title"] = json!(format!("Title {n}"));
+            let _ = workspace.write(ACTIVITY_FILE, &changed.to_string());
+        });
+        assert!(result.is_err_and(|e| e.contains("keeps changing")));
+        assert_eq!(n, EDIT_TRIES);
+        let document = file(&workspace);
+        assert_eq!(document["title"], format!("Title {EDIT_TRIES}"));
+        assert_eq!(document["payload"]["hidden_projects"], json!([]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     #[allow(clippy::panic)] // the panic is what the test needs
