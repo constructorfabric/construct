@@ -81,3 +81,12 @@ pub fn chat_send(socket: &Path, conversation: &str, message: &str) -> (String, V
         .to_string();
     (id, events)
 }
+
+/// Points the model setting at a fake provider on `addr`.
+pub fn use_provider(settings: &Settings, addr: std::net::SocketAddr) {
+    let model = json!({ "model": {
+        "base_url": format!("http://127.0.0.1:{}/v1", addr.port()), "model": "m", "api_key": "k" } });
+    settings
+        .apply(Update::parse(&model.to_string()).unwrap())
+        .unwrap();
+}

@@ -21,6 +21,8 @@ use serde_json::{Value, json};
 
 mod common;
 
+use common::bodies::{messages, names};
+
 use common::scripted::{Turn, provider};
 use common::stand::{connect, deadlines};
 
@@ -279,19 +281,6 @@ fn run_in(folders: &[&Path], calls: Vec<(&'static str, Value)>) -> (Vec<String>,
         .collect();
     assert_eq!(results.len(), count, "{results:?}");
     (results, stand)
-}
-
-fn messages(body: &Value) -> Vec<Value> {
-    body["messages"].as_array().unwrap().clone()
-}
-
-fn names(body: &Value) -> Vec<String> {
-    body["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
-        .collect()
 }
 
 /// Checks every `(command, what its error says)` against the results, in order.

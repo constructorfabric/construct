@@ -95,7 +95,30 @@ pub fn standard_tools(
     workspace: &Arc<crate::workspace::Workspace>,
     render_tool: Option<Arc<dyn ChatTool>>,
 ) -> Vec<Arc<dyn ChatTool>> {
+    listed(workspace, false, render_tool)
+}
+
+/// The tools of the setup session over `workspace`: those of [`standard_tools`] with the tools that
+/// read the user's machine after the file tools, and the file tools unable to change the folder
+/// list those tools take their folders from.
+#[must_use]
+pub fn setup_tools(
+    workspace: &Arc<crate::workspace::Workspace>,
+    render_tool: Option<Arc<dyn ChatTool>>,
+) -> Vec<Arc<dyn ChatTool>> {
+    listed(workspace, true, render_tool)
+}
+
+fn listed(
+    workspace: &Arc<crate::workspace::Workspace>,
+    machine: bool,
+    render_tool: Option<Arc<dyn ChatTool>>,
+) -> Vec<Arc<dyn ChatTool>> {
     let mut tools = super::files::file_tools(workspace);
+    if machine {
+        tools = tools.into_iter().map(super::setup::guarded).collect();
+        tools.extend(super::machine::machine_tools(workspace));
+    }
     tools.extend(render_tool);
     tools.push(super::subagent::tool());
     tools
