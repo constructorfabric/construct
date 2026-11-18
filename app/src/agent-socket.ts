@@ -26,8 +26,6 @@ export interface CallLimits {
 }
 
 export const statusLimits: CallLimits = { deadlineMs: 2000, maxReplyChars: 4096 };
-/** The agent gives a model test 15 s; the app waits a little longer, so the agent's answer wins. */
-export const testLimits: CallLimits = { deadlineMs: 20_000, maxReplyChars: 4096 };
 export const settingsLimits: CallLimits = { deadlineMs: 5000, maxReplyChars: 4096 };
 
 /** How a streamed call is bounded: silence, one line, and everything together. */

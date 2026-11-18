@@ -4,7 +4,7 @@ import {
   parseCollectionInput,
   parseModelInput,
   parseSettingsReply,
-  parseTestReply,
+  parseTestLine,
   removeKeyLine,
   withCollectionReply,
   settingsSetLine,
@@ -33,10 +33,10 @@ describe('the command lines', () => {
     expect(removeKeyLine).toBe('settings-set {"model":{"remove_key":true}}');
   });
 
-  it('leaves out of a test what was not given', () => {
-    expect(settingsTestLine({ baseUrl: '', model: '' })).toBe('settings-test {}');
+  it('leaves out of a test what was not given, and asks for the lines of the checks', () => {
+    expect(settingsTestLine({ baseUrl: '', model: '' })).toBe('settings-test {"progress":true}');
     expect(settingsTestLine({ baseUrl: 'http://127.0.0.1:1', model: 'm', apiKey: 'k' })).toBe(
-      'settings-test {"base_url":"http://127.0.0.1:1","model":"m","api_key":"k"}',
+      'settings-test {"base_url":"http://127.0.0.1:1","model":"m","api_key":"k","progress":true}',
     );
   });
 });
@@ -191,7 +191,16 @@ describe('withCollectionReply', () => {
   });
 });
 
-describe('parseTestReply', () => {
+/** The result of a last line; the Test's other lines are `parseTestLine`'s progress. */
+function parseTestReply(line: string) {
+  const parsed = parseTestLine(line);
+  if (parsed.kind !== 'last') {
+    throw new Error('not a last line');
+  }
+  return parsed.result;
+}
+
+describe('the last line of a Test', () => {
   it.each([
     ['{"result":"works","text":"pong"}', { result: 'works', text: 'pong' }],
     ['{"result":"key refused"}', { result: 'key refused' }],
@@ -199,16 +208,102 @@ describe('parseTestReply', () => {
     ['{"result":"unreachable"}', { result: 'unreachable' }],
     ['{"result":"timeout"}', { result: 'timeout' }],
     ['{"result":"error","status":502}', { result: 'error', status: 502 }],
+    ['{"result":"tools refused"}', { result: 'tools refused' }],
+    ['{"result":"no tool call"}', { result: 'no tool call' }],
+    ['{"result":"bad tool call"}', { result: 'bad tool call' }],
+    ['{"result":"wrong answer"}', { result: 'wrong answer' }],
     ['{"error":"no model address is set"}', { result: 'failed', error: 'no model address is set' }],
-  ])('reads %s', (line, expected) => {
-    expect(parseTestReply(line)).toEqual(expected);
+  ])('reads %s, with no checks from an older agent', (line, expected) => {
+    expect(parseTestReply(line)).toEqual({ ...expected, checks: [] });
+  });
+
+  it('reads the checks of the last line', () => {
+    const line =
+      '{"result":"no tool call","checks":[{"name":"answers","result":"works"},' +
+      '{"name":"uses tools","result":"no tool call"}]}';
+    expect(parseTestReply(line)).toEqual({
+      result: 'no tool call',
+      checks: [
+        { name: 'answers', result: 'works' },
+        { name: 'uses tools', result: 'no tool call' },
+      ],
+    });
   });
 
   it.each([
     ['works without text', '{"result":"works"}'],
     ['an error without a status', '{"result":"error"}'],
     ['a result it does not know', '{"result":"fine"}'],
+    ['checks that are not a list', '{"result":"timeout","checks":"none"}'],
+    ['a check with no name', '{"result":"timeout","checks":[{"result":"timeout"}]}'],
+    [
+      'a check result it does not know',
+      '{"result":"timeout","checks":[{"name":"a","result":"x"}]}',
+    ],
+    [
+      'a check error without a status',
+      '{"result":"timeout","checks":[{"name":"a","result":"error"}]}',
+    ],
   ])('rejects %s', (_name, line) => {
     expect(() => parseTestReply(line)).toThrow();
+  });
+});
+
+describe('parseTestLine', () => {
+  it('reads the names of the checks', () => {
+    expect(parseTestLine('{"checks":["answers","uses tools"]}')).toEqual({
+      kind: 'progress',
+      progress: { event: 'checks', names: ['answers', 'uses tools'] },
+    });
+  });
+
+  it.each([
+    ['{"check":{"name":"answers","result":"works"}}', { name: 'answers', result: 'works' }],
+    [
+      '{"check":{"name":"uses tools","result":"skipped"}}',
+      { name: 'uses tools', result: 'skipped' },
+    ],
+    [
+      '{"check":{"name":"answers","result":"error","status":502}}',
+      { name: 'answers', result: 'error', status: 502 },
+    ],
+    [
+      '{"check":{"name":"uses tools","result":"no tool call"}}',
+      { name: 'uses tools', result: 'no tool call' },
+    ],
+  ])('reads the line of a check that ended: %s', (line, check) => {
+    expect(parseTestLine(line)).toEqual({ kind: 'progress', progress: { event: 'check', check } });
+  });
+
+  it('reads the last line with the result and every check', () => {
+    const line =
+      '{"result":"works","text":"pong","checks":[{"name":"answers","result":"works"},' +
+      '{"name":"uses tools","result":"works"}]}';
+    expect(parseTestLine(line)).toEqual({
+      kind: 'last',
+      result: {
+        result: 'works',
+        text: 'pong',
+        checks: [
+          { name: 'answers', result: 'works' },
+          { name: 'uses tools', result: 'works' },
+        ],
+      },
+    });
+  });
+
+  it('reads a reply with no check lines as the last line with no checks', () => {
+    expect(parseTestLine('{"result":"works","text":"pong"}')).toEqual({
+      kind: 'last',
+      result: { result: 'works', text: 'pong', checks: [] },
+    });
+  });
+
+  it.each([
+    ['names that are not text', '{"checks":[1]}'],
+    ['a check with no result', '{"check":{"name":"answers"}}'],
+    ['a check that is not an object', '{"check":"answers"}'],
+  ])('rejects %s', (_name, line) => {
+    expect(() => parseTestLine(line)).toThrow();
   });
 });

@@ -3,18 +3,25 @@ import {
   parseCollectionInput,
   parseModelInput,
   parseSettingsReply,
-  parseTestReply,
+  parseTestLine,
   removeKeyLine,
   settingsGetLine,
   settingsSetLine,
   settingsTestLine,
 } from './agent-settings';
-import type { ModelInput, ModelTestResult, SettingsResult } from './agent-settings';
-import { callAgent, failureText, settingsLimits, testLimits } from './agent-socket';
-import type { CallLimits, Where } from './agent-socket';
+import type { ModelInput, ModelTestResult, SettingsResult, TestProgress } from './agent-settings';
+import {
+  agentSocketPath,
+  callAgent,
+  failureText,
+  settingsLimits,
+  streamAgent,
+} from './agent-socket';
+import type { StreamLimits, Where } from './agent-socket';
 
 const keyForAnotherAddress =
   'the saved key belongs to the saved address: type the key again to use another address';
+const testAlreadyRunning = 'a Test is already running';
 const invalidInput = 'the window sent settings in a form the app does not accept';
 
 async function settingsCall(where: Where, line: string): Promise<SettingsResult> {
@@ -25,12 +32,68 @@ async function settingsCall(where: Where, line: string): Promise<SettingsResult>
   }
 }
 
-async function testCall(where: Where, line: string, limits: CallLimits): Promise<ModelTestResult> {
-  try {
-    return parseTestReply(await callAgent(where.env, where.platform, line, limits));
-  } catch (error) {
-    return { result: 'failed', error: failureText(error) };
-  }
+/**
+ * The agent gives each check of a Test 15 s, and the checks run one after the other; the app
+ * waits a little longer for the next line, so the agent's own answer wins.
+ */
+export const testStreamLimits: StreamLimits = {
+  idleMs: 20_000,
+  maxLineChars: 4096,
+  maxTotalChars: 64 * 1024,
+};
+
+/**
+ * One Test: each line the agent sends goes to `onProgress` while it is a check line, and the last
+ * line is the result. A failed result carries no checks.
+ */
+function testCall(
+  where: Where,
+  line: string,
+  onProgress: (progress: TestProgress) => void,
+): Promise<ModelTestResult> {
+  return new Promise((resolve) => {
+    let path: string;
+    try {
+      path = agentSocketPath(where.env, where.platform);
+    } catch (error) {
+      resolve({ result: 'failed', error: failureText(error), checks: [] });
+      return;
+    }
+    let result: ModelTestResult | null = null;
+    const stream = streamAgent(
+      path,
+      line,
+      testStreamLimits,
+      (reply) => {
+        if (result !== null) {
+          return;
+        }
+        try {
+          const parsed = parseTestLine(reply);
+          if (parsed.kind === 'progress') {
+            onProgress(parsed.progress);
+          } else {
+            result = parsed.result;
+          }
+        } catch (error) {
+          stream.close();
+          resolve({ result: 'failed', error: failureText(error), checks: [] });
+        }
+      },
+      (error) => {
+        if (result !== null) {
+          resolve(result);
+        } else {
+          resolve({
+            result: 'failed',
+            error:
+              error === null ? 'the agent closed the socket without an answer' : failureText(error),
+            checks: [],
+          });
+        }
+      },
+    );
+  });
 }
 
 /**
@@ -60,7 +123,12 @@ export interface SettingsHandlers {
  * not trusted, and nothing in these handlers logs it: a handler that throws would put its
  * message in the console, so each one answers failures as values.
  */
-export function createSettingsHandlers(where: Where): SettingsHandlers {
+export function createSettingsHandlers(
+  where: Where,
+  onTestProgress: (progress: TestProgress) => void = () => undefined,
+): SettingsHandlers {
+  // Progress events carry no run id, so only one Test runs at a time.
+  let testing = false;
   return {
     get: () => settingsCall(where, settingsGetLine),
     save: async (value) => {
@@ -76,12 +144,20 @@ export function createSettingsHandlers(where: Where): SettingsHandlers {
     test: async (value) => {
       const input = parseModelInput(value);
       if (input === null) {
-        return { result: 'failed', error: invalidInput };
+        return { result: 'failed', error: invalidInput, checks: [] };
       }
       if (await sendsSavedKeyElsewhere(where, input)) {
-        return { result: 'failed', error: keyForAnotherAddress };
+        return { result: 'failed', error: keyForAnotherAddress, checks: [] };
       }
-      return testCall(where, settingsTestLine(input), testLimits);
+      if (testing) {
+        return { result: 'failed', error: testAlreadyRunning, checks: [] };
+      }
+      testing = true;
+      try {
+        return await testCall(where, settingsTestLine(input), onTestProgress);
+      } finally {
+        testing = false;
+      }
     },
     removeKey: () => settingsCall(where, removeKeyLine),
     saveCollection: async (value) => {

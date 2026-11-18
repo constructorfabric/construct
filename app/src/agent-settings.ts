@@ -35,20 +35,55 @@ export type SettingsResult =
     }
   | { readonly ok: false; readonly error: string };
 
+/** The results of a check or of a Test that carry nothing but their name. */
+export const plainFailures = [
+  'key refused',
+  'model not found',
+  'unreachable',
+  'timeout',
+  'tools refused',
+  'no tool call',
+  'bad tool call',
+  'wrong answer',
+] as const;
+
+export type PlainFailure = (typeof plainFailures)[number];
+
+function isPlainFailure(result: unknown): result is PlainFailure {
+  return plainFailures.some((failure) => failure === result);
+}
+
 /** How a model Test ended. `failed` is a call that did not reach the model at all. */
-export type ModelTestResult =
+export type TestOutcome =
   | { readonly result: 'works'; readonly text: string }
-  | { readonly result: 'key refused' }
-  | { readonly result: 'model not found' }
-  | { readonly result: 'unreachable' }
-  | { readonly result: 'timeout' }
+  | { readonly result: PlainFailure }
   | { readonly result: 'error'; readonly status: number }
   | { readonly result: 'failed'; readonly error: string };
+
+/** How one check ended: a check that did not run is `skipped`. */
+export type CheckResult =
+  | { readonly result: 'works' }
+  | { readonly result: 'skipped' }
+  | { readonly result: PlainFailure }
+  | { readonly result: 'error'; readonly status: number };
+
+/** One named check of the Test, as the agent names it (`answers`, `uses tools`). */
+export type TestCheck = CheckResult & { readonly name: string };
+
+/** The result of a Test and, when the agent sends them, its checks (none from an older agent). */
+export type ModelTestResult = TestOutcome & { readonly checks: readonly TestCheck[] };
+
+/** What the window hears while a Test runs: the names of the checks, then each check as it ends. */
+export type TestProgress =
+  | { readonly event: 'checks'; readonly names: readonly string[] }
+  | { readonly event: 'check'; readonly check: TestCheck };
 
 export interface ModelSettingsApi {
   readonly getSettings: () => Promise<SettingsResult>;
   readonly saveModel: (input: ModelInput) => Promise<SettingsResult>;
   readonly testModel: (input: ModelInput) => Promise<ModelTestResult>;
+  /** Calls `listener` with the progress of each Test; returns the way to stop listening. */
+  readonly onTestProgress: (listener: (progress: TestProgress) => void) => () => void;
   readonly removeKey: () => Promise<SettingsResult>;
   readonly saveCollection: (input: CollectionInput) => Promise<SettingsResult>;
 }
@@ -56,6 +91,7 @@ export interface ModelSettingsApi {
 export const SETTINGS_GET_CHANNEL = 'settings:get';
 export const SETTINGS_SAVE_CHANNEL = 'settings:save-model';
 export const SETTINGS_TEST_CHANNEL = 'settings:test-model';
+export const SETTINGS_TEST_PROGRESS_CHANNEL = 'settings:test-progress';
 export const SETTINGS_REMOVE_KEY_CHANNEL = 'settings:remove-key';
 export const SETTINGS_COLLECTION_CHANNEL = 'settings:save-collection';
 
@@ -123,9 +159,12 @@ export function settingsSetLine(input: ModelInput): string {
 export const settingsGetLine = 'settings-get';
 export const removeKeyLine = `settings-set ${JSON.stringify({ model: { remove_key: true } })}`;
 
-/** `settings-test {...}`: the typed values; a missing one is taken from the saved settings. */
+/**
+ * `settings-test {...}`: the typed values; a missing one is taken from the saved settings. The
+ * agent answers a line for each check before the last line.
+ */
 export function settingsTestLine(input: ModelInput): string {
-  const body: Record<string, string> = {};
+  const body: Record<string, string | boolean> = {};
   if (input.baseUrl !== '') {
     body.base_url = input.baseUrl;
   }
@@ -135,6 +174,7 @@ export function settingsTestLine(input: ModelInput): string {
   if (input.apiKey !== undefined && input.apiKey !== '') {
     body.api_key = input.apiKey;
   }
+  body.progress = true;
   return `settings-test ${JSON.stringify(body)}`;
 }
 
@@ -175,9 +215,37 @@ export function parseSettingsReply(line: string): SettingsResult {
   };
 }
 
-/** Turns a `settings-test` reply into a result; the provider's own text is never in it. */
-export function parseTestReply(line: string): ModelTestResult {
-  const reply = parseLine(line);
+function parseCheck(value: unknown): TestCheck {
+  if (!isRecord(value) || typeof value.name !== 'string' || typeof value.result !== 'string') {
+    throw new Error('the agent reply has a check that is not readable');
+  }
+  const { name, result } = value;
+  if (result === 'works' || result === 'skipped') {
+    return { name, result };
+  }
+  if (result === 'error') {
+    if (typeof value.status !== 'number') {
+      throw new Error('the agent reply has no status');
+    }
+    return { name, result, status: value.status };
+  }
+  if (isPlainFailure(result)) {
+    return { name, result };
+  }
+  throw new Error('the agent gave an unknown check result');
+}
+
+function parseChecks(value: unknown): readonly TestCheck[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('the agent reply has checks that are not a list');
+  }
+  return value.map(parseCheck);
+}
+
+function parseOutcome(reply: Record<string, unknown>): TestOutcome {
   const error = replyError(reply);
   if (error !== null) {
     return { result: 'failed', error };
@@ -188,17 +256,38 @@ export function parseTestReply(line: string): ModelTestResult {
         throw new Error('the agent reply has no text');
       }
       return { result: 'works', text: reply.text };
-    case 'key refused':
-    case 'model not found':
-    case 'unreachable':
-    case 'timeout':
-      return { result: reply.result };
     case 'error':
       if (typeof reply.status !== 'number') {
         throw new Error('the agent reply has no status');
       }
       return { result: 'error', status: reply.status };
     default:
+      if (isPlainFailure(reply.result)) {
+        return { result: reply.result };
+      }
       throw new Error('the agent gave an unknown test result');
   }
+}
+
+/** One line of a `settings-test` answer: the names, a check as it ends, or the last line. */
+export type TestLine =
+  | { readonly kind: 'progress'; readonly progress: TestProgress }
+  | { readonly kind: 'last'; readonly result: ModelTestResult };
+
+/**
+ * Turns a line of a `settings-test` answer into what it is. The last line has the result and,
+ * from an agent that sends them, the entry of every check; the provider's own text is never in it.
+ */
+export function parseTestLine(line: string): TestLine {
+  const reply = parseLine(line);
+  if (Array.isArray(reply.checks) && Object.keys(reply).length === 1) {
+    if (!reply.checks.every((name) => typeof name === 'string')) {
+      throw new Error('the agent reply has a check name that is not text');
+    }
+    return { kind: 'progress', progress: { event: 'checks', names: reply.checks as string[] } };
+  }
+  if (reply.check !== undefined) {
+    return { kind: 'progress', progress: { event: 'check', check: parseCheck(reply.check) } };
+  }
+  return { kind: 'last', result: { ...parseOutcome(reply), checks: parseChecks(reply.checks) } };
 }

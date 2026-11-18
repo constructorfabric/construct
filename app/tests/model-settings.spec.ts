@@ -49,7 +49,7 @@ test('Test shows a spinner and then Works with the answer of the model', async (
   page,
   provider,
 }) => {
-  provider.delayMs = 3000;
+  provider.delayMs = 1000;
   await openSettings(page, 'Model');
   await fill(page, { address: provider.url, model: goodModel, key: goodKey });
 
@@ -61,6 +61,116 @@ test('Test shows a spinner and then Works with the answer of the model', async (
   await expect(outcome(page)).toContainText('Works');
   await expect(outcome(page)).toContainText('pong');
   expect(provider.seen.at(-1)).toEqual({ authorization: `Bearer ${goodKey}`, model: goodModel });
+});
+
+const checkRow = (page: Page, name: string) => page.locator(`#model-checks [data-check="${name}"]`);
+const checkTimeoutMs = 15_000;
+
+test('each check shows a loader until its line comes, then a check mark', async ({
+  page,
+  provider,
+}) => {
+  provider.delayMs = 1500;
+  await openSettings(page, 'Model');
+  await fill(page, { address: provider.url, model: goodModel, key: goodKey });
+
+  await page.getByRole('button', { name: 'Test' }).click();
+
+  const answers = checkRow(page, 'answers');
+  const usesTools = checkRow(page, 'uses tools');
+  await expect(answers).toHaveAttribute('data-state', 'running', { timeout: checkTimeoutMs });
+  await expect(usesTools).toHaveAttribute('data-state', 'running');
+  await expect(answers.locator('svg')).toBeVisible();
+  // The first row ends while the second still waits for its own line.
+  await expect(answers).toHaveAttribute('data-state', 'works', { timeout: checkTimeoutMs });
+  await expect(usesTools).toHaveAttribute('data-state', 'running');
+  await expect(answers).toContainText('Answers: works');
+  await expect(answers.locator('svg.lucide-circle-check')).toBeVisible();
+  await expect(usesTools).toContainText('Uses tools: checking');
+  await expect(outcome(page)).toHaveCount(0);
+  await screenshotBothThemes(page, 'test-checks-running');
+
+  await expect(usesTools).toHaveAttribute('data-state', 'works', { timeout: checkTimeoutMs });
+  await expect(page.locator('#model-checks svg.lucide-circle-check')).toHaveCount(2);
+  await expect(outcome(page)).toContainText('Works', { timeout: checkTimeoutMs });
+  await expect(outcome(page)).toContainText('pong');
+  await expectNoPolicyViolations(page);
+});
+
+test('a row keeps its height from the loader to the check mark', async ({ page, provider }) => {
+  provider.delayMs = 1500;
+  await openSettings(page, 'Model');
+  await fill(page, { address: provider.url, model: goodModel, key: goodKey });
+  await page.getByRole('button', { name: 'Test' }).click();
+
+  const answers = checkRow(page, 'answers');
+  await expect(answers).toHaveAttribute('data-state', 'running', { timeout: checkTimeoutMs });
+  const running = await answers.boundingBox();
+  await expect(answers).toHaveAttribute('data-state', 'works', { timeout: checkTimeoutMs });
+  const done = await answers.boundingBox();
+  expect(done?.height).toBe(running?.height);
+  expect(done?.y).toBe(running?.y);
+});
+
+test('a model that ignores tools ends with a check mark and a cross with its reason', async ({
+  page,
+  provider,
+}) => {
+  provider.ignoresTools = true;
+  await openSettings(page, 'Model');
+  await fill(page, { address: provider.url, model: goodModel, key: goodKey });
+
+  await page.getByRole('button', { name: 'Test' }).click();
+
+  await expect(checkRow(page, 'uses tools')).toHaveAttribute('data-state', 'failed', {
+    timeout: checkTimeoutMs,
+  });
+  await expect(checkRow(page, 'answers')).toHaveAttribute('data-state', 'works');
+  await expect(checkRow(page, 'answers').locator('svg.lucide-circle-check')).toBeVisible();
+  const failed = checkRow(page, 'uses tools');
+  await expect(failed.locator('svg.lucide-circle-x')).toBeVisible();
+  await expect(failed).toContainText('Uses tools: the model did not call the tool');
+  await expect(outcome(page)).toContainText('no tool call', { timeout: checkTimeoutMs });
+  await screenshotBothThemes(page, 'test-checks-failed');
+  await expectNoPolicyViolations(page);
+});
+
+test('Save and Remove key clear the rows of the last Test', async ({ page, provider }) => {
+  await openSettings(page, 'Model');
+  await fill(page, { address: provider.url, model: goodModel, key: goodKey });
+  await page.getByRole('button', { name: 'Test' }).click();
+  await expect(page.locator('#model-checks svg.lucide-circle-check')).toHaveCount(2, {
+    timeout: checkTimeoutMs,
+  });
+
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(outcome(page)).toContainText('Saved');
+  await expect(page.locator('#model-checks')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Test' }).click();
+  await expect(page.locator('#model-checks svg.lucide-circle-check')).toHaveCount(2, {
+    timeout: checkTimeoutMs,
+  });
+  await page.getByRole('button', { name: 'Remove key' }).click();
+  await expect(outcome(page)).toContainText('The key is removed');
+  await expect(page.locator('#model-checks')).toHaveCount(0);
+});
+
+test('a check after a failed one shows skipped', async ({ page, provider }) => {
+  await openSettings(page, 'Model');
+  await fill(page, { address: provider.url, model: 'no-such-model', key: goodKey });
+
+  await page.getByRole('button', { name: 'Test' }).click();
+
+  await expect(checkRow(page, 'answers')).toContainText(
+    'the provider has no model with this name',
+    {
+      timeout: checkTimeoutMs,
+    },
+  );
+  await expect(checkRow(page, 'uses tools')).toHaveAttribute('data-state', 'skipped');
+  await expect(checkRow(page, 'uses tools')).toContainText('Uses tools: skipped');
+  await expect(outcome(page)).toContainText('model not found');
 });
 
 test('a wrong key shows key refused', async ({ page, provider }) => {

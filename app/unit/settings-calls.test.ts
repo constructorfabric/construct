@@ -2,22 +2,26 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { TestProgress } from '../src/agent-settings';
 import { createSettingsHandlers } from '../src/settings-calls';
 
 const secret = 'sk-secret-4f9a';
 
-// A fake agent that records the lines it gets and answers each with `answer(line)`.
+// A fake agent that records the lines it gets and answers each with `answer(line)`, once the
+// answer is there: a promise holds the reply back.
 async function withFakeAgent(
-  answer: (line: string) => string | null,
+  answer: (line: string) => string | null | Promise<string | null>,
   check: (
     handlers: ReturnType<typeof createSettingsHandlers>,
     lines: readonly string[],
+    heard: readonly TestProgress[],
   ) => Promise<void>,
 ): Promise<void> {
   const runtimeDir = mkdtempSync(path.join(tmpdir(), 'cb-unit-'));
   mkdirSync(path.join(runtimeDir, 'construct'));
   const lines: string[] = [];
+  const heard: TestProgress[] = [];
   const clients = new Set<net.Socket>();
   const server = net.createServer((client) => {
     clients.add(client);
@@ -25,10 +29,11 @@ async function withFakeAgent(
     client.once('data', (data: string) => {
       const line = data.trim();
       lines.push(line);
-      const reply = answer(line);
-      if (reply !== null) {
-        client.end(`${reply}\n`);
-      }
+      void Promise.resolve(answer(line)).then((reply) => {
+        if (reply !== null) {
+          client.end(`${reply}\n`);
+        }
+      });
     });
   });
   await new Promise<void>((resolve) => {
@@ -36,8 +41,14 @@ async function withFakeAgent(
   });
   try {
     await check(
-      createSettingsHandlers({ env: { XDG_RUNTIME_DIR: runtimeDir }, platform: 'linux' }),
+      createSettingsHandlers(
+        { env: { XDG_RUNTIME_DIR: runtimeDir }, platform: 'linux' },
+        (event) => {
+          heard.push(event);
+        },
+      ),
       lines,
+      heard,
     );
   } finally {
     clients.forEach((client) => {
@@ -213,6 +224,7 @@ describe('the settings handlers', () => {
         expect(await handlers.test({ baseUrl: 'u', model: 'm', apiKey: secret })).toEqual({
           result: 'works',
           text: 'pong',
+          checks: [],
         });
       },
     );
@@ -222,6 +234,94 @@ describe('the settings handlers', () => {
         const result = await handlers.test({ baseUrl: 'u', model: 'm', apiKey: secret });
         expect(result.result).toBe('failed');
         expect(JSON.stringify(result)).not.toContain(secret);
+      },
+    );
+  });
+
+  it('test asks for the check lines and tells each one as it comes, then gives the last', async () => {
+    const answer = [
+      '{"checks":["answers","uses tools"]}',
+      '{"check":{"name":"answers","result":"works"}}',
+      '{"check":{"name":"uses tools","result":"no tool call"}}',
+      '{"result":"no tool call","checks":[{"name":"answers","result":"works"},' +
+        '{"name":"uses tools","result":"no tool call"}]}',
+    ].join('\n');
+    await withFakeAgent(
+      () => answer,
+      async (handlers, lines, heard) => {
+        const result = await handlers.test({ baseUrl: 'u', model: 'm', apiKey: 'k' });
+        expect(lines).toEqual([
+          'settings-test {"base_url":"u","model":"m","api_key":"k","progress":true}',
+        ]);
+        expect(heard).toEqual([
+          { event: 'checks', names: ['answers', 'uses tools'] },
+          { event: 'check', check: { name: 'answers', result: 'works' } },
+          { event: 'check', check: { name: 'uses tools', result: 'no tool call' } },
+        ]);
+        expect(result).toEqual({
+          result: 'no tool call',
+          checks: [
+            { name: 'answers', result: 'works' },
+            { name: 'uses tools', result: 'no tool call' },
+          ],
+        });
+      },
+    );
+  });
+
+  it('test fails, and says nothing of the lines, when one cannot be read', async () => {
+    await withFakeAgent(
+      () => `{"checks":["answers"]}\n${secret} not json\n{"result":"works","text":"pong"}`,
+      async (handlers) => {
+        const result = await handlers.test({ baseUrl: 'u', model: 'm', apiKey: secret });
+        expect(result.result).toBe('failed');
+        // A JSON error quotes the start of the text it could not read: a leak shows in the prefix.
+        expect(JSON.stringify(result)).not.toContain(secret.slice(0, 8));
+        expect(JSON.stringify(result)).not.toContain('not json');
+      },
+    );
+  });
+
+  it('test refuses a second Test while one runs', async () => {
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The agent holds the first Test's answer until `release`.
+    await withFakeAgent(
+      async () => {
+        await held;
+        return '{"result":"works","text":"pong"}';
+      },
+      async (handlers, lines) => {
+        const input = { baseUrl: 'u', model: 'm', apiKey: 'k' };
+        const first = handlers.test(input);
+        await vi.waitFor(() => {
+          expect(lines).toHaveLength(1);
+        });
+        expect(await handlers.test(input)).toEqual({
+          result: 'failed',
+          error: 'a Test is already running',
+          checks: [],
+        });
+        expect(lines).toHaveLength(1);
+        release();
+        expect((await first).result).toBe('works');
+        expect((await handlers.test(input)).result).toBe('works');
+        expect(lines).toHaveLength(2);
+      },
+    );
+  });
+
+  it('test fails when the agent closes before the last line', async () => {
+    await withFakeAgent(
+      () => '{"checks":["answers"]}',
+      async (handlers) => {
+        expect(await handlers.test({ baseUrl: 'u', model: 'm', apiKey: 'k' })).toEqual({
+          result: 'failed',
+          error: 'the agent closed the socket without an answer',
+          checks: [],
+        });
       },
     );
   });
