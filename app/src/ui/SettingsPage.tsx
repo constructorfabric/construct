@@ -5,9 +5,14 @@ import { withCollectionReply } from '../agent-settings';
 import type { SettingsResult } from '../agent-settings';
 import { t } from '../translation';
 import { CollectionSettingsForm } from './CollectionSettingsForm';
+import { DashboardSetupSection } from './DashboardSetupSection';
 import { ModelSettingsForm } from './ModelSettingsForm';
 
-export function SettingsPage(): ReactNode {
+export function SettingsPage({
+  onOpenDashboard,
+}: {
+  readonly onOpenDashboard: () => void;
+}): ReactNode {
   const [loaded, setLoaded] = useState<SettingsResult | null>(null);
 
   useEffect(() => {
@@ -36,6 +41,13 @@ export function SettingsPage(): ReactNode {
             onSettings={(model) =>
               setLoaded((current) => (current?.ok ? { ...current, model } : current))
             }
+          />
+          <DashboardSetupSection
+            modelSet={
+              loaded.model.apiKeySet && loaded.model.baseUrl !== '' && loaded.model.model !== ''
+            }
+            collecting={loaded.collection.enabled}
+            onOpenDashboard={onOpenDashboard}
           />
           <CollectionSettingsForm
             settings={loaded.collection}

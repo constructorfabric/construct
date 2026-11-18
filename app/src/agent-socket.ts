@@ -32,6 +32,8 @@ export const settingsLimits: CallLimits = { deadlineMs: 5000, maxReplyChars: 409
  * table and every day of a period, so it is far longer than a status.
  */
 export const dashboardLimits: CallLimits = { deadlineMs: 10_000, maxReplyChars: 512 * 1024 };
+/** `dashboard-setup-*`: a status holds the run's report, which is at most 64 KiB of text. */
+export const setupLimits: CallLimits = { deadlineMs: 5000, maxReplyChars: 256 * 1024 };
 
 /** How a streamed call is bounded: silence, one line, and everything together. */
 export interface StreamLimits {

@@ -34,6 +34,12 @@ import {
   DASHBOARD_NUMBERS_CHANNEL,
   DASHBOARD_PROJECT_CHANNEL,
 } from './dashboard-protocol';
+import { createDashboardSetupHandlers } from './dashboard-setup-calls';
+import {
+  SETUP_CANCEL_CHANNEL,
+  SETUP_START_CHANNEL,
+  SETUP_STATUS_CHANNEL,
+} from './dashboard-setup-protocol';
 import { createLinkHandler } from './external-calls';
 import { OPEN_LINK_CHANNEL } from './external';
 import { createMemoryHandlers } from './memory-calls';
@@ -192,6 +198,10 @@ function startApp(): void {
     const memory = createMemoryHandlers({ env: process.env, platform: process.platform });
     ipcMain.handle(MEMORY_FACTS_CHANNEL, () => memory.facts());
     ipcMain.handle(MEMORY_VERSION_CHANNEL, () => memory.version());
+    const setup = createDashboardSetupHandlers({ env: process.env, platform: process.platform });
+    ipcMain.handle(SETUP_START_CHANNEL, () => setup.start());
+    ipcMain.handle(SETUP_STATUS_CHANNEL, () => setup.status());
+    ipcMain.handle(SETUP_CANCEL_CHANNEL, () => setup.cancel());
     // The window never opens a page itself: a link of an answer comes here, and only a web address
     // goes on to the system browser.
     const openLink = createLinkHandler((address) => shell.openExternal(address));

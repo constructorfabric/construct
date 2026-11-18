@@ -1,6 +1,7 @@
 import type { ModelSettingsApi } from './agent-settings';
 import type { ChatApi } from './chat-protocol';
 import type { DashboardApi } from './dashboard-protocol';
+import type { DashboardSetupApi } from './dashboard-setup-protocol';
 import type { ExternalApi } from './external';
 import type { MemoryApi } from './memory-protocol';
 
@@ -41,6 +42,7 @@ export type AgentStatus =
 export type ConstructAgentApi = ModelSettingsApi &
   ChatApi &
   DashboardApi &
+  DashboardSetupApi &
   ExternalApi &
   MemoryApi & {
     readonly getStatus: () => Promise<AgentStatus>;
