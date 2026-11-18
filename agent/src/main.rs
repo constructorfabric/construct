@@ -107,7 +107,13 @@ fn run() -> std::io::Result<()> {
         .with_model(model_state.clone())
         .with_service(login_service());
     let server = match dashboard {
-        Some(dashboard) => server.with_dashboard(dashboard),
+        Some(dashboard) => server
+            .with_numbers(construct_agent::dashboard_numbers::Numbers::new(
+                activity.clone(),
+                dashboard.clone(),
+                rt.handle().clone(),
+            ))
+            .with_dashboard(dashboard),
         None => server,
     };
     let server = with_chat(

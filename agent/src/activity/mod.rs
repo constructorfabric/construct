@@ -241,17 +241,12 @@ impl Store {
             .map_err(|e| err("read the minutes", e))
     }
 
-    /// The time of the sessions in the days the caller gives, by the rules in [`rules`]. One
-    /// read, so the answer is of one state of the store.
+    /// The active minutes of every session, with what the rules need to know of it, in the
+    /// order of tool and session. One read, so the answer is of one state of the store.
     ///
     /// # Errors
-    /// Fails when the query is refused, a stored minute cannot be read, or the days overlap.
-    pub async fn activity(
-        &self,
-        days: &[rules::Day],
-        kind: rules::Kind,
-        grouping: rules::Grouping,
-    ) -> Result<rules::Report, Error> {
+    /// Fails when the query is refused or a stored minute cannot be read.
+    pub async fn session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {
         let rows = sqlx::query(
             "select s.tool, s.session, s.project, s.ticket, s.person_prompts,
                     s.unattended_prompts, s.unknown_prompts, m.minute
@@ -290,6 +285,20 @@ impl Store {
                 minutes: vec![minute],
             });
         }
+        Ok(sessions)
+    }
+
+    /// The time of the sessions in the days the caller gives, by the rules in [`rules`].
+    ///
+    /// # Errors
+    /// Fails when the query is refused, a stored minute cannot be read, or the days overlap.
+    pub async fn activity(
+        &self,
+        days: &[rules::Day],
+        kind: rules::Kind,
+        grouping: rules::Grouping,
+    ) -> Result<rules::Report, Error> {
+        let sessions = self.session_minutes().await?;
         rules::calculate(&sessions, days, kind, grouping).map_err(|e| err("calculate", e))
     }
 

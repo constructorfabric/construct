@@ -33,6 +33,12 @@ use super::assign;
 /// The longest pause, in silent minutes, that still joins two active minutes into one block.
 pub const MAX_PAUSE: i64 = 5;
 
+/// How far, in minutes, a minute of a session can be from a day and still change what the day
+/// holds: a pause of [`MAX_PAUSE`] silent minutes joins two active minutes into one block, so a
+/// block that reaches into a day has an active minute within this distance of it. A caller that
+/// keeps only the minutes near its days keeps every block whole where it matters.
+pub const REACH: i64 = MAX_PAUSE + 1;
+
 /// How many parts a minute is split into.
 pub const PARTS_PER_MINUTE: u64 = 1_000_000;
 
@@ -163,7 +169,18 @@ fn blocks(minutes: &[i64]) -> Vec<(i64, i64)> {
     blocks
 }
 
-fn check_days(days: &[Day]) -> Result<(), DaysError> {
+/// Whether the days can be used: each ends after it starts, and none repeats a label or overlaps
+/// another. [`calculate`] checks them too; a caller that reads its sessions first checks before.
+///
+/// # Errors
+/// Fails when a day is empty, a label is given twice, or two days overlap.
+pub fn check_days(days: &[Day]) -> Result<(), DaysError> {
+    let mut days = days.to_vec();
+    days.sort_by_key(|d| d.start);
+    check_sorted(&days)
+}
+
+fn check_sorted(days: &[Day]) -> Result<(), DaysError> {
     if let Some(day) = days.iter().find(|d| d.start >= d.end) {
         return Err(DaysError(format!(
             "the day {} ends before it starts",
@@ -195,9 +212,27 @@ pub fn calculate(
     kind: Kind,
     grouping: Grouping,
 ) -> Result<Report, DaysError> {
+    // Named over all the sessions given, so that a project keeps its name whatever the period.
+    let names = assign::project_labels(sessions.iter().map(|s| s.project.as_str()));
+    calculate_named(sessions, days, kind, grouping, &names)
+}
+
+/// [`calculate`] with the name of each project given by the caller, by the project the store
+/// keeps: a report grouped by project has one group for each name, so projects given one name are
+/// one group and share a minute as one. `names` must hold every project of `sessions`.
+///
+/// # Errors
+/// Fails when a day is empty or two days overlap.
+pub fn calculate_named(
+    sessions: &[SessionMinutes],
+    days: &[Day],
+    kind: Kind,
+    grouping: Grouping,
+    names: &BTreeMap<String, String>,
+) -> Result<Report, DaysError> {
     let mut days = days.to_vec();
     days.sort_by_key(|d| d.start);
-    check_days(&days)?;
+    check_sorted(&days)?;
 
     // The minutes of every session on one timeline, each with the sessions active in it, in the
     // order of the input.
@@ -217,8 +252,6 @@ pub fn calculate(
             groups.insert(day.label.clone(), (position, 0, BTreeSet::new()));
         }
     }
-    // Named over all the sessions given, so that a project keeps its name whatever the period.
-    let project_names = assign::project_labels(sessions.iter().map(|s| s.project.as_str()));
     let mut total_parts = 0;
     let mut counted_sessions = BTreeSet::new();
     for (minute, active) in &timeline {
@@ -244,7 +277,7 @@ pub fn calculate(
         let mut by_key: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for index in winners {
             let key = match grouping {
-                Grouping::Project => project_names[&sessions[index].project].clone(),
+                Grouping::Project => names[&sessions[index].project].clone(),
                 Grouping::Ticket if sessions[index].ticket.is_empty() => {
                     assign::NO_TICKET.to_owned()
                 }
