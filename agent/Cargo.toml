@@ -27,23 +27,23 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal",
 # The Construct host is unix-only (like the database module), so the other platforms neither build
 # the toolkit nor need protoc.
 [target.'cfg(unix)'.dependencies]
-# One toolkit generation (0.13.x), every crate pinned. Published crates only.
-toolkit = { package = "cf-gears-toolkit", version = "=0.13.1", features = ["bootstrap"] }
-construct = { package = "cf-gears-construct", version = "=0.1.6" }
-cluster = { package = "cf-gears-cluster", version = "=0.4.4" }
-grpc-hub = { package = "cf-gears-grpc-hub", version = "=0.5.2" }
-graph-storage = { package = "cf-gears-graph-storage", version = "=0.3.2" }
-types-registry = { package = "cf-gears-types-registry", version = "=0.6.2" }
-authn-resolver = { package = "cf-gears-authn-resolver", version = "=0.3.2" }
-authz-resolver = { package = "cf-gears-authz-resolver", version = "=0.4.2" }
-static-authn-plugin = { package = "cf-gears-static-authn-plugin", version = "=0.4.1" }
-static-authz-plugin = { package = "cf-gears-static-authz-plugin", version = "=0.2.1" }
-api-gateway = { package = "cf-gears-api-gateway", version = "=0.7.4" }
+# One toolkit generation (0.14.x), every crate pinned. Published crates only.
+toolkit = { package = "cf-gears-toolkit", version = "=0.14.0", features = ["bootstrap"] }
+construct = { package = "cf-gears-construct", version = "=0.2.0" }
+graph-storage = { package = "cf-gears-graph-storage", version = "=0.4.0" }
+types-registry = { package = "cf-gears-types-registry", version = "=0.7.0" }
+authn-resolver = { package = "cf-gears-authn-resolver", version = "=0.3.3" }
+authz-resolver = { package = "cf-gears-authz-resolver", version = "=0.5.0" }
+static-authn-plugin = { package = "cf-gears-static-authn-plugin", version = "=0.4.2" }
+static-authz-plugin = { package = "cf-gears-static-authz-plugin", version = "=0.2.2" }
+cluster = { package = "cf-gears-cluster", version = "=0.4.5" }
+grpc-hub = { package = "cf-gears-grpc-hub", version = "=0.5.3" }
+api-gateway = { package = "cf-gears-api-gateway", version = "=0.7.5" }
 toolkit-gts = { package = "cf-gears-toolkit-gts", version = "=0.3.0" }
-toolkit-security = { package = "cf-gears-toolkit-security", version = "=0.13.0" }
-toolkit-db = { package = "cf-gears-toolkit-db", version = "=0.17.4" }
-oagw-sdk = { package = "cf-gears-oagw-sdk", version = "=0.5.18" }
-toolkit-canonical-errors = { package = "cf-gears-toolkit-canonical-errors", version = "=0.10.1" }
+toolkit-security = { package = "cf-gears-toolkit-security", version = "=0.14.0" }
+toolkit-db = { package = "cf-gears-toolkit-db", version = "=0.18.0" }
+oagw-sdk = { package = "cf-gears-oagw-sdk", version = "=0.6.0" }
+toolkit-canonical-errors = { package = "cf-gears-toolkit-canonical-errors", version = "=0.10.2" }
 # The agent's own SQL (the activity store), over the socket. The version is the one the gear
 # crates already build, so there is one copy.
 sqlx = { version = "=0.9.0", default-features = false, features = ["postgres", "runtime-tokio"] }

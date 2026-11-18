@@ -612,9 +612,9 @@ dependencies = [
 
 [[package]]
 name = "brotli"
-version = "9.1.1"
+version = "9.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "627b7cfb0578f0eafce087a90fcd40add1231900b69e4d4de2d456260a4f5d81"
+checksum = "9071f285ed78f04f37d675abaaef5de7689e2f30a216c8dc6795465d81910a13"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
@@ -623,9 +623,9 @@ dependencies = [
 
 [[package]]
 name = "brotli-decompressor"
-version = "6.3.1"
+version = "6.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75c74c9c51b9140663e196b5fb88bc94c334d7a497c8311cb759d8557874747f"
+checksum = "cc031cd87c6529082b0b65c604e86af0ed7744841b17ccfe60b1e31fa606179e"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
@@ -643,9 +643,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
 name = "bytecount"
@@ -667,9 +667,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.12.1"
+version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+checksum = "776dfebd015e2d8732c684a2c71003674ccb49457b539b9e82151ba38e96dd7c"
 
 [[package]]
 name = "bytes-utils"
@@ -727,9 +727,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.11.1"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
+checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -739,8 +739,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-api-gateway"
-version = "0.7.4"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5da9483c62193aab289cb7f7323dfe3a0a365feab950a3572b58466490176927"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -786,8 +787,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-authn-resolver"
-version = "0.3.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac2f4b1ac8bc19e05c9993cc602cf708e8f2cdcb22aaf5d2d2375c299facf384"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -807,8 +809,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-authn-resolver-sdk"
-version = "0.3.43"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.3.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0efb00c3569efb6ccb9e18b6117bb3338937973427482c1363cdef09361efc6"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -824,8 +827,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-authz-resolver"
-version = "0.4.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f07385fc583ba0444f4dcb0f7d50be87d1b5426b7fd86fee6dcfb395e7819399"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -847,8 +851,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-authz-resolver-sdk"
-version = "0.6.5"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49ec21035481dab8b1838354c960ea05c64573845baabc7666293a56bafe60fe"
 dependencies = [
  "async-trait",
  "axum",
@@ -873,8 +878,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-cluster"
-version = "0.4.4"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85d1d9056fe6cf63e751a703fcb3bd939dde4ed8b5ce8e5268dfcc2b7389d46f"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -893,7 +899,7 @@ dependencies = [
  "clap",
  "futures-util",
  "opentelemetry",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "serde_json",
  "tokio",
@@ -906,8 +912,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-cluster-sdk"
-version = "0.3.5"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7624852a8cf868acaca62d9efa00733f210691f3534b547e178f4111d864df3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -922,7 +929,7 @@ dependencies = [
  "gts",
  "opentelemetry",
  "prost",
- "rand 0.10.3",
+ "rand 0.10.4",
  "schemars",
  "serde",
  "serde_json",
@@ -937,8 +944,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-construct"
-version = "0.1.6"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad712609501a4c906877b85a66fdc4c0c076e207cf8bf1a22dc7e57a0255c247"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -988,8 +996,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-construct-sdk"
-version = "0.2.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb89a199777b215d7c6633ef30d572870f2777dfb72451c84f7e444dbff18573"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -1007,8 +1016,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-graph-storage"
-version = "0.3.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2456f51746bdb65c72fe323db8cc80ff76f20ff000b2f0ca0f671c4b8fc91d4f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1045,8 +1055,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-graph-storage-sdk"
-version = "0.3.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c375edb15f8e786148ff239fa3c2528a3df5e63073a24ac17b6ad91b6ff9aff"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-canonical-errors",
@@ -1064,8 +1075,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-grpc-hub"
-version = "0.5.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfa3e676c06b35fbfa64036d97f0292814bb81ee8fcc0e5ccfb20834981220e2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1089,8 +1101,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-oagw-sdk"
-version = "0.5.18"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5c13579ba2d791158e29640406591704b75711763e5e762d1b56be0f9c0bed1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1109,8 +1122,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-settings-service-sdk"
-version = "0.2.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ede44067eab32a7aa326eae05a46a6f0b84350310f4bbff54d460d385d68864b"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-canonical-errors",
@@ -1128,8 +1142,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-standalone-cluster-plugin"
-version = "0.2.14"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eaf6ab01500ecd0d7cd299079e622b31d72cb1919ca886bd72ce79a279a6a46"
 dependencies = [
  "async-trait",
  "cf-gears-cluster-sdk",
@@ -1142,8 +1157,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-static-authn-plugin"
-version = "0.4.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b1be0d3415da057d641a71316a024928a7179f6b7c8b12185b890fb8fe768de"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1162,8 +1178,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-static-authz-plugin"
-version = "0.2.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56b6834cc8a88fb4f7c96bdc9bff164841d735a8e159a315385ca0838fa84a24"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1182,8 +1199,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-system-sdk-directory"
-version = "0.3.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9128c52503ea8436d6616cf25921977fac0f3a6e980885b583d91118cd6fb44d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1197,16 +1215,18 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-system-sdks"
-version = "0.1.52"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.1.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae99c30fecc318b1c672ce89d63ab1b6b8a2edb532ad833aa09d9dcf5cea8980"
 dependencies = [
  "cf-gears-system-sdk-directory",
 ]
 
 [[package]]
 name = "cf-gears-tenant-resolver-sdk"
-version = "0.4.11"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc204ffbeda6da3736f12c42f0b8eb48633c26922422442b15d6fb19c141b7f5"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -1223,8 +1243,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit"
-version = "0.13.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "381346f12186968791ef9ee26741c392f731b425731399eaa381779bd093ed31"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1285,8 +1306,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-canonical-errors"
-version = "0.10.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b832b6cd02e4acc91f949e0f1d191838d08232a0963057654fba21fddabe828"
 dependencies = [
  "axum",
  "cf-gears-toolkit-canonical-errors-macro",
@@ -1302,7 +1324,8 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-canonical-errors-macro"
 version = "0.6.5"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e9b52c634110e5f088f367585d090370d73df09e3381454febb201c8d89bf44"
 dependencies = [
  "gts-id",
  "proc-macro-crate",
@@ -1313,8 +1336,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-contract"
-version = "0.4.6"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c584496893dc47e8a5fa9da77f100d637896adf29789f96ca0961a10e41374ee"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1334,7 +1358,7 @@ dependencies = [
  "http-body-util",
  "parking_lot",
  "percent-encoding",
- "rand 0.10.3",
+ "rand 0.10.4",
  "secrecy",
  "serde",
  "serde_html_form",
@@ -1348,8 +1372,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-contract-macros"
-version = "0.2.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd286f6ae10030c35f1451c289a6cb4d4467ab8fa8a308b71e0a47c2b53a8de4"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-crate",
@@ -1360,8 +1385,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-db"
-version = "0.17.4"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f82413892df7755e6b28e150225c96533624b681a14d5b3c694c5fe961a12c01"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1396,8 +1422,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-db-macros"
-version = "0.7.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3076f5413299ff985af1fb21dfb6eeec7afa24babfa8ce2fbff77d02a7e8d6fa"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1407,8 +1434,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-gateway"
-version = "0.2.13"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcfa3f3946eaad6c0890ddfef5e103d3fa61d08b65713cac9df99086504ac113"
 dependencies = [
  "async-trait",
  "axum",
@@ -1429,7 +1457,8 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-gts"
 version = "0.3.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "864fe9a47ddeb6c1622601749094dc4b1adc0d4f5d17f64d1a147135418efd90"
 dependencies = [
  "anyhow",
  "cf-gears-toolkit-gts-macros",
@@ -1444,7 +1473,8 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-gts-macros"
 version = "0.3.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a75ff34ed1dd9348b0c53bf1bdfd451ac3a1d30cbb263c28ab10c6482f22c31c"
 dependencies = [
  "gts",
  "gts-id",
@@ -1456,8 +1486,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-http"
-version = "0.9.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fac764c2d7c8d8170d7de9324879494a3d4abc2fd8f82c46ad4755bfb0be213b"
 dependencies = [
  "bytes",
  "cf-gears-toolkit-security",
@@ -1470,7 +1501,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "pin-project-lite",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustls",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -1488,8 +1519,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-http-middleware"
-version = "0.3.6"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6281911f9b9f95b002eb6994dd82ee89b0e1f8a3df261650d743b88530d08eaa"
 dependencies = [
  "axum",
  "cf-gears-toolkit-canonical-errors",
@@ -1503,7 +1535,8 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-macros"
 version = "0.8.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03a3a4c0e9a6a20d51ac2dba072edd9af9dc8a0290500a94b2ff5464c3c8d0f1"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1514,8 +1547,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-odata"
-version = "0.10.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7e856d1118311d49d0f554f79a716e3587b972ff35b2fbf52e0a0000be8f78e"
 dependencies = [
  "base64 0.22.1",
  "bigdecimal",
@@ -1534,7 +1568,8 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-odata-macros"
 version = "0.7.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e6efd15493fca0f4f3d777625691dae6c6860c6fff486e6a6f821a558fbf796"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1544,8 +1579,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-resilience"
-version = "0.1.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bbead1f40e7f8434954c599516c29b4bf0084caa1c75fcb5aa2093d50dc43cd"
 dependencies = [
  "cf-gears-toolkit-utils",
  "parking_lot",
@@ -1559,8 +1595,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-sdk"
-version = "0.7.17"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.7.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49df104ef445efb393aa760092e52d41e0d374eab4f469b12dc2fd1b07721be7"
 dependencies = [
  "cf-gears-toolkit-odata",
  "cf-gears-toolkit-security",
@@ -1570,8 +1607,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-security"
-version = "0.13.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79bb0b7eacc8a6e2703d970e98c635829ede3c38e8f29b8b9a0f33bc0e75066e"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -1596,7 +1634,8 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-taskward"
 version = "0.1.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d65f584cf83f6cf24685488b87dc745d2e061614fb0e581bb961d6862ee51f44"
 dependencies = [
  "futures-util",
  "tokio",
@@ -1608,7 +1647,8 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-trace-context"
 version = "0.3.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f019c6db602cc005cde8a9fb05283f9d644629e4380145c1d0180ab2562a2ba5"
 dependencies = [
  "http",
  "opentelemetry",
@@ -1619,8 +1659,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-transport-grpc"
-version = "0.9.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9af8e53c2f6a62e87e1e0a4220564ea824c119ac991427d18f5073d18b0d83b"
 dependencies = [
  "anyhow",
  "cf-gears-toolkit-security",
@@ -1643,7 +1684,8 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-utils"
 version = "0.7.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e993c4f9ea44ece65581f8016935bf68c3d7ac78cc0da9f579bef6018c4d0ef"
 dependencies = [
  "humantime",
  "regex",
@@ -1654,8 +1696,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-types-registry"
-version = "0.6.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f5791b65b222bbdc9875a79d83795853528534c7d74ee230e98776afdddbc0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1693,8 +1736,9 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-types-registry-sdk"
-version = "0.5.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3968f9820b0ba84c0797c79987af2a6eab14c11936a440855d9555b189b5d1b"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1704,7 +1748,7 @@ dependencies = [
  "cf-gears-toolkit-http",
  "cf-gears-toolkit-security",
  "gts",
- "rand 0.10.3",
+ "rand 0.10.4",
  "secrecy",
  "semver",
  "serde",
@@ -1719,8 +1763,9 @@ dependencies = [
 
 [[package]]
 name = "cf-postgres-cluster-plugin"
-version = "0.5.5"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3cd230ee7bd578f4c196e6bebee84d6a2c977ecd9bcbdd6ce15026610a3675e8"
 dependencies = [
  "async-trait",
  "cf-gears-cluster-sdk",
@@ -1728,7 +1773,7 @@ dependencies = [
  "cf-gears-toolkit-macros",
  "dashmap",
  "opentelemetry",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "serde_json",
  "sqlx",
@@ -1740,8 +1785,9 @@ dependencies = [
 
 [[package]]
 name = "cf-redis-cluster-plugin"
-version = "0.2.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f158c44719a88a32bf50d3c11de16151993c86b3a7b78b45d61aa2a8fc5064f3"
 dependencies = [
  "async-trait",
  "cf-gears-cluster-sdk",
@@ -1751,7 +1797,7 @@ dependencies = [
  "fred",
  "futures-util",
  "opentelemetry",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "serde_json",
  "tokio",
@@ -2103,9 +2149,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto-common"
-version = "0.1.7"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
+checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
 dependencies = [
  "generic-array",
  "typenum",
@@ -2252,7 +2298,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
- "crypto-common 0.1.7",
+ "crypto-common 0.1.6",
 ]
 
 [[package]]
@@ -2346,9 +2392,9 @@ dependencies = [
 
 [[package]]
 name = "email_address"
-version = "0.2.9"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
+checksum = "5ab6bbd053d3cdc62ba3de82aae11530a97bbd5b3a572fbdbcd0f0e545e3ff21"
 dependencies = [
  "serde",
 ]
@@ -2405,9 +2451,9 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "errno"
-version = "0.3.14"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -2476,9 +2522,9 @@ dependencies = [
 
 [[package]]
 name = "filetime"
-version = "0.2.29"
+version = "0.2.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+checksum = "e1255e7a9f1902190d4c10a75f2f7f495d3d3ce13e9ba26e6c48683a0f4dbed7"
 dependencies = [
  "cfg-if",
  "libc",
@@ -2640,7 +2686,7 @@ checksum = "94e7099f6313ecacbe1256e8ff9d617b75d1bcb16a6fddef94866d225a01a14a"
 dependencies = [
  "io-lifetimes 2.0.4",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2756,9 +2802,9 @@ dependencies = [
 
 [[package]]
 name = "generic-array"
-version = "0.14.7"
+version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
+checksum = "4bb6743198531e02858aeaea5398fcc883e71851fcbcb5a2f773e2fb6cb1edf2"
 dependencies = [
  "typenum",
  "version_check",
@@ -3355,7 +3401,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
 dependencies = [
  "io-lifetimes 3.0.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3829,9 +3875,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.4"
+version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
+checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
 dependencies = [
  "libc",
  "wasi",
@@ -3878,9 +3924,9 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.31.3"
+version = "0.31.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -4471,7 +4517,7 @@ dependencies = [
  "anyhow",
  "postgresql_archive",
  "postgresql_commands",
- "rand 0.10.3",
+ "rand 0.10.4",
  "semver",
  "sqlx",
  "target-tuple",
@@ -4674,7 +4720,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_pcg",
  "ring",
  "rustc-hash",
@@ -4745,9 +4791,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -4800,9 +4846,9 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rand_pcg"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+checksum = "eb95882a1e14462c69aea9984bb261293ccfe6022ef8de0eda18bd5afb0052df"
 dependencies = [
  "rand_core 0.10.1",
 ]
@@ -4905,9 +4951,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.13.1"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+checksum = "9807af0e638c12e753aa1b4e601791bf2a8f71274023c8bbeec12fc149950857"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -4917,9 +4963,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.18"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
+checksum = "41d60ef07df457506a0a1a2073112eb4aae5733dbd2813c3da77d1b0fd441158"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -4934,9 +4980,9 @@ checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.11"
+version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "reqwest"
@@ -5042,7 +5088,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc05fbf560421a0357a750cbe78c7ca19d4923918490daabba313d5dbc871e47"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.10.4",
 ]
 
 [[package]]
@@ -5216,9 +5262,9 @@ checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.16"
+version = "0.103.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
+checksum = "e3a0760a887c14823fca5a1c970b01d47c328c696c0c64829d1df50e8f853fd5"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -5741,9 +5787,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.16.5"
+version = "1.16.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
+checksum = "3244542535d5de959d90ec55d1b5ff0fd2bb7b1310223907d5f11932847f7b59"
 dependencies = [
  "serde",
 ]
@@ -5952,7 +5998,7 @@ dependencies = [
  "log",
  "md-5",
  "memchr",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -6268,7 +6314,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a129d95275ebf4c493ec53bf0f8cd95f5ac161bc4f381700809a54f595d4470"
 dependencies = [
  "pin-project-lite",
- "rand 0.10.3",
+ "rand 0.10.4",
  "tokio",
 ]
 
@@ -6799,9 +6845,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.29.2"
+version = "1.29.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c"
+checksum = "3c14b15dffa2f4bd712103e857140aa04a4f2ff6e955c77d7eb8e53ee02a3b64"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -7101,7 +7147,25 @@ version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
 dependencies = [
- "windows-targets",
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
+dependencies = [
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.60.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
+dependencies = [
+ "windows-targets 0.53.5",
 ]
 
 [[package]]
@@ -7119,14 +7183,31 @@ version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
 dependencies = [
- "windows_aarch64_gnullvm",
- "windows_aarch64_msvc",
- "windows_i686_gnu",
- "windows_i686_gnullvm",
- "windows_i686_msvc",
- "windows_x86_64_gnu",
- "windows_x86_64_gnullvm",
- "windows_x86_64_msvc",
+ "windows_aarch64_gnullvm 0.52.6",
+ "windows_aarch64_msvc 0.52.6",
+ "windows_i686_gnu 0.52.6",
+ "windows_i686_gnullvm 0.52.6",
+ "windows_i686_msvc 0.52.6",
+ "windows_x86_64_gnu 0.52.6",
+ "windows_x86_64_gnullvm 0.52.6",
+ "windows_x86_64_msvc 0.52.6",
+]
+
+[[package]]
+name = "windows-targets"
+version = "0.53.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4945f9f551b88e0d65f3db0bc25c33b8acea4d9e41163edf90dcd0b19f9069f3"
+dependencies = [
+ "windows-link",
+ "windows_aarch64_gnullvm 0.53.1",
+ "windows_aarch64_msvc 0.53.1",
+ "windows_i686_gnu 0.53.1",
+ "windows_i686_gnullvm 0.53.1",
+ "windows_i686_msvc 0.53.1",
+ "windows_x86_64_gnu 0.53.1",
+ "windows_x86_64_gnullvm 0.53.1",
+ "windows_x86_64_msvc 0.53.1",
 ]
 
 [[package]]
@@ -7136,10 +7217,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3"
 
 [[package]]
+name = "windows_aarch64_gnullvm"
+version = "0.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9d8416fa8b42f5c947f8482c43e7d89e73a173cead56d044f6a56104a6d1b53"
+
+[[package]]
 name = "windows_aarch64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469"
+
+[[package]]
+name = "windows_aarch64_msvc"
+version = "0.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9d782e804c2f632e395708e99a94275910eb9100b2114651e04744e9b125006"
 
 [[package]]
 name = "windows_i686_gnu"
@@ -7148,10 +7241,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e9b5ad5ab802e97eb8e295ac6720e509ee4c243f69d781394014ebfe8bbfa0b"
 
 [[package]]
+name = "windows_i686_gnu"
+version = "0.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "960e6da069d81e09becb0ca57a65220ddff016ff2d6af6a223cf372a506593a3"
+
+[[package]]
 name = "windows_i686_gnullvm"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66"
+
+[[package]]
+name = "windows_i686_gnullvm"
+version = "0.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa7359d10048f68ab8b09fa71c3daccfb0e9b559aed648a8f95469c27057180c"
 
 [[package]]
 name = "windows_i686_msvc"
@@ -7160,10 +7265,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
 
 [[package]]
+name = "windows_i686_msvc"
+version = "0.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e7ac75179f18232fe9c285163565a57ef8d3c89254a30685b57d83a38d326c2"
+
+[[package]]
 name = "windows_x86_64_gnu"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78"
+
+[[package]]
+name = "windows_x86_64_gnu"
+version = "0.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c3842cdd74a865a8066ab39c8a7a473c0778a3f29370b5fd6b4b9aa7df4a499"
 
 [[package]]
 name = "windows_x86_64_gnullvm"
@@ -7172,10 +7289,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d"
 
 [[package]]
+name = "windows_x86_64_gnullvm"
+version = "0.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ffa179e2d07eee8ad8f57493436566c7cc30ac536a3379fdf008f47f6bb7ae1"
+
+[[package]]
 name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "windows_x86_64_msvc"
+version = "0.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "winnow"
@@ -7193,7 +7322,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
 dependencies = [
  "bitflags",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7220,9 +7349,9 @@ dependencies = [
 
 [[package]]
 name = "xxhash-rust"
-version = "0.8.19"
+version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
+checksum = "40de123dbb523ebcc00d61ec01840ad192578afc378d859f3429caa38308fad5"
 
 [[package]]
 name = "yansi"
@@ -7296,9 +7425,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
+checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
 dependencies = [
  "zeroize_derive",
 ]
