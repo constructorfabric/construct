@@ -105,6 +105,8 @@ pub enum GroupBy {
     Project,
     Ticket,
     Tool,
+    /// The grouping the setup found for the user's work: clients, courses, topics.
+    Collection,
     Day,
 }
 

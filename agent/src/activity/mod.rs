@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use connectors::{Author, Mark, Record, Role, Turn, compare_times, minute_of};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -18,17 +19,20 @@ use sqlx::{PgConnection, PgPool, Row};
 
 use crate::database::{Error, SOCKET_PORT, SUPERUSER, err};
 use crate::records::{FileSink, read_records, turn_key};
+use crate::sync::lock;
+use findings::Findings;
 
 mod feed;
 pub use feed::{Feed, Readiness};
 pub mod assign;
+pub mod findings;
 pub mod rules;
 
 /// The database the store lives in; the agent creates it when it is missing.
 pub const DBNAME: &str = "activity";
 /// The version of the rules that turn records into rows. Change it when a rule changes: the
 /// next start drops the store and it is rebuilt.
-pub const RULES_VERSION: i32 = 2;
+pub const RULES_VERSION: i32 = 3;
 
 /// The advisory lock `apply` and `rebuild` take for their transaction, so that no two writers
 /// overlap: a record applied while the store is being cleared would be lost, and `touch` reads a
@@ -44,6 +48,8 @@ const SCHEMA: [&str; 5] = [
         branch text not null,
         project text not null default '',
         ticket text not null default '',
+        area text not null default '',
+        collection text not null default '',
         first_time text not null,
         last_time text not null,
         turns bigint not null default 0,
@@ -82,6 +88,10 @@ pub struct Session {
     /// session has none.
     pub project: String,
     pub ticket: String,
+    /// What the setup findings say about the session (see [`findings`]); empty where they say
+    /// nothing: the project of a tracker its folder is tied to, and the grouping it belongs to.
+    pub area: String,
+    pub collection: String,
     pub first_time: String,
     pub last_time: String,
     pub turns: i64,
@@ -93,9 +103,44 @@ pub struct Session {
     pub active_minutes: i64,
 }
 
+/// A session as the assignment sees it: where it works and what was assigned to it.
+struct Stored {
+    tool: String,
+    session: String,
+    folder: String,
+    branch: String,
+    project: String,
+    ticket: String,
+    area: String,
+    collection: String,
+}
+
+impl Stored {
+    fn read(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            tool: row.try_get("tool")?,
+            session: row.try_get("session")?,
+            folder: row.try_get("folder")?,
+            branch: row.try_get("branch")?,
+            project: row.try_get("project")?,
+            ticket: row.try_get("ticket")?,
+            area: row.try_get("area")?,
+            collection: row.try_get("collection")?,
+        })
+    }
+
+    /// Whether the session is stored as `now` assigns it.
+    fn is(&self, now: &findings::Assigned) -> bool {
+        (&self.project, &self.ticket, &self.area, &self.collection)
+            == (&now.project, &now.ticket, &now.area, &now.collection)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     pool: PgPool,
+    /// What the setup found, as the assignment of a session uses it.
+    findings: Arc<Mutex<Findings>>,
 }
 
 impl Store {
@@ -111,7 +156,10 @@ impl Store {
             .connect_with(Self::connect_options(socket_dir))
             .await
             .map_err(|e| err("connect to the activity database", e))?;
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            findings: Arc::default(),
+        };
         if let Err(e) = store.prepare().await {
             store.close().await;
             return Err(e);
@@ -144,8 +192,9 @@ impl Store {
     /// Fails when a statement is refused.
     pub async fn apply(&self, record: &Record) -> Result<(), Error> {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
-        lock(&mut tx).await?;
-        apply_in(&mut tx, record).await?;
+        lock_store(&mut tx).await?;
+        let findings = self.findings();
+        apply_in(&mut tx, record, &findings).await?;
         tx.commit().await.map_err(|e| err("commit", e))
     }
 
@@ -172,7 +221,8 @@ impl Store {
             .session_files()
             .map_err(|e| err("list the record files", e))?;
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
-        lock(&mut tx).await?;
+        lock_store(&mut tx).await?;
+        let findings = self.findings();
         for statement in [
             "delete from activity.minutes",
             "delete from activity.turns",
@@ -187,12 +237,59 @@ impl Store {
         let mut applied = 0;
         for file in files {
             for record in read_records(&file).map_err(|e| err("read a record file", e))? {
-                applied += usize::from(apply_in(&mut tx, &record).await?);
+                applied += usize::from(apply_in(&mut tx, &record, &findings).await?);
                 done.fetch_add(1, Ordering::Relaxed);
             }
         }
         tx.commit().await.map_err(|e| err("commit", e))?;
         Ok(applied)
+    }
+
+    fn findings(&self) -> Findings {
+        lock(&self.findings).clone()
+    }
+
+    /// Takes new findings and assigns again the sessions they change, and only those: a session
+    /// whose project, ticket, project of a tracker and grouping come out as they were is not written. Returns
+    /// the `(tool, session)` of the sessions that changed. The same findings change nothing.
+    ///
+    /// # Errors
+    /// Fails when a statement is refused; the store and the findings are then as before.
+    pub async fn set_findings(&self, new: Findings) -> Result<Vec<(String, String)>, Error> {
+        let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
+        lock_store(&mut tx).await?;
+        let rows = sqlx::query(
+            "select tool, session, folder, branch, project, ticket, area, collection
+             from activity.sessions order by tool, session",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| err("read the sessions", e))?;
+        let sessions = rows
+            .iter()
+            .map(Stored::read)
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|e| err("read a session", e))?;
+        let mut changed = Vec::new();
+        for stored in sessions {
+            let named: Vec<(String, i64)> = sqlx::query_as(
+                "select ticket, count from activity.mentions where tool = $1 and session = $2",
+            )
+            .bind(&stored.tool)
+            .bind(&stored.session)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| err("read the tickets named", e))?;
+            let now = new.assign(&stored.folder, &stored.branch, &named);
+            if stored.is(&now) {
+                continue;
+            }
+            assign_in(&mut tx, &stored.tool, &stored.session, &new).await?;
+            changed.push((stored.tool, stored.session));
+        }
+        tx.commit().await.map_err(|e| err("commit", e))?;
+        *lock(&self.findings) = new;
+        Ok(changed)
     }
 
     /// Every session, ordered by tool and session.
@@ -217,6 +314,8 @@ impl Store {
                     branch: r.try_get("branch")?,
                     project: r.try_get("project")?,
                     ticket: r.try_get("ticket")?,
+                    area: r.try_get("area")?,
+                    collection: r.try_get("collection")?,
                     first_time: r.try_get("first_time")?,
                     last_time: r.try_get("last_time")?,
                     turns: r.try_get("turns")?,
@@ -260,7 +359,7 @@ impl Store {
     /// Fails when the query is refused or a stored minute cannot be read.
     pub async fn session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {
         let rows = sqlx::query(
-            "select s.tool, s.session, s.project, s.ticket, s.person_prompts,
+            "select s.tool, s.session, s.project, s.ticket, s.area, s.collection, s.person_prompts,
                     s.unattended_prompts, s.unknown_prompts, m.minute
              from activity.sessions s
              join activity.minutes m on m.tool = s.tool and m.session = s.session
@@ -287,6 +386,8 @@ impl Store {
             sessions.push(rules::SessionMinutes {
                 project: row.try_get("project").map_err(fail)?,
                 ticket: row.try_get("ticket").map_err(fail)?,
+                area: row.try_get("area").map_err(fail)?,
+                collection: row.try_get("collection").map_err(fail)?,
                 unattended: rules::is_unattended(
                     row.try_get("person_prompts").map_err(fail)?,
                     row.try_get("unattended_prompts").map_err(fail)?,
@@ -337,7 +438,7 @@ async fn stored_version(conn: &mut PgConnection) -> Result<Option<i32>, Error> {
         .map_err(fail)
 }
 
-async fn lock(conn: &mut PgConnection) -> Result<(), Error> {
+async fn lock_store(conn: &mut PgConnection) -> Result<(), Error> {
     sqlx::query("select pg_advisory_xact_lock($1)")
         .bind(LOCK_KEY)
         .execute(&mut *conn)
@@ -405,7 +506,11 @@ fn is_activity(record: &Record) -> bool {
     }
 }
 
-async fn apply_in(conn: &mut PgConnection, record: &Record) -> Result<bool, Error> {
+async fn apply_in(
+    conn: &mut PgConnection,
+    record: &Record,
+    findings: &Findings,
+) -> Result<bool, Error> {
     if !is_utc_time(record.time()) {
         return Ok(false);
     }
@@ -456,7 +561,7 @@ async fn apply_in(conn: &mut PgConnection, record: &Record) -> Result<bool, Erro
                     count_mentions(conn, tool, session, &turn.text).await?;
                 }
             }
-            assign_in(conn, tool, session).await?;
+            assign_in(conn, tool, session, findings).await?;
         }
         Record::Mark(Mark {
             tool,
@@ -467,7 +572,7 @@ async fn apply_in(conn: &mut PgConnection, record: &Record) -> Result<bool, Erro
             ..
         }) => {
             touch(conn, tool, session, time, folder, branch).await?;
-            assign_in(conn, tool, session).await?;
+            assign_in(conn, tool, session, findings).await?;
         }
         // See `is_activity`.
         Record::ToolCall(_) | Record::ToolResult(_) => return Ok(false),
@@ -509,7 +614,12 @@ async fn count_mentions(
 
 /// Works out the project and the ticket of a session from what the store holds now, so that
 /// they depend on the records and not on the order they arrived in.
-async fn assign_in(conn: &mut PgConnection, tool: &str, session: &str) -> Result<(), Error> {
+async fn assign_in(
+    conn: &mut PgConnection,
+    tool: &str,
+    session: &str,
+    findings: &Findings,
+) -> Result<(), Error> {
     let fail = |e| err("assign the project and the ticket", e);
     let (folder, branch): (String, String) = sqlx::query_as(
         "select folder, branch from activity.sessions where tool = $1 and session = $2",
@@ -527,13 +637,17 @@ async fn assign_in(conn: &mut PgConnection, tool: &str, session: &str) -> Result
     .fetch_all(&mut *conn)
     .await
     .map_err(fail)?;
+    let assigned = findings.assign(&folder, &branch, &named);
     sqlx::query(
-        "update activity.sessions set project = $3, ticket = $4 where tool = $1 and session = $2",
+        "update activity.sessions set project = $3, ticket = $4, area = $5, collection = $6
+         where tool = $1 and session = $2",
     )
     .bind(tool)
     .bind(session)
-    .bind(assign::project_of(&folder))
-    .bind(assign::ticket_for(&folder, &branch, &named))
+    .bind(assigned.project)
+    .bind(assigned.ticket)
+    .bind(assigned.area)
+    .bind(assigned.collection)
     .execute(&mut *conn)
     .await
     .map_err(fail)?;

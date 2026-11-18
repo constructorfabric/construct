@@ -111,15 +111,27 @@ pub fn tickets_in_text(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every id a name (of a worktree folder or a branch) holds, in order.
+#[must_use]
+pub fn tickets_in_name(name: &str) -> Vec<String> {
+    // In a name an underscore separates words, as a dash does.
+    tickets_in_text(&name.replace('_', " "))
+}
+
 /// The ticket a name (of a worktree folder or a branch) holds: its first id.
 fn ticket_in_name(name: &str) -> Option<String> {
-    // In a name an underscore separates words, as a dash does.
-    tickets_in_text(&name.replace('_', " ")).into_iter().next()
+    tickets_in_name(name).into_iter().next()
+}
+
+/// Whether a branch name can name work: it is not a default branch.
+#[must_use]
+pub fn branch_names_work(branch: &str) -> bool {
+    !DEFAULT_BRANCHES.contains(&branch)
 }
 
 /// The ticket a branch names; none for a default branch or an empty name.
 fn ticket_of_branch(branch: &str) -> Option<String> {
-    if DEFAULT_BRANCHES.contains(&branch) {
+    if !branch_names_work(branch) {
         return None;
     }
     ticket_in_name(branch)

@@ -179,6 +179,7 @@ const fn group_name(group: GroupBy) -> &'static str {
         GroupBy::Project => "project",
         GroupBy::Ticket => "ticket",
         GroupBy::Tool => "tool",
+        GroupBy::Collection => "collection",
         GroupBy::Day => "day",
     }
 }
@@ -409,7 +410,7 @@ says that the page keeps the last good version: call it after every edit of the 
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"period":{"type":"string","enum":["today","this_week","last_week","this_month","last_month","last_7_days","last_30_days"],"description":"The period of the table. Give it with group_by."},"sessions":{"type":"string","enum":["own","unattended","all"],"description":"Whose sessions to count; own when left out."},"group_by":{"type":"string","enum":["project","ticket","tool","day"],"description":"What the table groups by. Give it with period."},"filter":{"type":"object","properties":{"projects":{"type":"array","items":{"type":"string"}},"tickets":{"type":"array","items":{"type":"string"}},"tools":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"Keeps only what it lists; a list left out means no limit."}},"additionalProperties":false}"#
+        r#"{"type":"object","properties":{"period":{"type":"string","enum":["today","this_week","last_week","this_month","last_month","last_7_days","last_30_days"],"description":"The period of the table. Give it with group_by."},"sessions":{"type":"string","enum":["own","unattended","all"],"description":"Whose sessions to count; own when left out."},"group_by":{"type":"string","enum":["project","ticket","tool","collection","day"],"description":"What the table groups by. Give it with period."},"filter":{"type":"object","properties":{"projects":{"type":"array","items":{"type":"string"}},"tickets":{"type":"array","items":{"type":"string"}},"tools":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"Keeps only what it lists; a list left out means no limit."}},"additionalProperties":false}"#
     }
 
     fn line(&self, arguments: &str) -> String {

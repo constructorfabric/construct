@@ -10,14 +10,16 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use connectors::Record;
 use tokio::sync::Notify;
 
 use super::Store;
+use super::findings::Findings;
 use crate::records::{FileSink, Recorder};
 use crate::sync::lock;
+use crate::workspace::Workspace;
 
 /// Records the queue holds, and the bytes of text they carry (a turn is queued whole, for the
 /// store keys it by a hash of its text). A push past either limit is dropped, and the next turn
@@ -25,6 +27,11 @@ use crate::sync::lock;
 const MAX_QUEUED: usize = 100_000;
 /// The most turn text the queue holds.
 const MAX_QUEUED_BYTES: usize = 64 * 1024 * 1024;
+/// The file of the setup findings in the workspace.
+const FINDINGS_FILE: &str = "findings.json";
+/// How often the file of the findings is looked at while no record comes.
+const FINDINGS_POLL: Duration = Duration::from_secs(5);
+
 /// The pause after the next failed build: the first one after a build that worked, then twice
 /// the last, up to [`MAX_REBUILD_RETRY`].
 fn next_rebuild_pause(last: Duration, built: bool) -> Duration {
@@ -113,6 +120,8 @@ struct Shared {
     failed_writes: AtomicU64,
     /// The store, once a build of it has finished, for the answers that read it.
     store: Mutex<Option<Store>>,
+    /// The workspace that holds the findings of the setup, when there is one.
+    findings: Mutex<Option<Arc<Workspace>>>,
 }
 
 /// The queue between the follower and the activity store, and what `status` shows of it.
@@ -140,7 +149,67 @@ impl Feed {
             history_done: AtomicU64::new(0),
             failed_writes: AtomicU64::new(0),
             store: Mutex::new(None),
+            findings: Mutex::new(None),
         }))
+    }
+
+    /// Gives the store the findings kept in the workspace, and keeps looking for a change.
+    pub fn watch_findings(&self, workspace: Arc<Workspace>) {
+        *lock(&self.0.findings) = Some(workspace);
+    }
+
+    /// Gives the store the findings in the workspace when they are not the ones it has, looking
+    /// at the file at most every [`FINDINGS_POLL`]. A missing file holds no findings. A file that
+    /// cannot be used (too long, unreadable, not a JSON object, for example half written) leaves
+    /// the last good findings in place, and is logged once; the next change is read as usual. Only
+    /// the sessions the change touches are assigned again.
+    async fn refresh_findings(&self, store: &Store, watch: &mut FindingsWatch) {
+        let Some(workspace) = lock(&self.0.findings).clone() else {
+            return;
+        };
+        if watch.checked.is_some_and(|at| at.elapsed() < FINDINGS_POLL) {
+            return;
+        }
+        watch.checked = Some(Instant::now());
+        let read = tokio::task::spawn_blocking(move || {
+            workspace.read_whole(FINDINGS_FILE, crate::dashboard_document::MAX_BYTES)
+        })
+        .await;
+        let text = match read {
+            Ok(Ok(text)) => text,
+            Ok(Err(crate::workspace::Error::NotFound)) => String::new(),
+            Ok(Err(e)) => return Self::unusable(watch, &format!("{e}")),
+            Err(_) => return,
+        };
+        if watch.seen.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let findings = if text.is_empty() {
+            Findings::default()
+        } else if let Some(found) = Findings::try_parse(&text) {
+            found
+        } else {
+            watch.seen = Some(text);
+            return Self::unusable(watch, "it is not a JSON object");
+        };
+        match store.set_findings(findings).await {
+            Ok(changed) => {
+                Self::log(&format!(
+                    "setup findings read, {} sessions assigned again",
+                    changed.len()
+                ));
+                watch.seen = Some(text);
+            }
+            // The next look tries again.
+            Err(e) => Self::log(&format!("setup findings not applied: {e}")),
+        }
+    }
+
+    fn unusable(watch: &mut FindingsWatch, why: &str) {
+        if watch.complained.as_deref() != Some(why) {
+            Self::log(&format!("setup findings kept as they were: {why}"));
+            watch.complained = Some(why.to_owned());
+        }
     }
 
     /// What the sinks that write record files call with each new record.
@@ -320,6 +389,8 @@ impl Feed {
     /// the task runs. Nothing here ends the agent: a failure shows in `status`.
     pub async fn run(&self, store: &Store, files: &FileSink) {
         let mut retry = REBUILD_RETRY;
+        let mut watch = FindingsWatch::default();
+        self.refresh_findings(store, &mut watch).await;
         loop {
             match self.next() {
                 Next::Rebuild => {
@@ -336,10 +407,25 @@ impl Feed {
                         self.mark_stale();
                     }
                 }
-                Next::Empty => self.0.wake.notified().await,
+                Next::Empty => {
+                    // Woken by a record, or by the pause, to look at the findings again.
+                    let _ = tokio::time::timeout(FINDINGS_POLL, self.0.wake.notified()).await;
+                    self.refresh_findings(store, &mut watch).await;
+                }
             }
         }
     }
+}
+
+/// What [`Feed::run`] knows of the file of the findings.
+#[derive(Default)]
+struct FindingsWatch {
+    /// When the file was last looked at.
+    checked: Option<Instant>,
+    /// The text the store has the findings of.
+    seen: Option<String>,
+    /// The last reason the file was not usable, so that it is logged once.
+    complained: Option<String>,
 }
 
 enum Next {

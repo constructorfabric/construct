@@ -35,7 +35,7 @@ use tokio::runtime::Handle;
 use crate::activity::Feed;
 use crate::activity::assign::{self, NO_TICKET};
 use crate::activity::rules::{
-    Day, DaysError, Group, Grouping, Kind, PARTS_PER_MINUTE, REACH, SessionMinutes,
+    self, Day, DaysError, Group, Grouping, Kind, PARTS_PER_MINUTE, REACH, SessionMinutes,
     calculate_named, check_days, minute_number,
 };
 use crate::dashboard::{
@@ -132,7 +132,11 @@ pub(crate) struct Selection {
 /// Leaves out the sessions of hidden projects and those the filter of `spec` does not keep.
 pub(crate) fn select(sessions: &[SessionMinutes], days: &[Day], spec: &Spec) -> Selection {
     // Projects are named over all the sessions, so that a name does not depend on what is left.
-    let labels = assign::project_labels(sessions.iter().map(|s| s.project.as_str()));
+    // `plain` is the name from the folder alone, `labels` the one the setup findings give where
+    // they tie the folder to a project. A name the user gave, or a folder they hid, may use any
+    // of the three spellings, so a correction made before the findings came still holds.
+    let plain = assign::project_labels(sessions.iter().map(|s| s.project.as_str()));
+    let labels = rules::with_areas(plain.clone(), sessions);
     let shown: BTreeMap<String, String> = labels
         .iter()
         .map(|(project, label)| {
@@ -140,13 +144,15 @@ pub(crate) fn select(sessions: &[SessionMinutes], days: &[Day], spec: &Spec) -> 
                 .project_names
                 .get(project)
                 .or_else(|| spec.project_names.get(label))
+                .or_else(|| spec.project_names.get(&plain[project]))
                 .unwrap_or(label);
             (project.clone(), name.clone())
         })
         .collect();
     let named = |list: &[String], project: &str| {
-        list.iter()
-            .any(|n| n == project || *n == labels[project] || *n == shown[project])
+        list.iter().any(|n| {
+            n == project || *n == labels[project] || *n == plain[project] || *n == shown[project]
+        })
     };
     let (low, high) = (
         days.iter().map(|d| d.start).min().unwrap_or(0) - REACH,
@@ -294,6 +300,7 @@ pub(crate) fn grouping_of(group_by: GroupBy) -> Grouping {
         GroupBy::Project => Grouping::Project,
         GroupBy::Ticket => Grouping::Ticket,
         GroupBy::Tool => Grouping::Tool,
+        GroupBy::Collection => Grouping::Collection,
         GroupBy::Day => Grouping::Day,
     }
 }
@@ -505,6 +512,8 @@ mod tests {
             project: project.to_owned(),
             ticket: String::new(),
             unattended: false,
+            area: String::new(),
+            collection: String::new(),
             minutes: minutes.to_vec(),
         }
     }

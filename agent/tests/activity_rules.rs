@@ -26,6 +26,8 @@ fn session(name: &str, folder: &str, unattended: bool, minutes: Vec<i64>) -> Ses
         project: project_of(folder),
         ticket: String::new(),
         unattended,
+        area: String::new(),
+        collection: String::new(),
         minutes,
     }
 }
