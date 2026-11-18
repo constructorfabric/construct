@@ -21,6 +21,8 @@ pub mod pg_stand;
 #[cfg(unix)]
 pub mod scripted;
 #[cfg(unix)]
+pub mod sessions;
+#[cfg(unix)]
 pub mod stand;
 
 use construct_agent::autostart::{CommandRunner, linux, macos};

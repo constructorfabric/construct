@@ -10,6 +10,8 @@ pub mod chat;
 pub mod dashboard;
 #[cfg(unix)]
 pub mod dashboard_document;
+#[cfg(unix)]
+pub mod dashboard_numbers;
 pub mod dashboard_projects;
 #[cfg(unix)]
 pub mod database;
