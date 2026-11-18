@@ -52,7 +52,7 @@ impl Agent {
         while Instant::now() < deadline {
             if let Ok(reply) = request(&socket, "status", Duration::from_secs(5))
                 && let Ok(status) = serde_json::from_str::<Value>(&reply)
-                && status["construct"] == "ready"
+                && status["construct"]["state"] == "ready"
             {
                 return;
             }
@@ -112,10 +112,31 @@ fn the_started_host_has_the_dashboard_types_and_the_workspace_the_default_dashbo
         assert!(entity.to_string().contains(type_id), "{entity}");
     }
 
-    let file = agent
+    let path = agent
         .root
         .join("data/construct/workspace")
         .join(ACTIVITY_FILE);
-    let document: Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let document: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     validate_activity(&document).unwrap();
+
+    // The page's command answers the same document, with no error.
+    let socket = agent.root.join("run/construct/agent.sock");
+    let reply = request(&socket, "dashboard-get", Duration::from_secs(5)).unwrap();
+    let answer: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(answer, serde_json::json!({ "document": document }));
+
+    // A change of the file after the start reaches the command: the real agent watches it.
+    let mut changed = document;
+    changed["title"] = serde_json::json!("Changed after the start");
+    std::fs::write(&path, changed.to_string()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let reply = request(&socket, "dashboard-get", Duration::from_secs(5)).unwrap();
+        let answer: Value = serde_json::from_str(&reply).unwrap();
+        if answer["document"] == changed {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no change in time: {answer}");
+        thread::sleep(Duration::from_millis(200));
+    }
 }
