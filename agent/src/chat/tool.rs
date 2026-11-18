@@ -88,6 +88,19 @@ struct Described<'a> {
     parameters: &'a RawValue,
 }
 
+/// The tools of a chat over `workspace`, in the order the model is given them: the file tools, the
+/// tool that renders the dashboard when there is one, and the sub-agent tool last.
+#[must_use]
+pub fn standard_tools(
+    workspace: &Arc<crate::workspace::Workspace>,
+    render_tool: Option<Arc<dyn ChatTool>>,
+) -> Vec<Arc<dyn ChatTool>> {
+    let mut tools = super::files::file_tools(workspace);
+    tools.extend(render_tool);
+    tools.push(super::subagent::tool());
+    tools
+}
+
 impl ChatTools {
     /// The list over `tools`, in that order.
     ///

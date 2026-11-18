@@ -9,11 +9,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use chrono::TimeZone;
 use construct_agent::activity::rules::SessionMinutes;
 use construct_agent::chat::Chat;
 use construct_agent::chat::dashboard_view::{self, Calendar};
-use construct_agent::chat::files::file_tools;
 use construct_agent::chat::tool::ChatTools;
+use construct_agent::chat::tool::standard_tools;
 use construct_agent::dashboard::{ACTIVITY_FILE, default_activity};
 use construct_agent::dashboard_document::Dashboard;
 use construct_agent::dashboard_numbers::respond;
@@ -104,12 +105,6 @@ fn days(from: &str, count: usize) -> Value {
         .collect()
 }
 
-/// The calendar of the tests: Wednesday the 11th of November, and the days from the first of October
-/// to the end of November.
-fn window() -> Value {
-    json!({ "today": "2026-11-11", "days": days("2026-10-01", 61) })
-}
-
 impl Stand {
     fn new(turns: Vec<Turn>) -> Self {
         let base = std::env::temp_dir().join(format!(
@@ -132,13 +127,21 @@ impl Stand {
             .unwrap();
         let workspace = Arc::new(Workspace::open(&data).unwrap());
         let dashboard = Dashboard::open(Arc::clone(&workspace));
-        let calendar = Calendar::fixed(serde_json::from_value(window()).unwrap()).unwrap();
-        let mut tools = file_tools(&workspace);
-        tools.push(dashboard_view::tool(
-            dashboard.clone(),
-            Arc::new(|| Ok(fixture())),
-            calendar,
-        ));
+        // Wednesday the 11th of November 2026, in UTC: the days run from the first of October to
+        // the end of November.
+        let calendar = Calendar::at(
+            &chrono::Utc
+                .with_ymd_and_hms(2026, 11, 11, 12, 0, 0)
+                .unwrap(),
+        );
+        let tools = standard_tools(
+            &workspace,
+            Some(dashboard_view::tool(
+                dashboard,
+                Arc::new(|| Ok(fixture())),
+                calendar,
+            )),
+        );
         let chat = Chat::new(settings.clone(), &data, rt.handle().clone(), deadlines())
             .unwrap()
             .with_tools(ChatTools::new(tools).unwrap());
@@ -319,13 +322,37 @@ fn a_question_about_the_week_renders_the_numbers_of_the_pages_command() {
     }
     let results = stand.results();
     assert_eq!(results, [expected.trim_end()]);
-    // The fixture has time: the numbers are not all zero.
-    assert!(
-        results[0].contains("Total: 1 h 20 min (3 sessions)"),
-        "{results:?}"
+    // The shape, written out once on the fixed fixture (the numbers above come from the command).
+    assert_eq!(
+        results[0],
+        "Dashboard \"Activity\"
+Widget total (total, this_week, own sessions)
+  Total: 1 h 20 min (3 sessions)
+Widget per-day (bars_per_day, this_week, own sessions)
+  Total: 1 h 20 min (3 sessions)
+  2026-11-09: 40 min
+  2026-11-10: 40 min
+  2026-11-11: 0 min
+  2026-11-12: 0 min
+  2026-11-13: 0 min
+  2026-11-14: 0 min
+  2026-11-15: 0 min
+Widget by-project (table, this_week, own sessions, by project)
+  Total: 1 h 20 min (3 sessions)
+  By project: time, share, sessions
+  shop: 55 min, 69%, 2
+  blog: 25 min, 31%, 1
+Widget by-ticket (table, this_week, own sessions, by ticket)
+  Total: 1 h 20 min (3 sessions)
+  By ticket: time, share, sessions
+  SHOP-7: 55 min, 69%, 2
+  No ticket: 25 min, 31%, 1
+Widget end-of-day (day_summary, this_week, own sessions, by project)
+  Total: 1 h 20 min (3 sessions)
+  By project: time, share, sessions
+  shop: 55 min, 69%, 2
+  blog: 25 min, 31%, 1"
     );
-    // No text of a message is in a result.
-    assert!(!results[0].contains(MESSAGE));
 }
 
 #[test]
@@ -464,7 +491,17 @@ fn the_tool_list_is_the_same_in_every_request_and_holds_the_tool_once() {
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["Read", "Write", "Edit", "Glob", "render_dashboard"]);
+    assert_eq!(
+        names,
+        [
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "render_dashboard",
+            "run_subagent"
+        ]
+    );
     // Last week has no time in the fixture, and the table says so for every day.
     let results = stand.results();
     assert!(

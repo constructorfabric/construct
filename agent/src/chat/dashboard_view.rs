@@ -8,7 +8,7 @@
 //!
 //! The numbers come from [`crate::dashboard_numbers::numbers`], the function the page's command
 //! uses, and are rounded the way the page rounds them. The days of a period are counted in the
-//! time zone of this computer, from its clock, at every call; the tool never guesses a zone. The
+//! time zone of this computer, from its clock, at every call. The
 //! text is short and has a fixed shape; it holds no text of a message.
 
 use std::fmt::Write as _;
@@ -19,11 +19,10 @@ use serde_json::Value;
 use time::{Date, Duration, Month};
 
 use super::tool::ChatTool;
-use crate::activity::rules::{Day, SessionMinutes, check_days};
+use crate::activity::rules::{Day, SessionMinutes};
 use crate::dashboard::{Filter, GroupBy, Period, Sessions, WidgetKind};
 use crate::dashboard_numbers::{
-    Answer, MAX_DAYS, Payload, RawDay, Spec, numbers, payload_of, spec_of, spec_without_widget,
-    whole_minute,
+    Answer, Payload, Spec, numbers, payload_of, spec_of, spec_without_widget, whole_minute,
 };
 
 /// The name the model calls the tool by.
@@ -34,88 +33,41 @@ together, or neither; period is one of today, this_week, last_week, this_month, 
 last_7_days, last_30_days; sessions is one of own, unattended, all; group_by is one of project, \
 ticket, tool, day; filter has projects, tickets and tools, each a list of names";
 
-const NO_CALENDAR: &str = "the clock or the time zone of this computer cannot be read, so the \
-numbers cannot be counted";
+const NO_CALENDAR: &str = "the days of the periods cannot be worked out from the clock and the \
+time zone of this computer, so the numbers cannot be counted";
 
 /// How the tool reads the sessions of the activity store.
 pub type SessionSource = Arc<dyn Fn() -> Result<Vec<SessionMinutes>, &'static str> + Send + Sync>;
 
-/// The calendar of the person's days: the days of a period, in the time zone of this computer.
+/// The days of the periods, in the time zone of this computer.
 #[derive(Clone)]
 pub struct Calendar(Arc<dyn Fn() -> Option<Window> + Send + Sync>);
 
 impl Default for Calendar {
     /// Reads the clock and the time zone of this computer at every call, so a day that has passed
-    /// or a changed zone are seen at once.
+    /// is seen at once. When the zone cannot be read the system falls back to UTC.
     fn default() -> Self {
         Self(Arc::new(|| window_in(&chrono::Local::now())))
     }
 }
 
+/// The days the periods are made of, and which of them is today.
 #[derive(Clone)]
 pub struct Window {
     today: Date,
     days: Vec<Day>,
 }
 
-/// A calendar given by the caller: `today` and the consecutive `days`, oldest first, each with its
-/// label (`2026-11-18`) and its start and end in UTC on a whole minute. It must hold the days of
-/// every period the tool may ask for.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RawWindow {
-    today: String,
-    days: Vec<RawDay>,
-}
-
-fn date_of(label: &str) -> Option<Date> {
-    let mut parts = label.splitn(3, '-');
-    let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
-    if year.len() != 4 || month.len() != 2 || day.len() != 2 {
-        return None;
-    }
-    let month = Month::try_from(month.parse::<u8>().ok()?).ok()?;
-    Date::from_calendar_date(year.parse().ok()?, month, day.parse().ok()?).ok()
-}
-
-fn label_of(date: Date) -> String {
-    format!(
-        "{:04}-{:02}-{:02}",
-        date.year(),
-        u8::from(date.month()),
-        date.day()
-    )
-}
-
 impl Calendar {
-    /// A calendar that never changes, for a test or a caller that knows its days.
-    ///
-    /// # Errors
-    /// When the labels are not consecutive dates, a day is not on a whole minute in UTC, two days
-    /// overlap, or `today` is not one of the days.
-    pub fn fixed(window: RawWindow) -> Result<Self, &'static str> {
-        const INVALID: &str = "invalid window";
-        let today = date_of(&window.today).ok_or(INVALID)?;
-        let mut days = Vec::with_capacity(window.days.len());
-        let mut expected: Option<Date> = None;
-        for raw in window.days {
-            let date = date_of(&raw.label).ok_or(INVALID)?;
-            if expected.is_some_and(|next| next != date) {
-                return Err(INVALID);
-            }
-            expected = date.next_day();
-            days.push(Day {
-                label: raw.label,
-                start: whole_minute(&raw.start).ok_or(INVALID)?,
-                end: whole_minute(&raw.end).ok_or(INVALID)?,
-            });
-        }
-        check_days(&days).map_err(|_| INVALID)?;
-        if !days.iter().any(|d| date_of(&d.label) == Some(today)) {
-            return Err(INVALID);
-        }
-        let window = Window { today, days };
-        Ok(Self(Arc::new(move || Some(window.clone()))))
+    /// A calendar that stays at `now`, in the zone of `now`: the clock of a test.
+    #[must_use]
+    pub fn at<Tz>(now: &chrono::DateTime<Tz>) -> Self
+    where
+        Tz: chrono::TimeZone + Send + Sync + 'static,
+        Tz::Offset: Send + Sync,
+    {
+        let window = window_in(now);
+        Self(Arc::new(move || window.clone()))
     }
 
     /// The days of `period`, in order.
@@ -125,18 +77,12 @@ impl Calendar {
         let mut days = Vec::new();
         let mut date = first;
         while date <= last {
-            let label = label_of(date);
+            let label = date.to_string();
             let Some(day) = window.days.iter().find(|d| d.label == label) else {
-                return Err(format!(
-                    "the window has not given the days of {}",
-                    period_name(period)
-                ));
+                return Err(NO_CALENDAR.to_owned());
             };
             days.push(day.clone());
             date += Duration::days(1);
-        }
-        if days.len() > MAX_DAYS {
-            return Err(format!("{} has too many days", period_name(period)));
         }
         Ok(days)
     }
@@ -147,13 +93,9 @@ impl Calendar {
 fn bounds(today: Date, period: Period) -> (Date, Date) {
     let monday = today - Duration::days(i64::from(today.weekday().number_days_from_monday()));
     let month = |date: Date| {
-        let first = date.replace_day(1).unwrap_or(date);
-        let next = if first.month() == Month::December {
-            Date::from_calendar_date(first.year() + 1, Month::January, 1)
-        } else {
-            Date::from_calendar_date(first.year(), first.month().next(), 1)
-        };
-        (first, next.map_or(first, |n| n - Duration::days(1)))
+        let first = date - Duration::days(i64::from(date.day()) - 1);
+        let length = time::util::days_in_month(first.month(), first.year());
+        (first, first + Duration::days(i64::from(length) - 1))
     };
     match period {
         Period::Today => (today, today),
@@ -168,8 +110,10 @@ fn bounds(today: Date, period: Period) -> (Date, Date) {
 
 /// The days from the earlier of the first of the previous month and 29 days before today, to the
 /// end of the current month and of the current week: every period the tool may ask for. A day
-/// runs from the midnight of `now`'s zone to the next one, so it is 23 or 25 hours when the clocks
-/// change. `None` when a midnight does not exist or an offset is not a whole minute.
+/// runs from the first instant of its date in the zone of `now` to the first instant of the next
+/// date, so it is 23 or 25 hours when the clocks change, and when the clocks jump over a midnight
+/// the day starts at the first instant after the jump. `None` when a day does not start on a whole
+/// minute of UTC.
 fn window_in<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> Option<Window> {
     use chrono::Datelike;
     let today = Date::from_calendar_date(
@@ -184,26 +128,36 @@ fn window_in<Tz: chrono::TimeZone>(now: &chrono::DateTime<Tz>) -> Option<Window>
     let last = bounds(today, Period::ThisMonth)
         .1
         .max(bounds(today, Period::ThisWeek).1);
-    let midnight = |date: Date| -> Option<String> {
-        let naive = chrono::NaiveDate::from_ymd_opt(
+    let zone = now.timezone();
+    let start_of = |date: Date| -> Option<i64> {
+        let midnight = chrono::NaiveDate::from_ymd_opt(
             date.year(),
             u32::from(u8::from(date.month())),
             u32::from(date.day()),
         )?
         .and_hms_opt(0, 0, 0)?;
-        let start = now.timezone().from_local_datetime(&naive).earliest()?;
-        Some(start.to_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        // A midnight the clocks jump over has no instant: take the first local time after the gap
+        // that has one (gaps are a multiple of a quarter of an hour, and shorter than a day).
+        let start = (0..96)
+            .find_map(|step| {
+                zone.from_local_datetime(&(midnight + chrono::Duration::minutes(15 * step)))
+                    .earliest()
+            })?
+            .to_utc()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        whole_minute(&start)
     };
     let mut days = Vec::new();
     let mut date = first;
     while date <= last {
-        let (start, end) = (midnight(date)?, midnight(date.next_day()?)?);
+        let next = date.next_day()?;
         days.push(Day {
-            label: label_of(date),
-            start: whole_minute(&start)?,
-            end: whole_minute(&end)?,
+            label: date.to_string(),
+            start: start_of(date)?,
+            end: start_of(next)?,
         });
-        date = date.next_day()?;
+        date = next;
     }
     Some(Window { today, days })
 }
@@ -441,7 +395,7 @@ impl ChatTool for RenderDashboard {
 
     fn description(&self) -> &'static str {
         "Looks at the person's dashboard as text and changes nothing. With no arguments it gives \
-every widget of the dashboard with its title, period and kind and the numbers the page shows: a \
+every widget of the dashboard with its id, kind, period and sessions and the numbers the page shows: a \
 total, a table of groups with time, share and sessions, the time of each day. With period and \
 group_by (and optionally sessions and filter) it gives only that table, for a question the \
 dashboard does not show. When the dashboard file has errors it gives them with their places and \
@@ -496,7 +450,13 @@ mod tests {
     use super::*;
 
     fn date(label: &str) -> Date {
-        date_of(label).unwrap()
+        let part = |range: std::ops::Range<usize>| label[range].parse::<i32>().unwrap();
+        Date::from_calendar_date(
+            part(0..4),
+            Month::try_from(u8::try_from(part(5..7)).unwrap()).unwrap(),
+            u8::try_from(part(8..10)).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -506,7 +466,7 @@ mod tests {
         let zone = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
         let now = zone.with_ymd_and_hms(2026, 11, 18, 1, 0, 0).unwrap();
         let window = window_in(&now).unwrap();
-        assert_eq!(label_of(window.today), "2026-11-18");
+        assert_eq!(window.today.to_string(), "2026-11-18");
         let today = window
             .days
             .iter()
@@ -521,13 +481,57 @@ mod tests {
         assert_eq!(window.days.len(), 61);
     }
 
+    fn length_in_minutes(window: &Window, label: &str) -> i64 {
+        let day = window.days.iter().find(|d| d.label == label).unwrap();
+        day.end - day.start
+    }
+
+    #[test]
+    fn a_day_is_23_or_25_hours_when_the_clocks_change() {
+        use chrono::TimeZone;
+        let zone = chrono_tz::Europe::London;
+        let window = window_in(&zone.with_ymd_and_hms(2026, 3, 30, 12, 0, 0).unwrap()).unwrap();
+        assert_eq!(length_in_minutes(&window, "2026-03-29"), 23 * 60);
+        assert_eq!(length_in_minutes(&window, "2026-03-28"), 24 * 60);
+        let window = window_in(&zone.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap()).unwrap();
+        assert_eq!(length_in_minutes(&window, "2026-10-25"), 25 * 60);
+    }
+
+    #[test]
+    fn a_day_whose_midnight_does_not_exist_starts_after_the_jump() {
+        use chrono::TimeZone;
+        // Santiago puts the clocks from 00:00 to 01:00 on 2026-09-06 (UTC-4 to UTC-3).
+        let zone = chrono_tz::America::Santiago;
+        let window = window_in(&zone.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap()).unwrap();
+        let jump = window
+            .days
+            .iter()
+            .find(|d| d.label == "2026-09-06")
+            .unwrap();
+        assert_eq!(whole_minute("2026-09-06T04:00:00Z"), Some(jump.start));
+        assert_eq!(length_in_minutes(&window, "2026-09-06"), 23 * 60);
+        // The days around it follow each other without a gap or an overlap.
+        assert!(
+            window
+                .days
+                .windows(2)
+                .all(|pair| pair[0].end == pair[1].start)
+        );
+    }
+
+    #[test]
+    fn an_offset_that_is_not_a_whole_minute_gives_no_days() {
+        use chrono::TimeZone;
+        let zone = chrono::FixedOffset::east_opt(30).unwrap();
+        assert!(window_in(&zone.with_ymd_and_hms(2026, 11, 18, 12, 0, 0).unwrap()).is_none());
+    }
+
     #[test]
     fn the_window_reaches_back_for_last_30_days_on_the_first_of_march() {
         use chrono::TimeZone;
         let now = chrono::Utc.with_ymd_and_hms(2027, 3, 1, 12, 0, 0).unwrap();
         let window = window_in(&now).unwrap();
         assert_eq!(window.days.first().unwrap().label, "2027-01-31");
-        assert!(window.days.len() <= 100);
     }
 
     #[test]
@@ -553,7 +557,7 @@ mod tests {
         assert_eq!(today.weekday(), Weekday::Wednesday);
         let of = |p| {
             let (a, b) = bounds(today, p);
-            (label_of(a), label_of(b))
+            (a.to_string(), b.to_string())
         };
         assert_eq!(
             of(Period::Today),
@@ -589,12 +593,12 @@ mod tests {
     fn a_month_before_january_and_a_leap_february_are_whole() {
         let (a, b) = bounds(date("2028-01-10"), Period::LastMonth);
         assert_eq!(
-            (label_of(a), label_of(b)),
+            (a.to_string(), b.to_string()),
             ("2027-12-01".into(), "2027-12-31".into())
         );
         let (a, b) = bounds(date("2028-03-02"), Period::LastMonth);
         assert_eq!(
-            (label_of(a), label_of(b)),
+            (a.to_string(), b.to_string()),
             ("2028-02-01".into(), "2028-02-29".into())
         );
     }

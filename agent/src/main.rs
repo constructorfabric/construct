@@ -364,10 +364,10 @@ fn with_file_tools(
             return chat;
         }
     };
-    let mut tools = construct_agent::chat::files::file_tools(&workspace);
-    tools.extend(render_tool);
-    tools.push(construct_agent::chat::subagent::tool());
-    match ChatTools::new(tools) {
+    match ChatTools::new(construct_agent::chat::tool::standard_tools(
+        &workspace,
+        render_tool,
+    )) {
         Ok(tools) => chat.with_tools(tools),
         Err(e) => {
             eprintln!("file tools unavailable: {e}");
