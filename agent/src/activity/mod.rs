@@ -1,12 +1,14 @@
-//! The activity time store: per session, the tool, folder and branch, who wrote the prompts,
-//! the first and last time, a count of turns and the minutes the session was active.
+//! The activity time store: per session, the tool, folder and branch, the project and the
+//! ticket worked out from them, who wrote the prompts, the first and last time, a count of turns
+//! and the minutes the session was active.
 //!
 //! It lives in a database of its own in the agent's PostgreSQL and is only a copy: the record
 //! files stay the single source, and [`Store::rebuild`] makes the whole store from them. No
-//! message text is stored, only counts, times and a hash that tells a replayed turn from a new
-//! one. Applying a record is idempotent and the result does not depend on the order records
+//! message text is stored, only counts, times, a hash that tells a replayed turn from a new one,
+//! and the ticket ids the user names with how often (the text rule for a ticket). Applying a record is idempotent and the result does not depend on the order records
 //! arrive in, so a step-by-step store equals a rebuilt one.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,26 +21,29 @@ use crate::records::{FileSink, read_records, turn_key};
 
 mod feed;
 pub use feed::Feed;
+pub mod assign;
 pub mod rules;
 
 /// The database the store lives in; the agent creates it when it is missing.
 pub const DBNAME: &str = "activity";
 /// The version of the rules that turn records into rows. Change it when a rule changes: the
 /// next start drops the store and it is rebuilt.
-pub const RULES_VERSION: i32 = 1;
+pub const RULES_VERSION: i32 = 2;
 
 /// The advisory lock `apply` and `rebuild` take for their transaction, so that no two writers
 /// overlap: a record applied while the store is being cleared would be lost, and `touch` reads a
 /// row and writes it back.
 pub const LOCK_KEY: i64 = 0x6163_7469_7669_7479;
 
-const SCHEMA: [&str; 4] = [
+const SCHEMA: [&str; 5] = [
     "create table activity.rules (version int not null)",
     "create table activity.sessions (
         tool text not null,
         session text not null,
         folder text not null,
         branch text not null,
+        project text not null default '',
+        ticket text not null default '',
         first_time text not null,
         last_time text not null,
         turns bigint not null default 0,
@@ -52,6 +57,13 @@ const SCHEMA: [&str; 4] = [
         session text not null,
         key bigint not null,
         primary key (tool, session, key))",
+    // How often a user names an id in their messages, never the messages.
+    "create table activity.mentions (
+        tool text not null,
+        session text not null,
+        ticket text not null,
+        count bigint not null,
+        primary key (tool, session, ticket))",
     "create table activity.minutes (
         tool text not null,
         session text not null,
@@ -66,6 +78,10 @@ pub struct Session {
     /// The folder and branch of the latest record.
     pub folder: String,
     pub branch: String,
+    /// The project and the ticket by the rules in [`assign`]; the ticket is empty when the
+    /// session has none.
+    pub project: String,
+    pub ticket: String,
     pub first_time: String,
     pub last_time: String,
     pub turns: i64,
@@ -160,6 +176,7 @@ impl Store {
         for statement in [
             "delete from activity.minutes",
             "delete from activity.turns",
+            "delete from activity.mentions",
             "delete from activity.sessions",
         ] {
             sqlx::query(statement)
@@ -198,6 +215,8 @@ impl Store {
                     session: r.try_get("session")?,
                     folder: r.try_get("folder")?,
                     branch: r.try_get("branch")?,
+                    project: r.try_get("project")?,
+                    ticket: r.try_get("ticket")?,
                     first_time: r.try_get("first_time")?,
                     last_time: r.try_get("last_time")?,
                     turns: r.try_get("turns")?,
@@ -234,7 +253,7 @@ impl Store {
         grouping: rules::Grouping,
     ) -> Result<rules::Report, Error> {
         let rows = sqlx::query(
-            "select s.tool, s.session, s.folder, s.branch, s.person_prompts,
+            "select s.tool, s.session, s.project, s.ticket, s.person_prompts,
                     s.unattended_prompts, s.unknown_prompts, m.minute
              from activity.sessions s
              join activity.minutes m on m.tool = s.tool and m.session = s.session
@@ -259,8 +278,8 @@ impl Store {
                 continue;
             }
             sessions.push(rules::SessionMinutes {
-                folder: row.try_get("folder").map_err(fail)?,
-                branch: row.try_get("branch").map_err(fail)?,
+                project: row.try_get("project").map_err(fail)?,
+                ticket: row.try_get("ticket").map_err(fail)?,
                 unattended: rules::is_unattended(
                     row.try_get("person_prompts").map_err(fail)?,
                     row.try_get("unattended_prompts").map_err(fail)?,
@@ -411,7 +430,12 @@ async fn apply_in(conn: &mut PgConnection, record: &Record) -> Result<bool, Erro
                 .execute(&mut *conn)
                 .await
                 .map_err(|e| err("count a turn", e))?;
+                // The user's own messages: a person's or an unmarked one, never a script's.
+                if turn.role == Role::User && turn.author != Author::Unattended {
+                    count_mentions(conn, tool, session, &turn.text).await?;
+                }
             }
+            assign_in(conn, tool, session).await?;
         }
         Record::Mark(Mark {
             tool,
@@ -420,11 +444,79 @@ async fn apply_in(conn: &mut PgConnection, record: &Record) -> Result<bool, Erro
             folder,
             branch,
             ..
-        }) => touch(conn, tool, session, time, folder, branch).await?,
+        }) => {
+            touch(conn, tool, session, time, folder, branch).await?;
+            assign_in(conn, tool, session).await?;
+        }
         // See `is_activity`.
         Record::ToolCall(_) | Record::ToolResult(_) => return Ok(false),
     }
     Ok(true)
+}
+
+/// Adds the ids a message of the user names to the counts of the session. Only the ids are
+/// kept; the text is read here and goes no further.
+async fn count_mentions(
+    conn: &mut PgConnection,
+    tool: &str,
+    session: &str,
+    text: &str,
+) -> Result<(), Error> {
+    let mut counts: BTreeMap<String, i64> = BTreeMap::new();
+    for ticket in assign::tickets_in_text(text) {
+        *counts.entry(ticket).or_default() += 1;
+    }
+    if counts.is_empty() {
+        return Ok(());
+    }
+    let (tickets, times): (Vec<String>, Vec<i64>) = counts.into_iter().unzip();
+    sqlx::query(
+        "insert into activity.mentions (tool, session, ticket, count)
+         select $1, $2, t.ticket, t.count from unnest($3::text[], $4::bigint[]) as t(ticket, count)
+         on conflict (tool, session, ticket)
+         do update set count = activity.mentions.count + excluded.count",
+    )
+    .bind(tool)
+    .bind(session)
+    .bind(tickets)
+    .bind(times)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| err("count the tickets named", e))?;
+    Ok(())
+}
+
+/// Works out the project and the ticket of a session from what the store holds now, so that
+/// they depend on the records and not on the order they arrived in.
+async fn assign_in(conn: &mut PgConnection, tool: &str, session: &str) -> Result<(), Error> {
+    let fail = |e| err("assign the project and the ticket", e);
+    let (folder, branch): (String, String) = sqlx::query_as(
+        "select folder, branch from activity.sessions where tool = $1 and session = $2",
+    )
+    .bind(tool)
+    .bind(session)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(fail)?;
+    let named: Vec<(String, i64)> = sqlx::query_as(
+        "select ticket, count from activity.mentions where tool = $1 and session = $2",
+    )
+    .bind(tool)
+    .bind(session)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(fail)?;
+    sqlx::query(
+        "update activity.sessions set project = $3, ticket = $4 where tool = $1 and session = $2",
+    )
+    .bind(tool)
+    .bind(session)
+    .bind(assign::project_of(&folder))
+    .bind(assign::ticket_for(&folder, &branch, &named))
+    .execute(&mut *conn)
+    .await
+    .map_err(fail)?;
+    Ok(())
 }
 
 /// The first/last time and the folder and branch are worked out in Rust from the stored row and

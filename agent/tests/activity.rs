@@ -38,6 +38,25 @@ fn turn(
     folder: &str,
     branch: &str,
 ) -> Record {
+    said(
+        session,
+        time,
+        role,
+        author,
+        (folder, branch),
+        &format!("secret words at {time}"),
+    )
+}
+
+/// A turn with a text of the caller's.
+fn said(
+    session: &str,
+    time: &str,
+    role: Role,
+    author: Author,
+    (folder, branch): (&str, &str),
+    text: &str,
+) -> Record {
     Record::Turn(Turn {
         tool: "claude".into(),
         session: session.into(),
@@ -46,7 +65,7 @@ fn turn(
         branch: branch.into(),
         role,
         author,
-        text: format!("secret words at {time}"),
+        text: text.into(),
         tools: Vec::new(),
     })
 }
@@ -243,7 +262,7 @@ async fn the_stored_minutes_give_the_time_of_a_period() {
         .await
         .unwrap();
     assert_eq!(own.total_parts, whole(8));
-    assert_eq!(own.groups[0].key, "/work/x");
+    assert_eq!(own.groups[0].key, "x");
     let unattended = store
         .activity(&days, Kind::Unattended, Grouping::Tool)
         .await
@@ -305,13 +324,13 @@ async fn stored_prompt_authors_decide_whose_time_a_session_is() {
         .await
         .unwrap();
     assert_eq!(unattended.total_parts, PARTS_PER_MINUTE);
-    assert_eq!(keys(unattended), vec!["/work/s"]);
+    assert_eq!(keys(unattended), vec!["s"]);
     let own = store
         .activity(&days, Kind::Person, Grouping::Project)
         .await
         .unwrap();
     assert_eq!(own.total_parts, 2 * PARTS_PER_MINUTE);
-    assert_eq!(keys(own), vec!["/work/m", "/work/u"]);
+    assert_eq!(keys(own), vec!["m", "u"]);
     store.close().await;
     stand.finish().await;
 }
@@ -493,4 +512,208 @@ async fn rebuild_waits_while_another_holds_the_lock() {
         store.rebuild(&sink).await.unwrap();
     })
     .await;
+}
+
+/// Sessions the rules of the project and the ticket tell apart: a worktree folder, a branch
+/// that names work, a default branch where the user's text decides, a tie, a script's prompts
+/// and the assistant's text that do not count, words that are not tickets, a mark that moves a
+/// session to a worktree, and folders with one name.
+fn assignment_records() -> Vec<Record> {
+    use Author::{Person, Unattended};
+    use Role::{Assistant, User};
+    let worktree = r"C:\work\app\.claude\worktrees\AB-1-first";
+    let say = |session: &str, minute: u32, role, author, place: (&str, &str), text: &str| {
+        said(
+            session,
+            &format!("2026-11-11T10:{minute:02}:00Z"),
+            role,
+            author,
+            place,
+            text,
+        )
+    };
+    vec![
+        say("w", 0, User, Person, (worktree, "master"), "do CD-2"),
+        say(
+            "b",
+            1,
+            User,
+            Person,
+            ("/work/app", "feature/EF-3-x"),
+            "do CD-2",
+        ),
+        say(
+            "t",
+            2,
+            User,
+            Person,
+            ("/work/app", "master"),
+            "GH-4 then IJ-5",
+        ),
+        say(
+            "t",
+            3,
+            Assistant,
+            Person,
+            ("/work/app", "master"),
+            "IJ-5 IJ-5 IJ-5",
+        ),
+        say(
+            "m",
+            4,
+            User,
+            Person,
+            ("/other/app", "main"),
+            "KL-6 and MN-7",
+        ),
+        // The same id in a second message adds to its count.
+        say(
+            "m",
+            4,
+            User,
+            Author::Unknown,
+            ("/other/app", "main"),
+            "KL-6 again",
+        ),
+        say(
+            "m",
+            5,
+            Assistant,
+            Person,
+            ("/other/app", "main"),
+            "MN-7 MN-7 MN-7",
+        ),
+        say(
+            "m",
+            6,
+            User,
+            Unattended,
+            ("/other/app", "main"),
+            "OP-8 OP-8 OP-8 OP-8",
+        ),
+        say(
+            "n",
+            7,
+            User,
+            Person,
+            ("/work/tool", "HEAD"),
+            "UTF-8, SHA-256, CVE-2026-1234",
+        ),
+        // A number too long for an id is no id and cannot break the store.
+        say(
+            "n",
+            7,
+            User,
+            Person,
+            ("/work/tool", "HEAD"),
+            &format!("AB-{}", "7".repeat(5000)),
+        ),
+        say("k", 8, User, Person, ("/third/app", "master"), "QR-1"),
+        // A later mark moves the session to a worktree, which then decides.
+        mark(
+            "k",
+            "2026-11-11T10:09:00Z",
+            "/third/app/.claude/worktrees/ST-2-x",
+            "master",
+        ),
+    ]
+}
+
+fn assigned(sessions: &[Session], name: &str) -> (String, String) {
+    let found = sessions.iter().find(|s| s.session == name).unwrap();
+    (found.project.clone(), found.ticket.clone())
+}
+
+async fn mentions(stand: &Stand) -> Vec<(String, String, i64)> {
+    sqlx::query_as("select session, ticket, count from activity.mentions order by 1, 2")
+        .fetch_all(&mut stand.connect().await)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn each_session_gets_a_project_and_a_ticket() {
+    let stand = Stand::new("act-assign").await;
+    let store = stand.store().await;
+    let records = assignment_records();
+    store.rebuild(&sink_with(&stand, &records)).await.unwrap();
+    let rebuilt = store.sessions().await.unwrap();
+
+    let pair = |p: &str, t: &str| (p.to_owned(), t.to_owned());
+    assert_eq!(assigned(&rebuilt, "w"), pair("C:/work/app", "AB-1"));
+    assert_eq!(assigned(&rebuilt, "b"), pair("/work/app", "EF-3"));
+    // The assistant's text does not count, and a tie gives none.
+    assert_eq!(assigned(&rebuilt, "t"), pair("/work/app", ""));
+    // Nor does a script's prompt.
+    assert_eq!(assigned(&rebuilt, "m"), pair("/other/app", "KL-6"));
+    assert_eq!(assigned(&rebuilt, "n"), pair("/work/tool", ""));
+    // The mark of the last record moved the session, so the worktree outranks the text.
+    assert_eq!(assigned(&rebuilt, "k"), pair("/third/app", "ST-2"));
+
+    // Only ids and how often they are named are kept, never the messages.
+    let counted = mentions(&stand).await;
+    let expected: Vec<(String, String, i64)> = [
+        ("b", "CD-2", 1),
+        ("k", "QR-1", 1),
+        ("m", "KL-6", 2),
+        ("m", "MN-7", 1),
+        ("t", "GH-4", 1),
+        ("t", "IJ-5", 1),
+        ("w", "CD-2", 1),
+    ]
+    .map(|(s, t, n)| (s.to_owned(), t.to_owned(), n))
+    .to_vec();
+    assert_eq!(counted, expected);
+
+    // The same records fed one by one, backwards and twice, change nothing, counts included.
+    let mut backwards = records.clone();
+    backwards.reverse();
+    backwards.extend(records);
+    step_by_step(&stand, &store, &backwards).await;
+    assert_eq!(store.sessions().await.unwrap(), rebuilt);
+    assert_eq!(mentions(&stand).await, expected);
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn the_groups_by_project_and_by_ticket_use_the_stored_values() {
+    let stand = Stand::new("act-assign-groups").await;
+    let store = stand.store().await;
+    store
+        .rebuild(&sink_with(&stand, &assignment_records()))
+        .await
+        .unwrap();
+    let day = Day {
+        label: "2026-11-11".into(),
+        start: minute_number("2026-11-11T00:00").unwrap(),
+        end: minute_number("2026-11-12T00:00").unwrap(),
+    };
+    let keys = |report: construct_agent::activity::rules::Report| -> Vec<String> {
+        let mut keys: Vec<String> = report.groups.into_iter().map(|g| g.key).collect();
+        keys.sort();
+        keys
+    };
+    let by_project = store
+        .activity(std::slice::from_ref(&day), Kind::Both, Grouping::Project)
+        .await
+        .unwrap();
+    // Four folders are called `app`, so each shows more of its path (`/work/app` is the end of
+    // `C:/work/app`, so it shows all of it); the worktree is part of its project.
+    assert_eq!(
+        keys(by_project),
+        ["/work/app", "C:/work/app", "other/app", "third/app", "tool"]
+    );
+    let by_ticket = store
+        .activity(&[day], Kind::Both, Grouping::Ticket)
+        .await
+        .unwrap();
+    assert_eq!(
+        keys(by_ticket),
+        ["AB-1", "EF-3", "KL-6", "No ticket", "ST-2"]
+    );
+    store.close().await;
+    stand.finish().await;
 }
