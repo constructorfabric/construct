@@ -31,6 +31,7 @@
 
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -68,8 +69,7 @@ mod usage;
 mod wire;
 
 use tool::{ChatTools, limited};
-use usage::Counter;
-pub use usage::Usage;
+pub use usage::{Counter, Usage};
 use wire::{Calls, Chunk, PendingCall, WireCap, into_http, request_body};
 
 /// The source the conversations belong to.
@@ -252,12 +252,30 @@ struct Inner {
     setup_sub_tools: ChatTools,
     usage: Option<Arc<dyn Fn(Usage) + Send + Sync>>,
     running: Mutex<Option<Running>>,
+    /// The tool calls that run on their own threads, a stopped answer's too.
+    calls_in_flight: Arc<AtomicUsize>,
 }
 
 /// The chat commands. Cheap to clone.
 #[derive(Clone)]
 pub struct Chat {
     inner: Arc<Inner>,
+}
+
+/// One tool call that runs; it is counted until this is dropped, a panic of the tool included.
+struct InFlight(Arc<AtomicUsize>);
+
+impl InFlight {
+    fn start(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 struct Slot {
@@ -314,6 +332,7 @@ impl Chat {
                 setup_sub_tools: ChatTools::default(),
                 usage: None,
                 running: Mutex::new(None),
+                calls_in_flight: Arc::new(AtomicUsize::new(0)),
             }),
         })
     }
@@ -389,6 +408,21 @@ impl Chat {
             inner.usage = Some(Arc::new(report));
         }
         self
+    }
+
+    /// Waits until no tool call is running on a thread of its own, at most `limit`: a stopped
+    /// answer leaves the call it was waiting for running, and what that call writes lands later.
+    /// Answers whether none is left.
+    #[must_use]
+    pub fn wait_for_tools(&self, limit: std::time::Duration) -> bool {
+        let end = std::time::Instant::now() + limit;
+        while self.inner.calls_in_flight.load(Ordering::SeqCst) > 0 {
+            if std::time::Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        true
     }
 
     /// Run `chat-send` with `argument` (a JSON object). Every line to the client goes through
@@ -765,9 +799,13 @@ impl Chat {
             return Err(format!("unknown tool {name}"));
         };
         let arguments = arguments.to_string();
+        let running = InFlight::start(&self.inner.calls_in_flight);
         self.inner
             .handle
-            .spawn_blocking(move || tool.run(&arguments))
+            .spawn_blocking(move || {
+                let _running = running;
+                tool.run(&arguments)
+            })
             .await
             .unwrap_or_else(|_| Err("the tool failed".into()))
     }

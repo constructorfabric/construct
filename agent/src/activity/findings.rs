@@ -57,7 +57,7 @@ pub struct Assigned {
     pub collection: String,
 }
 
-fn text(value: &Value, member: &str) -> String {
+pub(crate) fn text(value: &Value, member: &str) -> String {
     value
         .get(member)
         .and_then(Value::as_str)
@@ -65,7 +65,7 @@ fn text(value: &Value, member: &str) -> String {
         .unwrap_or_default()
 }
 
-fn list(value: &Value, member: &str) -> Vec<String> {
+pub(crate) fn list(value: &Value, member: &str) -> Vec<String> {
     value
         .get(member)
         .and_then(Value::as_array)

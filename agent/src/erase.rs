@@ -64,12 +64,16 @@ pub fn own_stores(
     chat: Option<&crate::chat::Chat>,
     manage: &crate::manage::Manager,
     activity: &crate::activity::Feed,
+    setup: Option<&crate::dashboard_setup::SetupJob>,
     runtime: &tokio::runtime::Handle,
 ) -> OwnStores {
     let mut stores: Vec<Arc<dyn OwnStore>> =
         vec![Arc::new(sessions.clone()), manage.journal_store()];
     if let Some(chat) = chat {
         stores.push(Arc::new(chat.clone()));
+    }
+    if let Some(setup) = setup {
+        stores.push(Arc::new(setup.clone()));
     }
     stores.push(Arc::new(crate::activity::ActivityStore::new(
         activity, runtime,

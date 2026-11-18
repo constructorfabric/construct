@@ -21,8 +21,7 @@ use serde::Deserialize;
 
 use super::subagent::Halt;
 use super::tool::{ChatTool, ChatTools};
-use super::{Chat, Piece, Run, Target, machine, subagent};
-use crate::chat::usage::Counter;
+use super::{Chat, Counter, Piece, Run, Target, machine, subagent};
 
 /// The name of the run, which [`Chat::stop`] takes to stop it. It is no id a chat conversation can
 /// have, so the chat never meets it.
@@ -71,6 +70,13 @@ says so, and never a file in `history`. ",
 /// The only message of the conversation that the user side holds.
 const START: &str = "Set up my dashboard.";
 
+/// The message of a run that is not the first. `findings.json` and the dashboard are in the
+/// workspace already, and the person may have changed the dashboard since.
+const START_AGAIN: &str = "Set up my dashboard again. `findings.json` and `dashboards/activity.json` \
+are already in the workspace folder: read them first and start from them. The person may have hidden \
+or renamed projects and changed widgets, in the page or through the chat: keep every such change, \
+and add only what the sessions of `history` show that is new.";
+
 /// How a setup run ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -100,10 +106,33 @@ impl Chat {
     /// The plain reason the run did not happen or failed: `no model`, `no tools`, `busy`, or a
     /// reason of a failed answer (`key refused`, `timeout` and the like).
     pub fn setup(&self) -> Result<Outcome, String> {
-        self.inner.handle.block_on(self.setup_async())
+        self.setup_with(false, &Counter::default(), &|| false)
     }
 
-    async fn setup_async(&self) -> Result<Outcome, String> {
+    /// [`Chat::setup`], for a run that is `again` one that has run before, with `meter` counting
+    /// the bytes it sends and receives as it goes, so a caller that keeps a clone of it sees the
+    /// size so far. `stopped` is asked once the run holds its slot: a stop that came before it
+    /// could be taken by the slot ends the run at once, as [`Chat::stop`] would have.
+    ///
+    /// # Errors
+    /// As [`Chat::setup`].
+    pub fn setup_with(
+        &self,
+        again: bool,
+        meter: &Counter,
+        stopped: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Outcome, String> {
+        self.inner
+            .handle
+            .block_on(self.setup_async(again, meter, stopped))
+    }
+
+    async fn setup_async(
+        &self,
+        again: bool,
+        meter: &Counter,
+        stopped: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Outcome, String> {
         let inner = &self.inner;
         let Some(target) = Target::from_settings(&inner.settings.model()) else {
             return Err("no model".into());
@@ -114,7 +143,11 @@ impl Chat {
         let Some((slot, cancel)) = self.acquire(CONVERSATION) else {
             return Err("busy".into());
         };
-        let usage = Counter::default();
+        if stopped() {
+            drop(slot);
+            return Ok(Outcome::Stopped);
+        }
+        let usage = meter.clone();
         let run = Run {
             target: &target,
             cancel: &cancel,
@@ -127,7 +160,13 @@ impl Chat {
         let end = tokio::select! {
             biased;
             () = cancel.cancelled() => Err(Halt::Stopped),
-            end = self.converse(&run, own, Some(nested), START.into(), &mut quiet) => end,
+            end = self.converse(
+                &run,
+                own,
+                Some(nested),
+                (if again { START_AGAIN } else { START }).into(),
+                &mut quiet,
+            ) => end,
         };
         let usage = usage.total();
         if let Some(report) = &inner.usage {
