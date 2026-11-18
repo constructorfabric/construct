@@ -8,7 +8,7 @@
 //! source.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -126,6 +126,10 @@ struct Shared {
     findings_reads: AtomicU64,
     /// The store [`Feed::run`] works on, from the moment the task starts, built or not.
     opened: Mutex<Option<Store>>,
+    /// How long the feed waits before it looks at the findings by itself, in milliseconds.
+    findings_poll: AtomicU64,
+    /// Set when the findings file has just changed: the next look is not held back.
+    look_now: AtomicBool,
 }
 
 /// The queue between the follower and the activity store, and what `status` shows of it.
@@ -156,12 +160,32 @@ impl Feed {
             findings: Mutex::new(None),
             findings_reads: AtomicU64::new(0),
             opened: Mutex::new(None),
+            findings_poll: AtomicU64::new(FINDINGS_POLL.as_secs() * 1000),
+            look_now: AtomicBool::new(false),
         }))
     }
 
     /// Remembers the workspace that holds `findings.json`; [`Feed::run`] reads the file from it.
     pub fn watch_findings(&self, workspace: Arc<Workspace>) {
         *lock(&self.0.findings) = Some(workspace);
+    }
+
+    fn findings_poll(&self) -> Duration {
+        Duration::from_millis(self.0.findings_poll.load(Ordering::Relaxed))
+    }
+
+    /// How long the feed waits before it looks at the findings by itself; for the tests, which
+    /// make it long to see that a change is read because the feed was told of it.
+    pub fn set_findings_poll(&self, every: Duration) {
+        let millis = u64::try_from(every.as_millis()).unwrap_or(u64::MAX);
+        self.0.findings_poll.store(millis, Ordering::Relaxed);
+    }
+
+    /// Tells the feed that the findings file has just changed, so it reads it now and does not
+    /// wait for its next look.
+    pub fn findings_changed(&self) {
+        self.0.look_now.store(true, Ordering::SeqCst);
+        self.0.wake.notify_one();
     }
 
     /// Gives the store the findings in the workspace when they are not the ones it has, looking
@@ -173,7 +197,12 @@ impl Feed {
         let Some(workspace) = lock(&self.0.findings).clone() else {
             return;
         };
-        if watch.checked.is_some_and(|at| at.elapsed() < FINDINGS_POLL) {
+        let told = self.0.look_now.swap(false, Ordering::SeqCst);
+        if !told
+            && watch
+                .checked
+                .is_some_and(|at| at.elapsed() < self.findings_poll())
+        {
             return;
         }
         watch.checked = Some(Instant::now());
@@ -448,7 +477,8 @@ impl Feed {
                 }
                 Next::Empty => {
                     // Woken by a record, or by the pause, to look at the findings again.
-                    let _ = tokio::time::timeout(FINDINGS_POLL, self.0.wake.notified()).await;
+                    let _ =
+                        tokio::time::timeout(self.findings_poll(), self.0.wake.notified()).await;
                     self.refresh_findings(store, &mut watch).await;
                 }
             }

@@ -536,6 +536,7 @@ async fn the_erasure_leaves_no_activity_row_and_the_store_goes_on_with_what_is_w
         None,
         &manage,
         &feed,
+        None,
         &tokio::runtime::Handle::current(),
     );
     let left = tokio::task::spawn_blocking(move || stores.erase())

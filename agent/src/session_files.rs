@@ -50,6 +50,8 @@ const MASK: &str = "[secret removed]";
 pub struct SessionFiles<'a> {
     workspace: &'a Workspace,
     files: Vec<String>,
+    /// The bytes of text in the session files.
+    bytes: u64,
     removed: bool,
 }
 
@@ -78,6 +80,10 @@ impl<'a> SessionFiles<'a> {
     /// session is read from the store when its turn comes, so a session that is still being
     /// written is seen as it is at that moment, and a line that is half written is skipped.
     ///
+    /// `go` is asked before each session is read, with the number of session files written so far
+    /// and their bytes of text: when it answers `false` the files are removed and nothing is
+    /// returned.
+    ///
     /// A `history` folder that is already in the workspace is replaced.
     ///
     /// # Errors
@@ -88,12 +94,14 @@ impl<'a> SessionFiles<'a> {
         sources: &[&str],
         days: Option<NonZeroU32>,
         now: OffsetDateTime,
-    ) -> Result<Self, Error> {
+        go: &mut dyn FnMut(usize, u64) -> bool,
+    ) -> Result<Option<Self>, Error> {
         workspace.remove_all(DIR)?;
         // From here on the folder may exist, so the drop of `run` removes it on any failure.
         let mut run = Self {
             workspace,
             files: Vec::new(),
+            bytes: 0,
             removed: false,
         };
         let cutoff = cutoff(now, days.map_or(DEFAULT_DAYS, NonZeroU32::get))?;
@@ -104,6 +112,9 @@ impl<'a> SessionFiles<'a> {
             for info in listed.into_iter().rev() {
                 if compare_times(&info.last_time, &cutoff).is_lt() {
                     continue;
+                }
+                if !go(run.files.len(), run.bytes) {
+                    return Ok(None);
                 }
                 let records = sink
                     .read_session(source, &info.session)
@@ -123,6 +134,7 @@ impl<'a> SessionFiles<'a> {
                     plain(&info.session)
                 );
                 workspace.write(&name, &text)?;
+                run.bytes += text.len() as u64;
                 run.files.push(name);
             }
         }
@@ -137,7 +149,16 @@ impl<'a> SessionFiles<'a> {
         };
         let json = serde_json::to_string_pretty(&list).map_err(|_| Error::NotText)?;
         workspace.write(FOLDERS_FILE, &json)?;
-        Ok(run)
+        if !go(run.files.len(), run.bytes) {
+            return Ok(None);
+        }
+        Ok(Some(run))
+    }
+
+    /// How many sessions were written.
+    #[must_use]
+    pub fn sessions(&self) -> usize {
+        self.files.len()
     }
 
     /// The workspace paths of the session files, oldest session first within a source.
@@ -464,6 +485,18 @@ mod tests {
         Temp(dir)
     }
 
+    /// The files of a run that nothing stops.
+    fn write_all<'a>(
+        workspace: &'a Workspace,
+        sink: &FileSink,
+        sources: &[&str],
+        days: Option<NonZeroU32>,
+        now: OffsetDateTime,
+    ) -> Result<SessionFiles<'a>, Error> {
+        SessionFiles::write(workspace, sink, sources, days, now, &mut |_, _| true)
+            .map(|run| run.unwrap())
+    }
+
     fn now() -> OffsetDateTime {
         OffsetDateTime::parse("2026-11-17T12:00:00Z", &Rfc3339).unwrap()
     }
@@ -514,7 +547,7 @@ mod tests {
         }
 
         fn run(&self, days: u32) -> SessionFiles<'_> {
-            SessionFiles::write(
+            write_all(
                 &self.workspace,
                 &self.sink,
                 &["claude-code"],
@@ -806,8 +839,7 @@ mod tests {
 
         // No period given: the default of 30 days.
         let default =
-            SessionFiles::write(&stand.workspace, &stand.sink, &["claude-code"], None, now())
-                .unwrap();
+            write_all(&stand.workspace, &stand.sink, &["claude-code"], None, now()).unwrap();
         assert_eq!(default.files().len(), 1);
     }
 
@@ -929,10 +961,35 @@ mod tests {
     }
 
     #[test]
+    fn a_run_that_is_stopped_leaves_no_files() {
+        let mut stand = Stand::new();
+        for (session, time) in [("a", "2026-11-10T09:00:00Z"), ("b", "2026-11-11T09:00:00Z")] {
+            stand.add(&turn(session, time, Role::User, "/gone", "a question"));
+        }
+        let mut asked = Vec::new();
+        let run = SessionFiles::write(
+            &stand.workspace,
+            &stand.sink,
+            &["claude-code"],
+            None,
+            now(),
+            // Goes on for the first session, stops before the second.
+            &mut |sessions, _| {
+                asked.push(sessions);
+                sessions < 1
+            },
+        )
+        .unwrap();
+        assert!(run.is_none());
+        assert_eq!(asked, [0, 1]);
+        assert!(!stand.data.join("workspace/history").exists());
+    }
+
+    #[test]
     fn a_period_out_of_the_range_of_dates_is_an_error() {
         let stand = Stand::new();
 
-        let result = SessionFiles::write(
+        let result = write_all(
             &stand.workspace,
             &stand.sink,
             &["claude-code"],

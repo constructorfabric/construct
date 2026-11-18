@@ -1,5 +1,6 @@
 //! The size of what an answer sent to the provider and received from it.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::wire::PendingCall;
@@ -12,11 +13,12 @@ pub struct Usage {
     pub received: u64,
 }
 
-/// The running count of one answer.
-#[derive(Default)]
-pub(super) struct Counter {
-    sent: AtomicU64,
-    received: AtomicU64,
+/// The running count of one answer. Clones share the count, so a caller that keeps one can read
+/// the size so far while the answer runs.
+#[derive(Clone, Default)]
+pub struct Counter {
+    sent: Arc<AtomicU64>,
+    received: Arc<AtomicU64>,
 }
 
 impl Counter {
@@ -38,7 +40,9 @@ impl Counter {
         );
     }
 
-    pub(super) fn total(&self) -> Usage {
+    /// The bytes counted so far.
+    #[must_use]
+    pub fn total(&self) -> Usage {
         Usage {
             sent: self.sent.load(Ordering::Relaxed),
             received: self.received.load(Ordering::Relaxed),
