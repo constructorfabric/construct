@@ -15,6 +15,8 @@ use std::thread;
 use std::time::Duration;
 
 #[cfg(unix)]
+pub mod bodies;
+#[cfg(unix)]
 pub mod fake_host;
 #[cfg(unix)]
 pub mod pg_stand;

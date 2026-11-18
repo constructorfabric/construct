@@ -67,3 +67,21 @@ pub fn fixture() -> Vec<SessionMinutes> {
         lab,
     ]
 }
+
+/// The dashboard tool over `workspace` and the fixture sessions, with the days of November 2026
+/// counted in UTC and today the 11th.
+pub fn render_tool(
+    workspace: &std::sync::Arc<construct_agent::workspace::Workspace>,
+) -> std::sync::Arc<dyn construct_agent::chat::tool::ChatTool> {
+    use chrono::TimeZone;
+    let calendar = construct_agent::chat::dashboard_view::Calendar::at(
+        &chrono::Utc
+            .with_ymd_and_hms(2026, 11, 11, 12, 0, 0)
+            .unwrap(),
+    );
+    construct_agent::chat::dashboard_view::tool(
+        construct_agent::dashboard_document::Dashboard::open(std::sync::Arc::clone(workspace)),
+        std::sync::Arc::new(|| Ok(fixture())),
+        calendar,
+    )
+}

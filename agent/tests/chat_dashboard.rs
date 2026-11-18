@@ -9,16 +9,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use chrono::TimeZone;
 use construct_agent::chat::Chat;
-use construct_agent::chat::dashboard_view::{self, Calendar};
 use construct_agent::chat::tool::ChatTools;
 use construct_agent::chat::tool::standard_tools;
 use construct_agent::dashboard::{ACTIVITY_FILE, default_activity};
-use construct_agent::dashboard_document::Dashboard;
 use construct_agent::dashboard_numbers::respond;
 use construct_agent::ipc::Server;
-use construct_agent::settings::{Settings, Update};
+use construct_agent::settings::Settings;
 use construct_agent::workspace::{DIR_NAME, Workspace};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -26,8 +23,8 @@ use time::OffsetDateTime;
 mod common;
 
 use common::scripted::{Turn, provider};
-use common::sessions::{at, fixture};
-use common::stand::{connect, deadlines};
+use common::sessions::{at, fixture, render_tool};
+use common::stand::{connect, deadlines, use_provider};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
@@ -78,32 +75,13 @@ impl Stand {
         let (data, socket) = (base.join("data"), base.join("run").join("agent.sock"));
         let (addr, bodies) = provider(turns);
         let settings = Settings::open(&base.join("config")).unwrap();
-        let model = json!({ "model": {
-            "base_url": format!("http://127.0.0.1:{}/v1", addr.port()), "model": "m", "api_key": "k" } });
-        settings
-            .apply(Update::parse(&model.to_string()).unwrap())
-            .unwrap();
+        use_provider(&settings, addr);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
         let workspace = Arc::new(Workspace::open(&data).unwrap());
-        let dashboard = Dashboard::open(Arc::clone(&workspace));
-        // Wednesday the 11th of November 2026, in UTC: the days run from the first of October to
-        // the end of November.
-        let calendar = Calendar::at(
-            &chrono::Utc
-                .with_ymd_and_hms(2026, 11, 11, 12, 0, 0)
-                .unwrap(),
-        );
-        let tools = standard_tools(
-            &workspace,
-            Some(dashboard_view::tool(
-                dashboard,
-                Arc::new(|| Ok(fixture())),
-                calendar,
-            )),
-        );
+        let tools = standard_tools(&workspace, Some(render_tool(&workspace)));
         let chat = Chat::new(settings.clone(), &data, rt.handle().clone(), deadlines())
             .unwrap()
             .with_tools(ChatTools::new(tools).unwrap());

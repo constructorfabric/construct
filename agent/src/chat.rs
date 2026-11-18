@@ -59,6 +59,7 @@ pub mod dashboard_view;
 pub mod files;
 pub mod machine;
 mod recall;
+pub mod setup;
 pub mod subagent;
 pub mod tool;
 mod usage;
@@ -239,6 +240,9 @@ struct Inner {
     tools: ChatTools,
     /// The tools a sub-agent has: the list without the sub-agent tool.
     sub_tools: ChatTools,
+    /// The tools of the setup session, and of a sub-agent of it.
+    setup_tools: ChatTools,
+    setup_sub_tools: ChatTools,
     usage: Option<Arc<dyn Fn(Usage) + Send + Sync>>,
     running: Mutex<Option<Running>>,
 }
@@ -299,6 +303,8 @@ impl Chat {
                 link: Link::default(),
                 tools: ChatTools::default(),
                 sub_tools: ChatTools::default(),
+                setup_tools: ChatTools::default(),
+                setup_sub_tools: ChatTools::default(),
                 usage: None,
                 running: Mutex::new(None),
             }),
@@ -734,7 +740,8 @@ impl Chat {
         emit: &mut dyn FnMut(Piece<'_>) -> bool,
     ) -> Result<String, String> {
         if call.name == subagent::NAME && self.inner.tools.find(subagent::NAME).is_some() {
-            return self.run_subagent(run, &call.arguments, emit).await;
+            let nested = (subagent::INSTRUCTION, &self.inner.sub_tools);
+            return self.run_subagent(run, &call.arguments, nested, emit).await;
         }
         self.run_tool(&self.inner.tools, &call.name, &call.arguments)
             .await

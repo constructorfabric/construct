@@ -370,6 +370,17 @@ fn with_file_tools(
             return chat;
         }
     };
+    let setup = ChatTools::new(construct_agent::chat::tool::setup_tools(
+        &workspace,
+        render_tool.clone(),
+    ));
+    let chat = match setup {
+        Ok(tools) => chat.with_setup_tools(tools),
+        Err(e) => {
+            eprintln!("setup tools unavailable: {e}");
+            chat
+        }
+    };
     match ChatTools::new(construct_agent::chat::tool::standard_tools(
         &workspace,
         render_tool,

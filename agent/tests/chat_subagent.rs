@@ -15,14 +15,16 @@ use construct_agent::chat::files::file_tools;
 use construct_agent::chat::tool::ChatTools;
 use construct_agent::chat::{Chat, Usage, subagent};
 use construct_agent::ipc::Server;
-use construct_agent::settings::{Settings, Update};
+use construct_agent::settings::Settings;
 use construct_agent::workspace::{DIR_NAME, Workspace};
 use serde_json::{Value, json};
 
 mod common;
 
+use common::bodies::{messages, names};
+
 use common::scripted::{Turn, provider};
-use common::stand::{connect, deadlines, wait_for};
+use common::stand::{connect, deadlines, use_provider, wait_for};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
@@ -46,11 +48,7 @@ impl Stand {
         let (data, socket) = (base.join("data"), base.join("run").join("agent.sock"));
         let (addr, bodies) = provider(turns);
         let settings = Settings::open(&base.join("config")).unwrap();
-        let model = json!({ "model": {
-            "base_url": format!("http://127.0.0.1:{}/v1", addr.port()), "model": "m", "api_key": "k" } });
-        settings
-            .apply(Update::parse(&model.to_string()).unwrap())
-            .unwrap();
+        use_provider(&settings, addr);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -103,21 +101,8 @@ impl Drop for Stand {
     }
 }
 
-fn messages(body: &Value) -> Vec<Value> {
-    body["messages"].as_array().unwrap().clone()
-}
-
 fn tools_text(body: &Value) -> String {
     body["tools"].to_string()
-}
-
-fn names(body: &Value) -> Vec<String> {
-    body["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
-        .collect()
 }
 
 /// The bytes of `Turn::Calls` as the loop counts them: names and arguments.
@@ -267,6 +252,12 @@ fn a_sub_agent_that_asks_for_another_gets_a_plain_error_and_goes_on() {
     ]);
     let events = stand.say("go");
     assert_eq!(events.last().unwrap(), &json!({ "event": "done" }));
+    // The client is told of the outer call only: the refused call shows no line.
+    let lines: Vec<&Value> = events.iter().filter(|e| e["event"] == "tool").collect();
+    assert_eq!(
+        lines,
+        [&json!({ "event": "tool", "line": "Asked a sub-agent: outer" })]
+    );
     let bodies = stand.bodies();
     // No request of the inner task: only the parent's, the sub-agent's two and the parent's.
     assert_eq!(bodies.len(), 4);
