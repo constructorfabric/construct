@@ -15,7 +15,8 @@
 //! the request lists (see `dashboard_numbers`); the answer is longer than a status.
 //! `settings-test` answers with several JSON lines when its request has `"progress": true`.
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
-//! streams an answer, `chat-get` sends one line per record. A request line is at most
+//! streams an answer (the object may carry `window`, the calendar the dashboard tool reads; see
+//! `chat::dashboard_view`), `chat-get` sends one line per record. A request line is at most
 //! `MAX_REQUEST` bytes, and a `chat-send` line at most `chat::MAX_REQUEST`.
 
 use std::io;
