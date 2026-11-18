@@ -1,6 +1,14 @@
 import { execFileSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,6 +35,8 @@ export interface Session {
   readonly configHome: string;
   readonly codexHome: string;
   readonly claudeHome: string;
+  /** The agent's workspace folder, where the chat's file tools work. */
+  readonly workspaceDir: string;
   /** Where the agent keeps its records, `records/<tool>/<session>.jsonl`. */
   readonly recordsDir: string;
   /** Everything the agent has written to its output and error streams, over all its runs. */
@@ -43,6 +53,29 @@ function stringEnv(extra: Record<string, string>): Record<string, string> {
     }
   }
   return { ...merged, ...extra };
+}
+
+const claudeSessionId = 'sess-1';
+
+/** The session file of the fake Claude Code the agent reads. */
+export function claudeFile(session: Session): string {
+  return path.join(session.claudeHome, 'projects', '-w', `${claudeSessionId}.jsonl`);
+}
+
+export function writeLine(file: string, line: unknown): void {
+  mkdirSync(path.dirname(file), { recursive: true });
+  appendFileSync(file, `${JSON.stringify(line)}\n`);
+}
+
+/** One prompt of the user's own in the fake Claude Code session, stamped now. */
+export function claudePrompt(session: Session, text: string): void {
+  writeLine(claudeFile(session), {
+    type: 'user',
+    timestamp: new Date().toISOString(),
+    cwd: '/w',
+    sessionId: claudeSessionId,
+    message: { content: text },
+  });
 }
 
 /** An app window that listens for policy violations from the first page load on. */
@@ -258,6 +291,7 @@ export const test = base.extend<{ session: Session; app: ElectronApplication; pa
         configHome,
         codexHome,
         claudeHome,
+        workspaceDir: path.join(dataHome, 'construct', 'workspace'),
         recordsDir: path.join(dataHome, 'construct', 'records'),
         appArgs: [appDir, ...launchArgs, `--user-data-dir=${userDataDir}`],
         agentLog: () => readFileSync(logPath, 'utf8'),

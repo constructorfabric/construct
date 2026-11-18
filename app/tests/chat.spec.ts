@@ -8,7 +8,7 @@ import {
   openApp,
   windowText,
 } from './fixtures';
-import { ask, assistant, configure, input, test } from './chat-helpers';
+import { ask, assistant, configure, input, test, toolLines } from './chat-helpers';
 import { closedPort, goodKey, goodModel } from './provider';
 import { screenshotBothThemes } from './screenshots';
 
@@ -20,7 +20,6 @@ const turns = (page: Page) => page.locator('[data-role]');
 /** The role of each turn and tool line of the thread, in the order it is shown. */
 const roles = (page: Page) =>
   turns(page).evaluateAll((all) => all.map((element) => element.getAttribute('data-role')));
-const toolLines = (page: Page) => page.locator('[data-role=tool]');
 const rows = (page: Page) => page.locator('#chat-conversations li');
 
 async function atBottom(page: Page): Promise<boolean> {
