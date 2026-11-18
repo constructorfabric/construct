@@ -3,6 +3,7 @@ import {
   dayBounds,
   formatMinutes,
   mondayOf,
+  periodDays,
   shortDate,
   weekBounds,
 } from '../src/ui/dashboard-period';
@@ -95,5 +96,38 @@ describe('the period of the dashboard', () => {
     expect(formatMinutes(45.6)).toBe('46 min');
     expect(formatMinutes(205)).toBe('3 h 25 min');
     expect(formatMinutes(60)).toBe('1 h 0 min');
+  });
+});
+
+describe('the days of a period of the document', () => {
+  const anchor = new Date(2026, 10, 18, 15, 30);
+  const labels = (period: Parameters<typeof periodDays>[0]): string[] =>
+    periodDays(period, anchor).map((d) => d.label);
+
+  it('is the day itself for today', () => {
+    expect(labels('today')).toEqual(['2026-11-18']);
+  });
+
+  it('is Monday to Sunday for this week and for last week', () => {
+    expect(labels('this_week')).toHaveLength(7);
+    expect(labels('this_week')[0]).toBe('2026-11-16');
+    expect(labels('last_week')[0]).toBe('2026-11-09');
+    expect(labels('last_week')[6]).toBe('2026-11-15');
+  });
+
+  it('is the whole calendar month for this month and for last month', () => {
+    expect(labels('this_month')).toHaveLength(30);
+    expect(labels('this_month')[0]).toBe('2026-11-01');
+    expect(labels('this_month')[29]).toBe('2026-11-30');
+    expect(labels('last_month')).toHaveLength(31);
+    expect(labels('last_month')[0]).toBe('2026-10-01');
+    expect(periodDays('last_month', new Date(2026, 0, 5))[0]?.label).toBe('2025-12-01');
+  });
+
+  it('counts back from the day for the last 7 and the last 30 days', () => {
+    expect(labels('last_7_days')[0]).toBe('2026-11-12');
+    expect(labels('last_7_days')[6]).toBe('2026-11-18');
+    expect(labels('last_30_days')).toHaveLength(30);
+    expect(labels('last_30_days')[0]).toBe('2026-10-20');
   });
 });

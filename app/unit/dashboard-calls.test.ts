@@ -50,6 +50,7 @@ describe('the dashboard handlers', () => {
         totalMinutes: 30,
         sessionCount: 1,
         days: [{ label: '2026-11-16', minutes: 30 }],
+        groups: [],
       });
       expect(lines).toEqual([
         `dashboard-numbers ${JSON.stringify({ days: [day], sessions: 'unattended' })}`,
@@ -74,6 +75,26 @@ describe('the dashboard handlers', () => {
         error: 'the window sent a dashboard request in a form the app does not accept',
       });
       expect(lines).toEqual([]);
+    });
+  });
+
+  it('ask dashboard-get for the document and the problem of the file', async () => {
+    const problem = { kind: 'file', place: '', message: 'the file cannot be read' };
+    await withFakeAgent(
+      JSON.stringify({ document: null, error: problem }),
+      async (handlers, lines) => {
+        expect(await handlers.document()).toEqual({ ok: true, document: null, problem });
+        expect(lines).toEqual(['dashboard-get']);
+      },
+    );
+  });
+
+  it('say so when the reply to dashboard-get is not a document', async () => {
+    await withFakeAgent('{"status":"running"}', async (handlers) => {
+      expect(await handlers.document()).toEqual({
+        ok: false,
+        error: 'the agent reply has no document',
+      });
     });
   });
 

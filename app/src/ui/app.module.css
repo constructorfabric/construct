@@ -249,6 +249,102 @@
   gap: var(--space-2);
 }
 
-.period {
-  margin: var(--space-3) 0 0;
+/* While a widget is dragged the library hides the page's text selection with a style of its own,
+   which the policy refuses; this rule does the same. */
+:global(.react-draggable-transparent-selection) *::selection {
+  all: inherit;
+}
+
+.grid {
+  margin-top: var(--space-4);
+  min-width: 0;
+  width: 100%;
+}
+
+.widget {
+  min-width: 0;
+}
+
+/* The grid's own stylesheet draws the handle in black and the dragged place in red. */
+.grid :global(.react-grid-item) > :global(.react-resizable-handle)::after {
+  border-color: var(--muted-foreground);
+}
+
+.grid :global(.react-grid-item.react-grid-placeholder) {
+  background: var(--primary);
+}
+
+.widgetCard {
+  box-sizing: border-box;
+  height: 100%;
+  margin-top: 0;
+}
+
+.widgetBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chart {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  min-height: 0;
+}
+
+.chartArea {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.legendItem {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.swatch {
+  display: inline-block;
+  height: var(--space-3);
+  width: var(--space-3);
+}
+
+.tableScroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.tableEmpty {
+  color: var(--muted-foreground);
+  margin: 0;
+}
+
+.share {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.shareBar {
+  flex: none;
+  width: calc(var(--space-8) * 1.5);
+}
+
+.shareText {
+  min-width: 3ch;
+  text-align: end;
 }

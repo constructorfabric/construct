@@ -9,8 +9,8 @@ import {
   SETTINGS_TEST_PROGRESS_CHANNEL,
 } from './agent-settings';
 import type { ModelTestResult, SettingsResult, TestProgress } from './agent-settings';
-import { DASHBOARD_NUMBERS_CHANNEL } from './dashboard-protocol';
-import type { DashboardResult } from './dashboard-protocol';
+import { DASHBOARD_DOCUMENT_CHANNEL, DASHBOARD_NUMBERS_CHANNEL } from './dashboard-protocol';
+import type { DashboardResult, DocumentResult } from './dashboard-protocol';
 import { OPEN_LINK_CHANNEL } from './external';
 import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
 import type { AgentStatus, ConstructAgentApi } from './agent-status';
@@ -51,6 +51,8 @@ const api: ConstructAgentApi = {
   stopAnswer: () => ipcRenderer.invoke(CHAT_STOP_CHANNEL) as Promise<void>,
   getDashboardNumbers: (input) =>
     ipcRenderer.invoke(DASHBOARD_NUMBERS_CHANNEL, input) as Promise<DashboardResult>,
+  getDashboardDocument: () =>
+    ipcRenderer.invoke(DASHBOARD_DOCUMENT_CHANNEL) as Promise<DocumentResult>,
   openLink: (url) => ipcRenderer.invoke(OPEN_LINK_CHANNEL, url) as Promise<boolean>,
   onChatEvent: (listener) => {
     // Only the event goes through, never Electron's own event object.
