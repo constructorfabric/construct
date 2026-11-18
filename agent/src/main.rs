@@ -345,15 +345,51 @@ fn with_chat(
                     Some(manage) => chat.with_observer(manage.observer()),
                     None => chat,
                 })
+                .map(|chat| (chat, dir))
                 .map_err(|e| e.to_string())
         });
     match chat {
-        Ok(chat) => server.with_chat(chat),
+        Ok((chat, dir)) => with_setup_job(
+            server.with_chat(chat.clone()),
+            &chat,
+            &dir,
+            settings,
+            manage,
+            activity,
+        ),
         Err(e) => {
             eprintln!("chat unavailable: {e}");
             server
         }
     }
+}
+
+/// Serve the setup of the dashboard as a background job that runs on `chat`. Without the
+/// workspace folder it answers an error.
+#[cfg(unix)]
+fn with_setup_job(
+    server: construct_agent::ipc::Server,
+    chat: &construct_agent::chat::Chat,
+    dir: &std::path::Path,
+    settings: &construct_agent::settings::Settings,
+    manage: Option<&construct_agent::manage::Manager>,
+    activity: &construct_agent::activity::Feed,
+) -> construct_agent::ipc::Server {
+    use construct_agent::dashboard_setup::SetupJob;
+    let workspace = match construct_agent::workspace::Workspace::open(dir) {
+        Ok(workspace) => std::sync::Arc::new(workspace),
+        Err(e) => {
+            eprintln!("the dashboard setup is not available: {e}");
+            return server;
+        }
+    };
+    let job =
+        SetupJob::open(settings.clone(), chat.clone(), workspace, dir).with_feed(activity.clone());
+    let job = match manage {
+        Some(manage) => job.with_facts(manage.clone()),
+        None => job,
+    };
+    server.with_setup(job)
 }
 
 /// `chat` with the file tools over the workspace folder in `dir`, the dashboard tool when there is

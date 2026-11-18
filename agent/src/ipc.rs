@@ -20,6 +20,10 @@
 //! `dashboard-sessions <JSON object>`, `dashboard-summary <JSON object>` and `dashboard-state` answer
 //! the sessions behind a group, the summary of a day and how far the data is (see
 //! `dashboard_details`).
+//! `dashboard-setup-start [JSON object]` (`{"days": <period>}`, or nothing) starts the setup of the
+//! dashboard as a background job of the agent, `dashboard-setup-status` answers where the run is
+//! and how much it has read and sent, and `dashboard-setup-cancel` stops it (see
+//! `dashboard_setup`).
 //! `settings-test` answers with several JSON lines when its request has `"progress": true`.
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
@@ -163,6 +167,7 @@ mod unix {
     use crate::dashboard_document::Dashboard;
     use crate::dashboard_numbers::Numbers;
     use crate::dashboard_projects::Edit;
+    use crate::dashboard_setup::SetupJob;
     use crate::database::Health;
     use crate::follow::Stats;
     use crate::manage::Manager;
@@ -208,6 +213,7 @@ mod unix {
         dashboard: Option<Dashboard>,
         numbers: Option<Numbers>,
         details: Option<Details>,
+        setup: Option<SetupJob>,
     }
 
     impl Server {
@@ -246,6 +252,7 @@ mod unix {
                 dashboard: None,
                 numbers: None,
                 details: None,
+                setup: None,
             })
         }
 
@@ -342,6 +349,14 @@ mod unix {
             self
         }
 
+        /// Serve `dashboard-setup-start`, `dashboard-setup-status` and `dashboard-setup-cancel`
+        /// from this job. Without it they answer an error.
+        #[must_use]
+        pub fn with_setup(mut self, setup: SetupJob) -> Self {
+            self.setup = Some(setup);
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -367,6 +382,7 @@ mod unix {
                         let dashboard = self.dashboard.clone();
                         let numbers = self.numbers.clone();
                         let details = self.details.clone();
+                        let setup = self.setup.clone();
                         thread::spawn(move || {
                             let shared = Shared {
                                 database: &database,
@@ -381,6 +397,7 @@ mod unix {
                                 dashboard: dashboard.as_ref(),
                                 numbers: numbers.as_ref(),
                                 details: details.as_ref(),
+                                setup: setup.as_ref(),
                             };
                             if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
@@ -506,6 +523,7 @@ mod unix {
         dashboard: Option<&'a Dashboard>,
         numbers: Option<&'a Numbers>,
         details: Option<&'a Details>,
+        setup: Option<&'a SetupJob>,
     }
 
     /// Never log, or return in an error, any part of `line`: it can hold a key.
@@ -575,6 +593,18 @@ mod unix {
             ("dashboard-state", _) if argument.is_empty() => shared.details.map_or_else(
                 || error_response("the dashboard details are not available"),
                 Details::state,
+            ),
+            ("dashboard-setup-start", _) => shared.setup.map_or_else(
+                || error_response("the dashboard setup is not available"),
+                |setup| setup.start(argument),
+            ),
+            ("dashboard-setup-status", _) if argument.is_empty() => shared.setup.map_or_else(
+                || error_response("the dashboard setup is not available"),
+                SetupJob::status_line,
+            ),
+            ("dashboard-setup-cancel", _) if argument.is_empty() => shared.setup.map_or_else(
+                || error_response("the dashboard setup is not available"),
+                SetupJob::cancel,
             ),
             ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
             ("settings-set", Some(s)) => {

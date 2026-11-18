@@ -87,6 +87,24 @@ impl Default for Timing {
     }
 }
 
+/// `lines` joined into messages, each of at most [`input::MESSAGE_LIMIT`] characters when a line
+/// is short enough, and none empty.
+fn pack(lines: &[String]) -> Vec<String> {
+    let mut messages: Vec<String> = Vec::new();
+    for line in lines.iter().filter(|l| !l.trim().is_empty()) {
+        match messages.last_mut() {
+            Some(last)
+                if last.chars().count() + 1 + line.chars().count() <= input::MESSAGE_LIMIT =>
+            {
+                last.push('\n');
+                last.push_str(line);
+            }
+            _ => messages.push(line.clone()),
+        }
+    }
+    messages
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Prompt {
     tool: String,
@@ -356,6 +374,24 @@ impl Manager {
     pub fn status(&self) -> Value {
         self.inner.status()
     }
+
+    /// Sends what the user's own setup found out (one statement to a line) through the same route
+    /// as a prompt, so it is kept as facts: the lines are packed into messages of at most
+    /// [`input::MESSAGE_LIMIT`] characters, and each is sent at once, not queued. `go` is asked
+    /// before each message, and the sending ends when it answers `false`. The route compares what
+    /// it is sent with the facts it holds, so a statement sent again is not stored twice.
+    #[must_use]
+    pub fn remember(&self, lines: &[String], go: &dyn Fn() -> bool) -> Remembered {
+        self.inner.remember(lines, go)
+    }
+}
+
+/// What [`Manager::remember`] did: how many facts the host stored, and why the sending ended
+/// before the last message, when it did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Remembered {
+    pub stored: u64,
+    pub error: Option<String>,
 }
 
 /// Why a prompt did not go out.
@@ -827,6 +863,56 @@ impl Inner {
         Err(Failure::Unavailable(last))
     }
 
+    fn remember(&self, lines: &[String], go: &dyn Fn() -> bool) -> Remembered {
+        let mut done = Remembered::default();
+        if !self.settings.collects(crate::chat::SOURCE) {
+            done.error = Some("collection is off".into());
+            return done;
+        }
+        let Some(connection) = self.link.get() else {
+            done.error = Some("Construct is not running yet".into());
+            return done;
+        };
+        for message in pack(lines) {
+            if !go() {
+                done.error = Some("the sending was stopped".into());
+                break;
+            }
+            match self.say(&connection, &message) {
+                Ok(added) => done.stored += added,
+                Err(reason) => {
+                    done.error = Some(reason);
+                    break;
+                }
+            }
+        }
+        done
+    }
+
+    /// One message to the route, tried up to [`ATTEMPTS`] times when the host did not take it.
+    fn say(&self, connection: &Connection, message: &str) -> Result<u64, String> {
+        let (message, conversation) = input(message, &[]);
+        let body = json!({ "message": message, "conversation": conversation }).to_string();
+        let mut last = String::new();
+        for attempt in 0..ATTEMPTS {
+            match call(connection, &body, self.timing.call) {
+                Reply::Answered(Answer::Stored { added }) => return Ok(added),
+                Reply::Answered(Answer::Nothing) => return Ok(0),
+                Reply::MaybeProcessed => {
+                    return Err("the host did not say whether it stored the facts".into());
+                }
+                Reply::HostRefused(reason) | Reply::PromptRefused(reason) => return Err(reason),
+                Reply::Answered(Answer::Failed(reason)) | Reply::NotDelivered(reason) => {
+                    last = reason;
+                }
+            }
+            if let Some(pause) = self.timing.retry.get(attempt) {
+                std::thread::sleep(*pause);
+            }
+        }
+        Err(last)
+    }
+
     fn take_back(&self, key: u64) {
         let mut journal = lock(&self.journal);
         // Read under the journal lock, which `forget_unsent` also holds while it records the keys:
@@ -922,5 +1008,23 @@ mod tests {
         let journal = lock(&inner.journal);
         assert!(journal.is_done(key));
         assert!(!journal.sent.contains(&key));
+    }
+
+    #[test]
+    fn lines_are_packed_into_messages_within_the_limit_and_empty_ones_are_dropped() {
+        let line = "x".repeat(input::MESSAGE_LIMIT / 2 - 1);
+        let lines = vec![
+            line.clone(),
+            String::new(),
+            line.clone(),
+            "last".to_owned(),
+            "  ".to_owned(),
+        ];
+        let messages = pack(&lines);
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].chars().count() <= input::MESSAGE_LIMIT);
+        assert_eq!(messages[0], format!("{line}\n{line}"));
+        assert_eq!(messages[1], "last");
+        assert!(pack(&[]).is_empty());
     }
 }

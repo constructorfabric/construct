@@ -19,11 +19,15 @@ pub mod bodies;
 #[cfg(unix)]
 pub mod fake_host;
 #[cfg(unix)]
+pub mod hold;
+#[cfg(unix)]
 pub mod pg_stand;
 #[cfg(unix)]
 pub mod scripted;
 #[cfg(unix)]
 pub mod sessions;
+#[cfg(unix)]
+pub mod setup_rig;
 #[cfg(unix)]
 pub mod stand;
 
