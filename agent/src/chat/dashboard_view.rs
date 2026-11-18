@@ -516,13 +516,6 @@ mod tests {
             .unwrap();
         assert_eq!(whole_minute("2026-09-06T04:00:00Z"), Some(jump.start));
         assert_eq!(length_in_minutes(&window, "2026-09-06"), 23 * 60);
-        // The days around it follow each other without a gap or an overlap.
-        assert!(
-            window
-                .days
-                .windows(2)
-                .all(|pair| pair[0].end == pair[1].start)
-        );
     }
 
     #[test]

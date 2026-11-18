@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 mod common;
 
-use common::sessions::{at, run, session};
+use common::sessions::{at, fixture, run, session};
 use construct_agent::activity::assign;
 use construct_agent::activity::rules::{
     Day, Grouping, Kind, PARTS_PER_MINUTE, SessionMinutes, calculate, calculate_named,
@@ -36,43 +36,6 @@ fn days_json() -> Value {
         { "label": "2026-11-10", "start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z" },
         { "label": "2026-11-11", "start": "2026-11-11T00:00:00Z", "end": "2026-11-12T00:00:00Z" },
     ])
-}
-
-/// Sessions in three projects over the three days. `/w/shop` and `/w/blog` overlap in time on the
-/// 10th; `/w/lab` is a script's.
-fn fixture() -> Vec<SessionMinutes> {
-    let mut lab = session(
-        "claude",
-        "lab",
-        "/w/lab",
-        "LAB-1",
-        &run(at("2026-11-10T09:00"), 30),
-    );
-    lab.unattended = true;
-    vec![
-        session(
-            "claude",
-            "shop-1",
-            "/w/shop",
-            "SHOP-7",
-            &run(at("2026-11-09T09:00"), 40),
-        ),
-        session(
-            "claude",
-            "shop-2",
-            "/w/shop",
-            "SHOP-7",
-            &run(at("2026-11-10T10:00"), 20),
-        ),
-        session(
-            "codex",
-            "blog-1",
-            "/w/blog",
-            "",
-            &run(at("2026-11-10T10:10"), 30),
-        ),
-        lab,
-    ]
 }
 
 /// A request for `widget`, with the days of [`week`].

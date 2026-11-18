@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use chrono::TimeZone;
-use construct_agent::activity::rules::SessionMinutes;
 use construct_agent::chat::Chat;
 use construct_agent::chat::dashboard_view::{self, Calendar};
 use construct_agent::chat::tool::ChatTools;
@@ -27,7 +26,7 @@ use time::OffsetDateTime;
 mod common;
 
 use common::scripted::{Turn, provider};
-use common::sessions::{at, run, session};
+use common::sessions::{at, fixture};
 use common::stand::{connect, deadlines};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
@@ -41,43 +40,6 @@ struct Stand {
     socket: PathBuf,
     bodies: Arc<Mutex<Vec<String>>>,
     _rt: tokio::runtime::Runtime,
-}
-
-/// Sessions in three projects over the 9th to the 11th of November 2026: `/w/shop` and `/w/blog`
-/// overlap in time on the 10th, and `/w/lab` is a script's.
-fn fixture() -> Vec<SessionMinutes> {
-    let mut lab = session(
-        "claude",
-        "lab",
-        "/w/lab",
-        "LAB-1",
-        &run(at("2026-11-10T09:00"), 30),
-    );
-    lab.unattended = true;
-    vec![
-        session(
-            "claude",
-            "shop-1",
-            "/w/shop",
-            "SHOP-7",
-            &run(at("2026-11-09T09:00"), 40),
-        ),
-        session(
-            "claude",
-            "shop-2",
-            "/w/shop",
-            "SHOP-7",
-            &run(at("2026-11-10T10:00"), 20),
-        ),
-        session(
-            "codex",
-            "blog-1",
-            "/w/blog",
-            "",
-            &run(at("2026-11-10T10:10"), 30),
-        ),
-        lab,
-    ]
 }
 
 /// `count` days from `from` (a UTC date), as a calendar gives them: the labels are the dates and
