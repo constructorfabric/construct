@@ -67,7 +67,7 @@ export type DashboardResult =
 export type WidgetKind = 'total' | 'bars_per_day' | 'table' | 'day_summary';
 
 /** What a table groups the time by. */
-export type GroupBy = 'project' | 'ticket' | 'tool' | 'day';
+export type GroupBy = 'project' | 'ticket' | 'tool' | 'collection' | 'day';
 
 /** The period a widget covers. */
 export type Period =
@@ -360,7 +360,7 @@ const periods: readonly Period[] = [
   'last_30_days',
 ];
 const kinds: readonly WidgetKind[] = ['total', 'bars_per_day', 'table', 'day_summary'];
-const groupings: readonly GroupBy[] = ['project', 'ticket', 'tool', 'day'];
+const groupings: readonly GroupBy[] = ['project', 'ticket', 'tool', 'collection', 'day'];
 
 function oneOf<T extends string>(values: readonly T[], value: unknown, what: string): T {
   const found = values.find((candidate) => candidate === value);

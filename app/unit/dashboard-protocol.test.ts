@@ -174,6 +174,18 @@ describe('parseDocumentReply', () => {
     },
   };
 
+  it('reads a table grouped by the groups the setup found', () => {
+    const grouped = {
+      ...document,
+      payload: {
+        ...document.payload,
+        widgets: [{ ...document.payload.widgets[0], group_by: 'collection' }],
+      },
+    };
+    const reply = parseDocumentReply(JSON.stringify({ document: grouped }));
+    expect(reply).toMatchObject({ ok: true, document: { widgets: [{ groupBy: 'collection' }] } });
+  });
+
   it('keeps what the page draws of the document', () => {
     expect(parseDocumentReply(JSON.stringify({ document }))).toEqual({
       ok: true,
