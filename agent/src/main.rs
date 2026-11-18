@@ -311,7 +311,8 @@ fn with_chat(
     }
 }
 
-/// `chat` with the file tools over the workspace folder in `dir`. Without the folder the chat has
+/// `chat` with the file tools over the workspace folder in `dir`, and the sub-agent tool after them.
+/// Without the folder the chat has
 /// no tools, and the reason (never a path) is logged.
 #[cfg(unix)]
 fn with_file_tools(
@@ -326,7 +327,9 @@ fn with_file_tools(
             return chat;
         }
     };
-    match ChatTools::new(construct_agent::chat::files::file_tools(&workspace)) {
+    let mut tools = construct_agent::chat::files::file_tools(&workspace);
+    tools.push(construct_agent::chat::subagent::tool());
+    match ChatTools::new(tools) {
         Ok(tools) => chat.with_tools(tools),
         Err(e) => {
             eprintln!("file tools unavailable: {e}");

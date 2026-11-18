@@ -14,6 +14,11 @@
 //! [`Chat::with_tools`]): a fixed list, offered to the model in every request; a call to a name
 //! that is not in it is answered with an error text. A result is cut at 64 KiB, note included.
 //!
+//! The list may hold the `run_subagent` tool (see [`subagent`]): a call to it runs a second,
+//! separate conversation of the same model inside the call, with the other tools of the list. The
+//! bytes sent to the provider and received from it by an answer, sub-agents included, are counted
+//! and reported once the answer ends (see [`Chat::with_usage`]).
+//!
 //! The request body is written from typed structs in a fixed field order, never through a
 //! `serde_json::Value` (it sorts keys), with tool-call arguments as the stored text, so a request
 //! starts with the bytes of the one before it and the provider's prompt cache can use that.
@@ -48,10 +53,14 @@ use crate::sync::lock;
 
 pub mod files;
 mod recall;
+pub mod subagent;
 pub mod tool;
+mod usage;
 mod wire;
 
 use tool::{ChatTools, limited};
+use usage::Counter;
+pub use usage::Usage;
 use wire::{Calls, Chunk, PendingCall, WireCap, into_http, request_body};
 
 /// The source the conversations belong to.
@@ -102,6 +111,38 @@ impl Piece<'_> {
         }
         .to_string()
     }
+}
+
+/// What the requests of one answer share: the model, the stop and the count of bytes.
+#[derive(Clone, Copy)]
+struct Run<'a> {
+    target: &'a Target,
+    cancel: &'a CancellationToken,
+    usage: &'a Counter,
+}
+
+/// The calls of a turn as records of `session`. A call with no id gets one, and one with no
+/// arguments is sent back as an empty object, as providers expect.
+fn tool_calls(calls: Vec<PendingCall>, session: &str) -> Vec<ToolCall> {
+    calls
+        .into_iter()
+        .map(|call| ToolCall {
+            tool: SOURCE.into(),
+            session: session.into(),
+            time: String::new(),
+            call_id: if call.id.is_empty() {
+                format!("call_{}", Uuid::new_v4().simple())
+            } else {
+                call.id
+            },
+            name: call.name,
+            arguments: if call.arguments.is_empty() {
+                "{}".into()
+            } else {
+                call.arguments
+            },
+        })
+        .collect()
 }
 
 /// The limits on the wait for the provider.
@@ -190,6 +231,9 @@ struct Inner {
     wire_limit: usize,
     link: Link,
     tools: ChatTools,
+    /// The tools a sub-agent has: the list without the sub-agent tool.
+    sub_tools: ChatTools,
+    usage: Option<Arc<dyn Fn(Usage) + Send + Sync>>,
     running: Mutex<Option<Running>>,
 }
 
@@ -248,6 +292,8 @@ impl Chat {
                 wire_limit: WIRE_LIMIT,
                 link: Link::default(),
                 tools: ChatTools::default(),
+                sub_tools: ChatTools::default(),
+                usage: None,
                 running: Mutex::new(None),
             }),
         })
@@ -310,7 +356,18 @@ impl Chat {
     #[must_use]
     pub fn with_tools(mut self, tools: ChatTools) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.sub_tools = tools.without(subagent::NAME);
             inner.tools = tools;
+        }
+        self
+    }
+
+    /// Tell `report` the bytes an answer sent and received once it ends, a stopped or failed one
+    /// too, with those of its sub-agents counted in. Call it before the chat is cloned.
+    #[must_use]
+    pub fn with_usage(mut self, report: impl Fn(Usage) + Send + Sync + 'static) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.usage = Some(Arc::new(report));
         }
         self
     }
@@ -408,16 +465,24 @@ impl Chat {
             out(&event_error("cannot read"));
             return;
         };
+        let usage = Counter::default();
         let end = self
             .answer(
-                &target,
+                Run {
+                    target: &target,
+                    cancel: &cancel,
+                    usage: &usage,
+                },
                 &conversation,
                 records,
-                &cancel,
                 &mut last,
                 &mut |piece| out(&piece.event()),
             )
             .await;
+        let usage = usage.total();
+        if let Some(report) = &inner.usage {
+            report(usage);
+        }
         // Everything is stored before the last line is written, so a client that has seen the end
         // can read the whole conversation back.
         let line = match end {
@@ -426,7 +491,10 @@ impl Chat {
             End::Failed(f) => event_error(&f.reason()),
         };
         // The line only says how it ended: never the text, never what the provider said.
-        eprintln!("chat: answer ended: {line}");
+        eprintln!(
+            "chat: answer ended: {line}, sent {} bytes, received {} bytes",
+            usage.sent, usage.received
+        );
         // Free the slot before the last line: a client that sends again on seeing it must not
         // meet `busy`.
         drop(slot);
@@ -515,22 +583,28 @@ impl Chat {
     /// client is gone.
     async fn answer(
         &self,
-        target: &Target,
+        run: Run<'_>,
         conversation: &str,
         mut records: Vec<Record>,
-        cancel: &CancellationToken,
         last: &mut Option<i64>,
         emit: &mut dyn FnMut(Piece<'_>) -> bool,
     ) -> End {
+        let Run {
+            target,
+            cancel,
+            usage,
+        } = run;
         loop {
             let Ok(body) = request_body(&target.model, &records, self.inner.tools.listing()) else {
                 return End::Failed(Failure::Internal);
             };
+            usage.sent(body.len());
             let mut text = String::new();
             let mut calls = Calls::default();
             let end = self
                 .stream_answer(target, body, cancel, &mut text, &mut calls, emit)
                 .await;
+            usage.received(text.len());
             if !text.is_empty() && self.store_text(conversation, last, text).is_err() {
                 return End::Failed(Failure::CannotSave);
             }
@@ -545,10 +619,8 @@ impl Chat {
             if calls.iter().any(|call| call.name.is_empty()) {
                 return End::Failed(Failure::Cut);
             }
-            if let Err(end) = self
-                .run_calls(conversation, calls, cancel, last, emit)
-                .await
-            {
+            usage.calls(&calls);
+            if let Err(end) = self.run_calls(&run, conversation, calls, last, emit).await {
                 return end;
             }
             records = match self.read(conversation) {
@@ -582,32 +654,14 @@ impl Chat {
     /// client is told of each call as it starts, except the facts call, which the window never shows.
     async fn run_calls(
         &self,
+        run: &Run<'_>,
         conversation: &str,
         calls: Vec<PendingCall>,
-        cancel: &CancellationToken,
         last: &mut Option<i64>,
         emit: &mut dyn FnMut(Piece<'_>) -> bool,
     ) -> Result<(), End> {
-        let calls: Vec<ToolCall> = calls
-            .into_iter()
-            .map(|call| ToolCall {
-                tool: SOURCE.into(),
-                session: conversation.into(),
-                time: String::new(),
-                call_id: if call.id.is_empty() {
-                    format!("call_{}", Uuid::new_v4().simple())
-                } else {
-                    call.id
-                },
-                name: call.name,
-                // A call with no arguments is sent back as an empty object, as providers expect.
-                arguments: if call.arguments.is_empty() {
-                    "{}".into()
-                } else {
-                    call.arguments
-                },
-            })
-            .collect();
+        let cancel = run.cancel;
+        let calls = tool_calls(calls, conversation);
         for call in &calls {
             let call = ToolCall {
                 time: next_time(last),
@@ -627,12 +681,14 @@ impl Chat {
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => None,
-                    result = self.run_tool(&call.name, &call.arguments) => Some(result),
+                    result = self.run_call(run, call, emit) => Some(result),
                 }
             } else {
                 None
             };
-            let Some(result) = outcome else {
+            // A sub-agent that found the client gone has cancelled the answer: the call is stopped
+            // even though it returned.
+            let Some(result) = outcome.filter(|_| !cancel.is_cancelled()) else {
                 // A stop answers this call and every call after it.
                 for call in &calls[done..] {
                     self.store_result(conversation, last, &call.call_id, STOPPED_RESULT)
@@ -663,9 +719,29 @@ impl Chat {
         }))
     }
 
-    /// One tool call, on a thread of its own so that a stop does not wait for it.
-    async fn run_tool(&self, name: &str, arguments: &str) -> Result<String, String> {
-        let Some(tool) = self.inner.tools.find(name) else {
+    /// One call of the answer: the sub-agent tool, when the list has it, runs here in the chat;
+    /// any other tool runs on a thread of its own.
+    async fn run_call(
+        &self,
+        run: &Run<'_>,
+        call: &ToolCall,
+        emit: &mut dyn FnMut(Piece<'_>) -> bool,
+    ) -> Result<String, String> {
+        if call.name == subagent::NAME && self.inner.tools.find(subagent::NAME).is_some() {
+            return self.run_subagent(run, &call.arguments, emit).await;
+        }
+        self.run_tool(&self.inner.tools, &call.name, &call.arguments)
+            .await
+    }
+
+    /// One tool call of `tools`, on a thread of its own so that a stop does not wait for it.
+    async fn run_tool(
+        &self,
+        tools: &ChatTools,
+        name: &str,
+        arguments: &str,
+    ) -> Result<String, String> {
+        let Some(tool) = tools.find(name) else {
             return Err(format!("unknown tool {name}"));
         };
         let arguments = arguments.to_string();
