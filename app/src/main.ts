@@ -29,7 +29,11 @@ import {
   CHAT_STOP_CHANNEL,
 } from './chat-protocol';
 import { createDashboardHandlers } from './dashboard-calls';
-import { DASHBOARD_DOCUMENT_CHANNEL, DASHBOARD_NUMBERS_CHANNEL } from './dashboard-protocol';
+import {
+  DASHBOARD_DOCUMENT_CHANNEL,
+  DASHBOARD_NUMBERS_CHANNEL,
+  DASHBOARD_PROJECT_CHANNEL,
+} from './dashboard-protocol';
 import { createLinkHandler } from './external-calls';
 import { OPEN_LINK_CHANNEL } from './external';
 import { offerMoveToApplications } from './move-to-applications';
@@ -180,6 +184,9 @@ function startApp(): void {
     const dashboard = createDashboardHandlers({ env: process.env, platform: process.platform });
     ipcMain.handle(DASHBOARD_NUMBERS_CHANNEL, (_event, input: unknown) => dashboard.numbers(input));
     ipcMain.handle(DASHBOARD_DOCUMENT_CHANNEL, () => dashboard.document());
+    ipcMain.handle(DASHBOARD_PROJECT_CHANNEL, (_event, change: unknown) =>
+      dashboard.project(change),
+    );
     // The window never opens a page itself: a link of an answer comes here, and only a web address
     // goes on to the system browser.
     const openLink = createLinkHandler((address) => shell.openExternal(address));

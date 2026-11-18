@@ -28,7 +28,14 @@ export async function screenshotInTheme(
             a.timeline instanceof DocumentTimeline &&
             Number.isFinite(a.effect?.getComputedTiming().endTime),
         )
-        .map((a) => a.finished),
+        // A transition the page replaces while it runs ends by being cancelled: that is an end too.
+        .map((a) =>
+          a.finished.catch((error: unknown) => {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) {
+              throw error;
+            }
+          }),
+        ),
     ),
   );
   await page.screenshot({ path: path.join(screenshotDir, `${name}-${scheme}.png`) });

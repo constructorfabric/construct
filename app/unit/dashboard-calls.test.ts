@@ -51,6 +51,7 @@ describe('the dashboard handlers', () => {
         sessionCount: 1,
         days: [{ label: '2026-11-16', minutes: 30 }],
         groups: [],
+        hiddenProjects: 0,
       });
       expect(lines).toEqual([
         `dashboard-numbers ${JSON.stringify({ days: [day], sessions: 'unattended' })}`,
@@ -105,5 +106,54 @@ describe('the dashboard handlers', () => {
     });
     const result = await handlers.numbers({ days: [day], sessions: 'own' });
     expect(result).toEqual({ ok: false, error: 'the agent is not running' });
+  });
+
+  it('send a project change as its command and give the document the agent answers', async () => {
+    const document = {
+      type: 'a type',
+      title: 'Activity',
+      payload: {
+        period: 'today',
+        sessions: 'own',
+        widgets: [],
+        hidden_projects: ['billing'],
+        project_names: {},
+      },
+    };
+    await withFakeAgent(JSON.stringify({ document }), async (handlers, lines) => {
+      const result = await handlers.project({ action: 'hide', project: 'billing' });
+      expect(result).toEqual({
+        ok: true,
+        problem: null,
+        document: {
+          title: 'Activity',
+          period: 'today',
+          sessions: 'own',
+          widgets: [],
+          hiddenProjects: ['billing'],
+          projectNames: {},
+        },
+      });
+      expect(lines).toEqual(['dashboard-hide {"project":"billing"}']);
+    });
+  });
+
+  it('give the error of the agent for a change it refuses', async () => {
+    await withFakeAgent('{"error":"the dashboard is not available"}', async (handlers) => {
+      expect(await handlers.project({ action: 'show', project: 'billing' })).toEqual({
+        ok: false,
+        error: 'the dashboard is not available',
+      });
+    });
+  });
+
+  it('refuse a change the app does not accept, without calling the agent', async () => {
+    await withFakeAgent('{}', async (handlers, lines) => {
+      expect(await handlers.project({ action: 'rename', project: 'a' })).toEqual({
+        ok: false,
+        error: 'the window sent a project change in a form the app does not accept',
+      });
+      expect(lines).toEqual([]);
+    });
   });
 });

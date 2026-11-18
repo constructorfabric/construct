@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   DashboardDocument,
   DashboardResult,
   DocumentProblem,
+  ProjectChange,
   Widget,
 } from '../dashboard-protocol';
 import { dayLabel, periodDays } from './dashboard-period';
@@ -82,28 +83,86 @@ async function widgetNumbers(
   return { ok: true, numbers: all, split };
 }
 
+export interface DashboardControls {
+  readonly state: DashboardState;
+  /**
+   * Writes the changes to the document, one at a time and in the order asked, and shows the
+   * document the agent answers. A change the agent refuses stops the rest of its list.
+   */
+  readonly change: (changes: readonly ProjectChange[]) => Promise<boolean>;
+  /** Why the last change was not made, until the next change or `dismissFailure`. */
+  readonly failure: string | null;
+  readonly dismissFailure: () => void;
+}
+
+function lostAgent(error: unknown): string {
+  return error instanceof Error ? error.message : 'the window lost the agent';
+}
+
 /**
  * The dashboard document with the numbers of each of its widgets, counted from `anchor`, which
  * stands for today. The agent watches the file, so the page asks again every few seconds and
  * reads the numbers again when the document, or the day, changes.
  */
-export function useDashboard(anchor: Date): DashboardState {
+export function useDashboard(anchor: Date): DashboardControls {
   const [file, setFile] = useState<File | { readonly error: string } | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  // What the page last took from the agent.
+  const last = useRef('');
+  // Goes up when a change starts and again when it ends: a look that began before either would
+  // bring back the document as it was, so its answer is dropped.
+  const generation = useRef(0);
+  // Changes are written one at a time: two at once could have their answers cross.
+  const queue = useRef<Promise<boolean>>(Promise.resolve(true));
+  const write = useCallback(async (list: readonly ProjectChange[]): Promise<boolean> => {
+    generation.current += 1;
+    setFailure(null);
+    try {
+      for (const one of list) {
+        const result = await window.constructAgent.changeDashboardProject(one);
+        if (!result.ok) {
+          setFailure(result.error);
+          return false;
+        }
+        last.current = JSON.stringify({ document: result.document, problem: result.problem });
+        setFile({ document: result.document, problem: result.problem });
+      }
+      return true;
+    } catch (error) {
+      setFailure(lostAgent(error));
+      return false;
+    } finally {
+      generation.current += 1;
+    }
+  }, []);
+  const change = useCallback(
+    (list: readonly ProjectChange[]): Promise<boolean> => {
+      queue.current = queue.current.then(() => write(list));
+      return queue.current;
+    },
+    [write],
+  );
+  const dismissFailure = useCallback(() => {
+    setFailure(null);
+  }, []);
   useEffect(() => {
     let cancelled = false;
-    let last = '';
     let hasDocument = false;
     const accept = (next: File | { readonly error: string }): void => {
       const text = JSON.stringify(next);
-      if (!cancelled && text !== last) {
-        last = text;
+      if (!cancelled && text !== last.current) {
+        last.current = text;
         hasDocument = 'document' in next && next.document !== null;
         setFile(next);
       }
     };
     const look = (): void => {
+      const began = generation.current;
       window.constructAgent.getDashboardDocument().then(
         (result) => {
+          if (began !== generation.current) {
+            return;
+          }
           // A failed look keeps the last good document, which the next look may confirm.
           if (result.ok) {
             accept({ document: result.document, problem: result.problem });
@@ -112,8 +171,8 @@ export function useDashboard(anchor: Date): DashboardState {
           }
         },
         (error: unknown) => {
-          if (!hasDocument) {
-            accept({ error: error instanceof Error ? error.message : 'the window lost the agent' });
+          if (began === generation.current && !hasDocument) {
+            accept({ error: lostAgent(error) });
           }
         },
       );
@@ -129,8 +188,12 @@ export function useDashboard(anchor: Date): DashboardState {
   const document = file !== null && 'document' in file ? file.document : null;
   // The problem of the file is not a reason to count again: the document is the same.
   const key = `${dayLabel(anchor)}|${JSON.stringify(document)}`;
+  // The same document and day but for the hidden projects and the names: only the numbers change.
+  const shape = `${dayLabel(anchor)}|${JSON.stringify(
+    document === null ? null : { ...document, hiddenProjects: [], projectNames: {} },
+  )}`;
   const [loaded, setLoaded] = useState<{
-    key: string;
+    shape: string;
     numbers: ReadonlyMap<string, WidgetNumbers>;
     collecting: boolean;
     failure: string | null;
@@ -161,7 +224,7 @@ export function useDashboard(anchor: Date): DashboardState {
           }
           // Without the settings the page cannot say whether collection is on.
           setLoaded({
-            key,
+            shape,
             numbers: new Map(entries),
             collecting: settings.ok && settings.collection.enabled,
             failure: settings.ok ? null : settings.error,
@@ -170,10 +233,10 @@ export function useDashboard(anchor: Date): DashboardState {
         (error: unknown) => {
           if (!cancelled) {
             setLoaded({
-              key,
+              shape,
               numbers: new Map(),
               collecting: true,
-              failure: error instanceof Error ? error.message : 'the window lost the agent',
+              failure: lostAgent(error),
             });
           }
         },
@@ -187,26 +250,37 @@ export function useDashboard(anchor: Date): DashboardState {
     // `key` stands for the document and the day: the same ones are not read again.
   }, [key]);
 
-  if (file === null) {
-    return { kind: 'reading' };
-  }
-  if ('error' in file) {
-    return { kind: 'failed', reason: file.error };
-  }
-  if (document === null) {
-    return { kind: 'ready', document, problem: file.problem, numbers: new Map(), collecting: true };
-  }
-  if (loaded?.key !== key) {
-    return { kind: 'reading' };
-  }
-  if (loaded.failure !== null) {
-    return { kind: 'failed', reason: loaded.failure };
-  }
-  return {
-    kind: 'ready',
-    document,
-    problem: file.problem,
-    numbers: loaded.numbers,
-    collecting: loaded.collecting,
-  };
+  const state = ((): DashboardState => {
+    if (file === null) {
+      return { kind: 'reading' };
+    }
+    if ('error' in file) {
+      return { kind: 'failed', reason: file.error };
+    }
+    if (document === null) {
+      return {
+        kind: 'ready',
+        document,
+        problem: file.problem,
+        numbers: new Map(),
+        collecting: true,
+      };
+    }
+    // Numbers of the same page, counted before a project was hidden or renamed, stay on show
+    // until the new ones come: the rows do not vanish under the user's hands.
+    if (loaded?.shape !== shape) {
+      return { kind: 'reading' };
+    }
+    if (loaded.failure !== null) {
+      return { kind: 'failed', reason: loaded.failure };
+    }
+    return {
+      kind: 'ready',
+      document,
+      problem: file.problem,
+      numbers: loaded.numbers,
+      collecting: loaded.collecting,
+    };
+  })();
+  return { state, change, failure, dismissFailure };
 }

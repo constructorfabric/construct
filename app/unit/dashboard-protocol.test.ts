@@ -6,6 +6,8 @@ import {
   parseDashboardInput,
   parseDashboardReply,
   parseDocumentReply,
+  parseProjectChange,
+  projectChangeLine,
   readingHistoryError,
 } from '../src/dashboard-protocol';
 
@@ -94,7 +96,19 @@ describe('parseDashboardReply', () => {
       sessionCount: 3,
       days: [{ label: '2026-11-16', minutes: 95.5 }],
       groups: [{ key: 'a project', minutes: 95.5, share: 1, sessions: 3 }],
+      hiddenProjects: 0,
     });
+  });
+
+  it('keeps how many hidden projects have time in the days', () => {
+    const reply = JSON.stringify({
+      total_minutes: 0,
+      session_count: 0,
+      hidden_project_count: 2,
+      groups: [],
+      days: [],
+    });
+    expect(parseDashboardReply(reply)).toMatchObject({ ok: true, hiddenProjects: 2 });
   });
 
   it('gives the text of an error', () => {
@@ -119,12 +133,20 @@ describe('parseDashboardReply', () => {
   });
 
   it('throws on a reply that has no numbers', () => {
+    // The count of hidden projects is part of the numbers: a reply without it is not accepted.
+    expect(() =>
+      parseDashboardReply('{"total_minutes":1,"session_count":1,"days":[],"groups":[]}'),
+    ).toThrow('no numbers');
     expect(() => parseDashboardReply('{"status":"running"}')).toThrow('no numbers');
     expect(() =>
-      parseDashboardReply('{"total_minutes":1,"session_count":1,"days":[{}],"groups":[]}'),
+      parseDashboardReply(
+        '{"total_minutes":1,"session_count":1,"hidden_project_count":0,"days":[{}],"groups":[]}',
+      ),
     ).toThrow('a day');
     expect(() =>
-      parseDashboardReply('{"total_minutes":1,"session_count":1,"days":[],"groups":[{"key":"a"}]}'),
+      parseDashboardReply(
+        '{"total_minutes":1,"session_count":1,"hidden_project_count":0,"days":[],"groups":[{"key":"a"}]}',
+      ),
     ).toThrow('a group');
   });
 });
@@ -147,8 +169,8 @@ describe('parseDocumentReply', () => {
           position: { column: 0, row: 6, width: 6, height: 5 },
         },
       ],
-      hidden_projects: [],
-      project_names: {},
+      hidden_projects: ['scratch'],
+      project_names: { '/home/me/billing': 'Billing' },
     },
   };
 
@@ -160,6 +182,8 @@ describe('parseDocumentReply', () => {
         title: 'Activity',
         period: 'this_week',
         sessions: 'own',
+        hiddenProjects: ['scratch'],
+        projectNames: { '/home/me/billing': 'Billing' },
         widgets: [
           {
             id: 'by-project',
@@ -240,6 +264,8 @@ describe('parseDocumentReply', () => {
           period: 'today',
           sessions: 'own',
           widgets: [{ id: 'a', kind: 'total', position: place, ...widget }],
+          hidden_projects: [],
+          project_names: {},
         },
       },
     });
@@ -273,11 +299,80 @@ describe('parseDocumentReply', () => {
       'no widgets',
     ],
     [
+      'hidden projects that are not a list of names',
+      JSON.stringify({
+        document: {
+          title: 't',
+          payload: { period: 'today', sessions: 'own', widgets: [], hidden_projects: [1] },
+        },
+      }),
+      'hidden projects',
+    ],
+    [
+      'project names that are not names',
+      JSON.stringify({
+        document: {
+          title: 't',
+          payload: {
+            period: 'today',
+            sessions: 'own',
+            widgets: [],
+            hidden_projects: [],
+            project_names: { a: 1 },
+          },
+        },
+      }),
+      'project names',
+    ],
+    [
       'a title that is not text',
       JSON.stringify({ document: { title: 7, payload: { widgets: [] } } }),
       'a title',
     ],
   ])('refuses %s', (_name, reply, message) => {
     expect(() => parseDocumentReply(reply)).toThrow(message);
+  });
+});
+
+describe('parseProjectChange', () => {
+  it('takes a project to hide or show, and a project with the name to show for a rename', () => {
+    expect(parseProjectChange({ action: 'hide', project: 'billing' })).toEqual({
+      action: 'hide',
+      project: 'billing',
+    });
+    expect(parseProjectChange({ action: 'show', project: 'billing' })).toEqual({
+      action: 'show',
+      project: 'billing',
+    });
+    expect(
+      parseProjectChange({ action: 'rename', project: 'billing', name: ' Invoices ' }),
+    ).toEqual({ action: 'rename', project: 'billing', name: 'Invoices' });
+  });
+
+  it.each([
+    ['not an object', 'hide'],
+    ['an action it does not know', { action: 'delete', project: 'a' }],
+    ['an empty project', { action: 'hide', project: '  ' }],
+    ['a project that is not text', { action: 'hide', project: 7 }],
+    ['a name for a hide', { action: 'hide', project: 'a', name: 'b' }],
+    ['no name for a rename', { action: 'rename', project: 'a' }],
+    ['an empty name', { action: 'rename', project: 'a', name: ' ' }],
+    ['a member of its own', { action: 'hide', project: 'a', extra: 1 }],
+    ['a project that is too long', { action: 'hide', project: 'a'.repeat(513) }],
+    ['a name that is too long', { action: 'rename', project: 'a', name: 'b'.repeat(513) }],
+  ])('refuses %s', (_name, value) => {
+    expect(parseProjectChange(value)).toBeNull();
+  });
+
+  it('writes the line of the socket command', () => {
+    expect(projectChangeLine({ action: 'hide', project: 'a b' })).toBe(
+      'dashboard-hide {"project":"a b"}',
+    );
+    expect(projectChangeLine({ action: 'show', project: 'a' })).toBe(
+      'dashboard-show {"project":"a"}',
+    );
+    expect(projectChangeLine({ action: 'rename', project: 'a', name: 'B' })).toBe(
+      'dashboard-rename {"project":"a","name":"B"}',
+    );
   });
 });
