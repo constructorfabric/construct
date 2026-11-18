@@ -1815,3 +1815,52 @@ fn the_facts_call_gives_neither_an_event_nor_a_line() {
     );
     assert!(entries.iter().all(|e| e["role"] != "tool"), "{entries:?}");
 }
+
+/// What the API answers to function tools next to a reasoning effort on `/chat/completions`.
+const TOOLS_WITH_REASONING: &str = r#"{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","type":"invalid_request_error","param":"reasoning_effort","code":null}}"#;
+
+#[test]
+fn a_refusal_of_tools_with_reasoning_is_asked_again_with_none_and_the_next_turn_keeps_it() {
+    let answers = turns(vec![
+        whole_call("call_a", "lookup", r#"{"q":"blue door"}"#),
+        vec![text_chunk("The answer"), finish("stop")],
+    ]);
+    let fake = Fake::start(Arc::new(move |n, s| {
+        if n == 0 {
+            status(s, 400, TOOLS_WITH_REASONING);
+        } else {
+            answers(n - 1, s);
+        }
+    }));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let env = Env::with_tools("tools-with-reasoning", &fake.url(), noting(&seen));
+    let events = env.send("", MESSAGE).rest();
+    let (_, text, last) = summary(&events);
+    assert_eq!(last, json!({ "event": "done" }), "{events:?}");
+    assert_eq!(text, "The answer");
+
+    // The refused request is sent again with `none`, and so is the next turn of the answer.
+    let bodies: Vec<Value> = fake
+        .bodies()
+        .iter()
+        .map(|body| serde_json::from_str(body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 3);
+    assert!(bodies[0].get("reasoning_effort").is_none());
+    assert_eq!(bodies[1]["reasoning_effort"], "none");
+    assert_eq!(bodies[2]["reasoning_effort"], "none");
+    assert_eq!(bodies[1]["stream"], true);
+}
+
+#[test]
+fn a_refusal_of_tools_with_reasoning_that_none_does_not_cure_is_an_error_400() {
+    let fake = Fake::start(Arc::new(|_, s| status(s, 400, TOOLS_WITH_REASONING)));
+    let env = Env::with_tools(
+        "tools-with-reasoning-stays",
+        &fake.url(),
+        noting(&Arc::default()),
+    );
+    let events = env.send("", MESSAGE).rest();
+    assert_eq!(reason(&events), "error 400");
+    assert_eq!(fake.bodies().len(), 2);
+}

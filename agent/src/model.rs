@@ -120,6 +120,51 @@ impl Target {
     }
 }
 
+/// The models (address and name) the API refused function tools for next to a reasoning effort.
+/// A request with tools to one of them carries `reasoning_effort: "none"` from then on, so the
+/// refusal costs one extra request per model and run.
+static TOOLS_WITHOUT_REASONING: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+impl Target {
+    /// `body` with `reasoning_effort: "none"` when this model refused tools next to a reasoning
+    /// effort before; `None` when the body goes out as it is.
+    pub(crate) fn prepared(&self, body: &[u8]) -> Option<Vec<u8>> {
+        let known = crate::sync::lock(&TOOLS_WITHOUT_REASONING)
+            .iter()
+            .any(|(url, model)| *url == self.base_url && *model == self.model);
+        if known { without_reasoning(body) } else { None }
+    }
+
+    /// Note that this model refused tools next to a reasoning effort.
+    pub(crate) fn refused_tools_with_reasoning(&self) {
+        let mut known = crate::sync::lock(&TOOLS_WITHOUT_REASONING);
+        let entry = (self.base_url.clone(), self.model.clone());
+        if !known.contains(&entry) {
+            known.push(entry);
+        }
+    }
+}
+
+/// Whether the API answered that function tools and a reasoning effort do not go together (the
+/// newer models do this in `/chat/completions`, and accept the tools with `none`).
+pub(crate) fn refuses_tools_with_reasoning(status: u16, answer: &[u8]) -> bool {
+    status == StatusCode::BAD_REQUEST.as_u16() && {
+        let answer = String::from_utf8_lossy(answer);
+        answer.contains("tools") && answer.contains("reasoning_effort")
+    }
+}
+
+/// `body` with `reasoning_effort: "none"`; `None` for a request without tools, which that
+/// refusal is not about, and for a body that is not a JSON object.
+pub(crate) fn without_reasoning(body: &[u8]) -> Option<Vec<u8>> {
+    let Ok(serde_json::Value::Object(mut map)) = serde_json::from_slice(body) else {
+        return None;
+    };
+    map.get("tools")?;
+    map.insert("reasoning_effort".into(), "none".into());
+    serde_json::to_vec(&map).ok()
+}
+
 /// What the agent knows of its model, shown in `status` as `model_state`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelHealth {
@@ -378,12 +423,26 @@ impl ServiceGatewayClientV1 for ModelGateway {
             eprintln!("model: not configured, set the address, the model and the key in Settings");
             return Err(CanonicalError::service_unavailable().create());
         };
-        let body = with_model(body, &target.model);
+        let mut body = with_model(body, &target.model);
+        if let Some(plain) = target.prepared(&body) {
+            body = Bytes::from(plain);
+        }
 
         let mut last = None;
+        let mut retried_without_reasoning = false;
         for attempt in 1..=ATTEMPTS {
             match self.attempt(&target, &body).await {
                 Ok((status, answer)) if !is_transient(status) => {
+                    // The body is only searched here, and the request goes again without it.
+                    if !retried_without_reasoning
+                        && refuses_tools_with_reasoning(status.as_u16(), &answer)
+                        && let Some(plain) = without_reasoning(&body)
+                    {
+                        target.refused_tools_with_reasoning();
+                        body = Bytes::from(plain);
+                        retried_without_reasoning = true;
+                        continue;
+                    }
                     // The status only: the body of an error may quote the request.
                     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
                         // Not retried: the key stays as wrong as it was. The user is told in
