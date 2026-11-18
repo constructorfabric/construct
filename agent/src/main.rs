@@ -106,15 +106,26 @@ fn run() -> std::io::Result<()> {
         .with_activity(activity.clone())
         .with_model(model_state.clone())
         .with_service(login_service());
-    let server = match dashboard {
-        Some(dashboard) => server
-            .with_numbers(construct_agent::dashboard_numbers::Numbers::new(
+    let calendar = construct_agent::chat::dashboard_view::Calendar::default();
+    let (server, render_tool) = match dashboard {
+        Some(dashboard) => {
+            let numbers = construct_agent::dashboard_numbers::Numbers::new(
                 activity.clone(),
                 dashboard.clone(),
                 rt.handle().clone(),
-            ))
-            .with_dashboard(dashboard),
-        None => server,
+            );
+            let read = numbers.clone();
+            let tool = construct_agent::chat::dashboard_view::tool(
+                dashboard.clone(),
+                std::sync::Arc::new(move || read.read_sessions()),
+                calendar.clone(),
+            );
+            (
+                server.with_numbers(numbers).with_dashboard(dashboard),
+                Some(tool),
+            )
+        }
+        None => (server, None),
     };
     let server = with_chat(
         with_settings(server, settings.as_ref()),
@@ -123,6 +134,7 @@ fn run() -> std::io::Result<()> {
         &link,
         manage.as_ref(),
         &activity,
+        (&calendar, render_tool),
     );
     eprintln!(
         "construct-agent {} listening on {}",
@@ -305,8 +317,13 @@ fn with_chat(
     link: &construct_agent::chat::Link,
     manage: Option<&construct_agent::manage::Manager>,
     activity: &construct_agent::activity::Feed,
+    dashboard: (
+        &construct_agent::chat::dashboard_view::Calendar,
+        Option<std::sync::Arc<dyn construct_agent::chat::tool::ChatTool>>,
+    ),
 ) -> construct_agent::ipc::Server {
     use construct_agent::chat::{Chat, Deadlines};
+    let (calendar, render_tool) = dashboard;
     let Some(settings) = settings else {
         return server;
     };
@@ -318,7 +335,9 @@ fn with_chat(
                     chat.with_link(link.clone())
                         .with_recorder(activity.recorder())
                 })
-                .map(|chat| with_file_tools(chat, &dir))
+                .map(|chat| {
+                    with_file_tools(chat.with_calendar(calendar.clone()), &dir, render_tool)
+                })
                 .map(|chat| match manage {
                     Some(manage) => chat.with_observer(manage.observer()),
                     None => chat,
@@ -334,13 +353,15 @@ fn with_chat(
     }
 }
 
-/// `chat` with the file tools over the workspace folder in `dir`, and the sub-agent tool after them.
+/// `chat` with the file tools over the workspace folder in `dir`, the dashboard tool when there is
+/// one, and the sub-agent tool after them.
 /// Without the folder the chat has
 /// no tools, and the reason (never a path) is logged.
 #[cfg(unix)]
 fn with_file_tools(
     chat: construct_agent::chat::Chat,
     dir: &std::path::Path,
+    render_tool: Option<std::sync::Arc<dyn construct_agent::chat::tool::ChatTool>>,
 ) -> construct_agent::chat::Chat {
     use construct_agent::chat::tool::ChatTools;
     let workspace = match construct_agent::workspace::Workspace::open(dir) {
@@ -351,6 +372,7 @@ fn with_file_tools(
         }
     };
     let mut tools = construct_agent::chat::files::file_tools(&workspace);
+    tools.extend(render_tool);
     tools.push(construct_agent::chat::subagent::tool());
     match ChatTools::new(tools) {
         Ok(tools) => chat.with_tools(tools),

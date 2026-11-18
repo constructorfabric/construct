@@ -14,6 +14,9 @@
 //! [`Chat::with_tools`]): a fixed list, offered to the model in every request; a call to a name
 //! that is not in it is answered with an error text. A result is cut at 64 KiB, note included.
 //!
+//! A `chat-send` may carry `window`, the calendar of the person's time zone, which the
+//! `render_dashboard` tool uses to know the days of a period (see [`dashboard_view`]).
+//!
 //! The list may hold the `run_subagent` tool (see [`subagent`]): a call to it runs a second,
 //! separate conversation of the same model inside the call, with the other tools of the list. The
 //! bytes sent to the provider and received from it by an answer, sub-agents included, are counted
@@ -51,6 +54,7 @@ use crate::records::FileSink;
 use crate::settings::Settings;
 use crate::sync::lock;
 
+pub mod dashboard_view;
 pub mod files;
 mod recall;
 pub mod subagent;
@@ -231,6 +235,8 @@ struct Inner {
     wire_limit: usize,
     link: Link,
     tools: ChatTools,
+    /// The days of the periods, as the window last told them.
+    calendar: dashboard_view::Calendar,
     /// The tools a sub-agent has: the list without the sub-agent tool.
     sub_tools: ChatTools,
     usage: Option<Arc<dyn Fn(Usage) + Send + Sync>>,
@@ -292,6 +298,7 @@ impl Chat {
                 wire_limit: WIRE_LIMIT,
                 link: Link::default(),
                 tools: ChatTools::default(),
+                calendar: dashboard_view::Calendar::default(),
                 sub_tools: ChatTools::default(),
                 usage: None,
                 running: Mutex::new(None),
@@ -362,6 +369,16 @@ impl Chat {
         self
     }
 
+    /// Keep in `calendar` the days the window sends with a message, for the tool that renders the
+    /// dashboard. Call it before the chat is cloned.
+    #[must_use]
+    pub fn with_calendar(mut self, calendar: dashboard_view::Calendar) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.calendar = calendar;
+        }
+        self
+    }
+
     /// Tell `report` the bytes an answer sent and received once it ends, a stopped or failed one
     /// too, with those of its sub-agents counted in. Call it before the chat is cloned.
     #[must_use]
@@ -387,6 +404,8 @@ impl Chat {
             #[serde(default)]
             conversation: String,
             message: String,
+            #[serde(default)]
+            window: Option<dashboard_view::RawWindow>,
         }
         let inner = &self.inner;
         let Ok(request) = serde_json::from_str::<Request>(argument) else {
@@ -395,6 +414,12 @@ impl Chat {
         };
         if request.message.trim().is_empty() {
             out(&event_error("empty message"));
+            return;
+        }
+        if let Some(window) = request.window
+            && inner.calendar.set(window).is_err()
+        {
+            out(&event_error("invalid request"));
             return;
         }
         let new = request.conversation.is_empty();
