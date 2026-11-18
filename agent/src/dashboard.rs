@@ -213,6 +213,13 @@ pub fn activity_schema() -> Value {
     ActivityDashboardV1::gts_schema_with_refs()
 }
 
+/// The schema a document of the activity type must pass, in one piece: the base type's schema and
+/// the activity type's own, both of them, with no reference to follow.
+#[must_use]
+pub fn document_schema() -> Value {
+    effective(&activity_schema(), &base_schema())
+}
+
 /// The schema a document of a derived type must pass: the schema of every type of its chain,
 /// all of them. `schema` is the derived type's own, which refers to its base by `$ref`.
 fn effective(schema: &Value, base: &Value) -> Value {

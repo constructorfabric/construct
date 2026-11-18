@@ -280,13 +280,14 @@ fn open_settings() -> Option<construct_agent::settings::Settings> {
     }
 }
 
-/// Writes the default activity dashboard into the workspace when there is none, reads the
-/// document and keeps reading it when it changes. A failure is only logged: the dashboard is a
-/// document the app can do without.
+/// Writes the default activity dashboard into the workspace when there is none, writes the guide
+/// files for the chat, reads the document and keeps reading it when it changes. A failure is only
+/// logged: the dashboard is a document the app can do without, and the guide files are text the
+/// dashboard can do without too.
 #[cfg(unix)]
 fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
     use construct_agent::{
-        dashboard, dashboard_document::Dashboard, records, workspace::Workspace,
+        dashboard, dashboard_document::Dashboard, dashboard_guide, records, workspace::Workspace,
     };
 
     let opened = records::data_dir()
@@ -300,6 +301,9 @@ fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
         Ok((workspace, written)) => {
             if written {
                 eprintln!("the default activity dashboard written");
+            }
+            if let Err(e) = dashboard_guide::write(&workspace) {
+                eprintln!("the dashboard guide files are not written: {e}");
             }
             let dashboard = Dashboard::open(std::sync::Arc::new(workspace));
             dashboard.watch();

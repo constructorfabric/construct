@@ -405,7 +405,9 @@ every widget of the dashboard with its id, kind, period and sessions and the num
 total, a table of groups with time, share and sessions, the time of each day. With period and \
 group_by (and optionally sessions and filter) it gives only that table, for a question the \
 dashboard does not show. When the dashboard file has errors it gives them with their places and \
-says that the page keeps the last good version: call it after every edit of the file."
+says that the page keeps the last good version: call it after every edit of the file. The schema \
+of the dashboard file is in dashboard.schema.json and a guide to editing it, with examples, is in \
+dashboard.md, both in the workspace."
     }
 
     fn schema(&self) -> &'static str {

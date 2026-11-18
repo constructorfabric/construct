@@ -13,6 +13,8 @@ pub mod dashboard_details;
 #[cfg(unix)]
 pub mod dashboard_document;
 #[cfg(unix)]
+pub mod dashboard_guide;
+#[cfg(unix)]
 pub mod dashboard_numbers;
 pub mod dashboard_projects;
 #[cfg(unix)]

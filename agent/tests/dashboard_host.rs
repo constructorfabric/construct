@@ -10,7 +10,10 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use construct_agent::dashboard::{ACTIVITY_FILE, ACTIVITY_TYPE, BASE_TYPE, validate_activity};
+use construct_agent::dashboard::{
+    ACTIVITY_FILE, ACTIVITY_TYPE, BASE_TYPE, document_schema, validate_activity,
+};
+use construct_agent::dashboard_guide::{GUIDE, GUIDE_FILE, SCHEMA_FILE};
 use construct_agent::ipc::request;
 use serde_json::Value;
 
@@ -22,8 +25,17 @@ struct Agent {
 
 impl Agent {
     fn start() -> Self {
-        let root = std::env::temp_dir().join(format!("cb-dashboard-host-{}", std::process::id()));
+        Self::start_after("cb-dashboard-host", |_| {})
+    }
+
+    /// Starts an agent in a directory of its own; `prepare` gets the workspace folder, made
+    /// before the start, to put files in it.
+    fn start_after(name: &str, prepare: impl FnOnce(&std::path::Path)) -> Self {
+        let root = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("data/construct/workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        prepare(&workspace);
         std::fs::create_dir_all(root.join("run")).unwrap();
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::set_permissions(
@@ -139,4 +151,23 @@ fn the_started_host_has_the_dashboard_types_and_the_workspace_the_default_dashbo
         assert!(Instant::now() < deadline, "no change in time: {answer}");
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+#[test]
+#[ignore = "starts PostgreSQL and the Construct host; run with --ignored"]
+fn a_start_leaves_the_guide_files_and_rewrites_a_changed_one() {
+    let agent = Agent::start_after("cb-dashboard-guide-host", |workspace| {
+        std::fs::write(workspace.join(GUIDE_FILE), "changed by the model").unwrap();
+    });
+    agent.wait_ready();
+
+    let workspace = agent.root.join("data/construct/workspace");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join(GUIDE_FILE)).unwrap(),
+        GUIDE
+    );
+    let schema: Value =
+        serde_json::from_str(&std::fs::read_to_string(workspace.join(SCHEMA_FILE)).unwrap())
+            .unwrap();
+    assert_eq!(schema, document_schema());
 }
