@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use connectors::{Author, Mark, Record, Role, ToolCall, Turn};
+use construct_agent::activity::rules::{Day, Grouping, Kind, PARTS_PER_MINUTE, minute_number};
 use construct_agent::activity::{LOCK_KEY, RULES_VERSION, Session, Store};
 use construct_agent::records::{FileSink, Sink};
 use std::path::PathBuf;
@@ -206,6 +207,111 @@ async fn a_rebuild_has_the_counts_the_rules_give() {
         );
     }
     drop(conn);
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn the_stored_minutes_give_the_time_of_a_period() {
+    let stand = Stand::new("act-period").await;
+    let (store, _) = stand.with_fixture().await;
+    let day = |date: &str, next: &str| Day {
+        label: date.into(),
+        start: minute_number(&format!("{date}T00:00")).unwrap(),
+        end: minute_number(&format!("{next}T00:00")).unwrap(),
+    };
+    let days = [
+        day("2026-11-11", "2026-11-12"),
+        day("2026-11-12", "2026-11-13"),
+        day("2026-11-13", "2026-11-14"),
+    ];
+    let whole = |minutes: u64| minutes * PARTS_PER_MINUTE;
+
+    // Session `a` is active at 10:00, 10:03 and 10:04, so its block is 5 minutes; `b` has 2
+    // and `c` has 1. A prompt of an unknown author counts as the user's own.
+    let report = store
+        .activity(&days, Kind::Both, Grouping::Day)
+        .await
+        .unwrap();
+    let per_day: Vec<u64> = report.groups.iter().map(|g| g.parts).collect();
+    assert_eq!(per_day, vec![whole(5), whole(2), whole(1)]);
+    assert_eq!(report.total_parts, whole(8));
+    assert_eq!(report.sessions, 3);
+    let own = store
+        .activity(&days, Kind::Person, Grouping::Project)
+        .await
+        .unwrap();
+    assert_eq!(own.total_parts, whole(8));
+    assert_eq!(own.groups[0].key, "/work/x");
+    let unattended = store
+        .activity(&days, Kind::Unattended, Grouping::Tool)
+        .await
+        .unwrap();
+    assert_eq!(unattended.total_parts, 0);
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn stored_prompt_authors_decide_whose_time_a_session_is() {
+    use Author::{Person, Unattended, Unknown};
+    use Role::User;
+    let stand = Stand::new("act-kinds").await;
+    let store = stand.store().await;
+    // A script only; an unknown author only; a script beside a person. Only the first is
+    // unattended: the other two count as the user's own.
+    let records = [
+        turn(
+            "script",
+            "2026-11-11T10:00:00Z",
+            User,
+            Unattended,
+            "/work/s",
+            "",
+        ),
+        turn(
+            "unknown",
+            "2026-11-11T11:00:00Z",
+            User,
+            Unknown,
+            "/work/u",
+            "",
+        ),
+        turn(
+            "mixed",
+            "2026-11-11T12:00:00Z",
+            User,
+            Unattended,
+            "/work/m",
+            "",
+        ),
+        turn("mixed", "2026-11-11T12:00:30Z", User, Person, "/work/m", ""),
+    ];
+    for record in &records {
+        store.apply(record).await.unwrap();
+    }
+    let days = [Day {
+        label: "2026-11-11".into(),
+        start: minute_number("2026-11-11T00:00").unwrap(),
+        end: minute_number("2026-11-12T00:00").unwrap(),
+    }];
+    let keys = |report: construct_agent::activity::rules::Report| -> Vec<String> {
+        report.groups.into_iter().map(|g| g.key).collect()
+    };
+    let unattended = store
+        .activity(&days, Kind::Unattended, Grouping::Project)
+        .await
+        .unwrap();
+    assert_eq!(unattended.total_parts, PARTS_PER_MINUTE);
+    assert_eq!(keys(unattended), vec!["/work/s"]);
+    let own = store
+        .activity(&days, Kind::Person, Grouping::Project)
+        .await
+        .unwrap();
+    assert_eq!(own.total_parts, 2 * PARTS_PER_MINUTE);
+    assert_eq!(keys(own), vec!["/work/m", "/work/u"]);
     store.close().await;
     stand.finish().await;
 }

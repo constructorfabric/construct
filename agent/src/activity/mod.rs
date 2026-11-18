@@ -19,6 +19,7 @@ use crate::records::{FileSink, read_records, turn_key};
 
 mod feed;
 pub use feed::Feed;
+pub mod rules;
 
 /// The database the store lives in; the agent creates it when it is missing.
 pub const DBNAME: &str = "activity";
@@ -219,6 +220,58 @@ impl Store {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| err("read the minutes", e))
+    }
+
+    /// The time of the sessions in the days the caller gives, by the rules in [`rules`]. One
+    /// read, so the answer is of one state of the store.
+    ///
+    /// # Errors
+    /// Fails when the query is refused, a stored minute cannot be read, or the days overlap.
+    pub async fn activity(
+        &self,
+        days: &[rules::Day],
+        kind: rules::Kind,
+        grouping: rules::Grouping,
+    ) -> Result<rules::Report, Error> {
+        let rows = sqlx::query(
+            "select s.tool, s.session, s.folder, s.branch, s.person_prompts,
+                    s.unattended_prompts, s.unknown_prompts, m.minute
+             from activity.sessions s
+             join activity.minutes m on m.tool = s.tool and m.session = s.session
+             order by s.tool, s.session, m.minute",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| err("read the minutes of the sessions", e))?;
+        let mut sessions: Vec<rules::SessionMinutes> = Vec::new();
+        for row in &rows {
+            let fail = |e| err("read a minute", e);
+            let tool: String = row.try_get("tool").map_err(fail)?;
+            let session: String = row.try_get("session").map_err(fail)?;
+            let text: String = row.try_get("minute").map_err(fail)?;
+            let minute = rules::minute_number(&text)
+                .ok_or_else(|| err("read a minute", format!("{text:?} is not a minute")))?;
+            if let Some(last) = sessions
+                .last_mut()
+                .filter(|s| s.tool == tool && s.session == session)
+            {
+                last.minutes.push(minute);
+                continue;
+            }
+            sessions.push(rules::SessionMinutes {
+                folder: row.try_get("folder").map_err(fail)?,
+                branch: row.try_get("branch").map_err(fail)?,
+                unattended: rules::is_unattended(
+                    row.try_get("person_prompts").map_err(fail)?,
+                    row.try_get("unattended_prompts").map_err(fail)?,
+                    row.try_get("unknown_prompts").map_err(fail)?,
+                ),
+                tool,
+                session,
+                minutes: vec![minute],
+            });
+        }
+        rules::calculate(&sessions, days, kind, grouping).map_err(|e| err("calculate", e))
     }
 
     /// Close the connections, before PostgreSQL stops.
