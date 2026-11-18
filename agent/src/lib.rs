@@ -9,6 +9,8 @@ pub mod chat;
 #[cfg(unix)]
 pub mod dashboard;
 #[cfg(unix)]
+pub mod dashboard_details;
+#[cfg(unix)]
 pub mod dashboard_document;
 #[cfg(unix)]
 pub mod dashboard_numbers;

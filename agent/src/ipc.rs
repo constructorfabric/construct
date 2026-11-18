@@ -16,6 +16,9 @@
 //! as `dashboard-get` does once the change is read back; an error is a plain text.
 //! `dashboard-numbers <JSON object>` answers the numbers of a widget, or of a period, for the days
 //! the request lists (see `dashboard_numbers`); the answer is longer than a status.
+//! `dashboard-sessions <JSON object>`, `dashboard-summary <JSON object>` and `dashboard-state` answer
+//! the sessions behind a group, the summary of a day and how far the data is (see
+//! `dashboard_details`).
 //! `settings-test` answers with several JSON lines when its request has `"progress": true`.
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
@@ -155,6 +158,7 @@ mod unix {
     use super::{MAX_REQUEST, error_response, status_response, unknown_command_response};
     use crate::activity::Feed;
     use crate::chat::{self, Chat};
+    use crate::dashboard_details::Details;
     use crate::dashboard_document::Dashboard;
     use crate::dashboard_numbers::Numbers;
     use crate::dashboard_projects::Edit;
@@ -202,6 +206,7 @@ mod unix {
         activity: Option<Feed>,
         dashboard: Option<Dashboard>,
         numbers: Option<Numbers>,
+        details: Option<Details>,
     }
 
     impl Server {
@@ -239,6 +244,7 @@ mod unix {
                 activity: None,
                 dashboard: None,
                 numbers: None,
+                details: None,
             })
         }
 
@@ -327,6 +333,14 @@ mod unix {
             self
         }
 
+        /// Serve `dashboard-sessions`, `dashboard-summary` and `dashboard-state`. Without it
+        /// they answer an error.
+        #[must_use]
+        pub fn with_details(mut self, details: Details) -> Self {
+            self.details = Some(details);
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -351,6 +365,7 @@ mod unix {
                         let activity = self.activity.clone();
                         let dashboard = self.dashboard.clone();
                         let numbers = self.numbers.clone();
+                        let details = self.details.clone();
                         thread::spawn(move || {
                             let shared = Shared {
                                 database: &database,
@@ -364,6 +379,7 @@ mod unix {
                                 activity: activity.as_ref(),
                                 dashboard: dashboard.as_ref(),
                                 numbers: numbers.as_ref(),
+                                details: details.as_ref(),
                             };
                             if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
@@ -488,6 +504,7 @@ mod unix {
         activity: Option<&'a Feed>,
         dashboard: Option<&'a Dashboard>,
         numbers: Option<&'a Numbers>,
+        details: Option<&'a Details>,
     }
 
     /// Never log, or return in an error, any part of `line`: it can hold a key.
@@ -545,6 +562,18 @@ mod unix {
             ("dashboard-numbers", _) => shared.numbers.map_or_else(
                 || error_response("the dashboard numbers are not available"),
                 |numbers| numbers.answer(argument),
+            ),
+            ("dashboard-sessions", _) => shared.details.map_or_else(
+                || error_response("the dashboard details are not available"),
+                |details| details.sessions(argument),
+            ),
+            ("dashboard-summary", _) => shared.details.map_or_else(
+                || error_response("the dashboard details are not available"),
+                |details| details.summary(argument),
+            ),
+            ("dashboard-state", _) if argument.is_empty() => shared.details.map_or_else(
+                || error_response("the dashboard details are not available"),
+                Details::state,
             ),
             ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
             ("settings-set", Some(s)) => {

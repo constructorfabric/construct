@@ -20,7 +20,7 @@ use crate::database::{Error, SOCKET_PORT, SUPERUSER, err};
 use crate::records::{FileSink, read_records, turn_key};
 
 mod feed;
-pub use feed::Feed;
+pub use feed::{Feed, Readiness};
 pub mod assign;
 pub mod rules;
 
@@ -228,6 +228,18 @@ impl Store {
             })
             .collect::<Result<_, sqlx::Error>>()
             .map_err(|e| err("read a session", e))
+    }
+
+    /// Whether the store holds no active minute at all.
+    ///
+    /// # Errors
+    /// Fails when the query is refused.
+    pub async fn is_empty(&self) -> Result<bool, Error> {
+        let found: bool = sqlx::query_scalar("select exists(select 1 from activity.minutes)")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| err("look for minutes", e))?;
+        Ok(!found)
     }
 
     /// The active minutes, `(tool, session, minute)`, in order.
