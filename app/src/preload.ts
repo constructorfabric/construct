@@ -15,6 +15,12 @@ import {
   DASHBOARD_PROJECT_CHANNEL,
 } from './dashboard-protocol';
 import type { DashboardResult, DocumentResult } from './dashboard-protocol';
+import {
+  SETUP_CANCEL_CHANNEL,
+  SETUP_START_CHANNEL,
+  SETUP_STATUS_CHANNEL,
+} from './dashboard-setup-protocol';
+import type { SetupResult } from './dashboard-setup-protocol';
 import { OPEN_LINK_CHANNEL } from './external';
 import { MEMORY_FACTS_CHANNEL, MEMORY_VERSION_CHANNEL } from './memory-protocol';
 import type { FactsResult, VersionResult } from './memory-protocol';
@@ -63,6 +69,9 @@ const api: ConstructAgentApi = {
     ipcRenderer.invoke(DASHBOARD_PROJECT_CHANNEL, change) as Promise<DocumentResult>,
   getMemoryFacts: () => ipcRenderer.invoke(MEMORY_FACTS_CHANNEL) as Promise<FactsResult>,
   getMemoryVersion: () => ipcRenderer.invoke(MEMORY_VERSION_CHANNEL) as Promise<VersionResult>,
+  startDashboardSetup: () => ipcRenderer.invoke(SETUP_START_CHANNEL) as Promise<SetupResult>,
+  getDashboardSetup: () => ipcRenderer.invoke(SETUP_STATUS_CHANNEL) as Promise<SetupResult>,
+  cancelDashboardSetup: () => ipcRenderer.invoke(SETUP_CANCEL_CHANNEL) as Promise<SetupResult>,
   openLink: (url) => ipcRenderer.invoke(OPEN_LINK_CHANNEL, url) as Promise<boolean>,
   onChatEvent: (listener) => {
     // Only the event goes through, never Electron's own event object.

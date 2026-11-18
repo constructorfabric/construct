@@ -182,7 +182,7 @@ export function App(): ReactNode {
             ) : page === 'memory' ? (
               <MemoryPage onOpenSettings={() => setPage('settings')} />
             ) : (
-              <SettingsPage />
+              <SettingsPage onOpenDashboard={() => setPage('dashboard')} />
             )}
           </div>
         )}
