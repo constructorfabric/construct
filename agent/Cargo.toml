@@ -30,6 +30,8 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal",
 # One toolkit generation (0.13.x), every crate pinned. Published crates only.
 toolkit = { package = "cf-gears-toolkit", version = "=0.13.1", features = ["bootstrap"] }
 construct = { package = "cf-gears-construct", version = "=0.1.6" }
+cluster = { package = "cf-gears-cluster", version = "=0.4.4" }
+grpc-hub = { package = "cf-gears-grpc-hub", version = "=0.5.2" }
 graph-storage = { package = "cf-gears-graph-storage", version = "=0.3.2" }
 types-registry = { package = "cf-gears-types-registry", version = "=0.6.2" }
 authn-resolver = { package = "cf-gears-authn-resolver", version = "=0.3.2" }

@@ -86,10 +86,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "anstream"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
+dependencies = [
+ "anstyle",
+ "anstyle-parse",
+ "anstyle-query",
+ "anstyle-wincon",
+ "colorchoice",
+ "is_terminal_polyfill",
+ "utf8parse",
+]
+
+[[package]]
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
+
+[[package]]
+name = "anstyle-parse"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e"
+dependencies = [
+ "utf8parse",
+]
+
+[[package]]
+name = "anstyle-query"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "anstyle-wincon"
+version = "3.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
+dependencies = [
+ "anstyle",
+ "once_cell_polyfill",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "anyhow"
@@ -628,6 +672,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "bytes-utils"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dafe3a8757b027e2be6e4e5601ed563c55989fcf1546e933c66c8eb3a058d35"
+dependencies = [
+ "bytes",
+ "either",
+]
+
+[[package]]
 name = "cap-primitives"
 version = "4.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -686,7 +740,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-api-gateway"
 version = "0.7.4"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -733,7 +787,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-authn-resolver"
 version = "0.3.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -754,7 +808,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-authn-resolver-sdk"
 version = "0.3.43"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -771,7 +825,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-authz-resolver"
 version = "0.4.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -794,7 +848,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-authz-resolver-sdk"
 version = "0.6.5"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "axum",
@@ -818,9 +872,73 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-cluster"
+version = "0.4.4"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "cf-gears-cluster-sdk",
+ "cf-gears-grpc-hub",
+ "cf-gears-standalone-cluster-plugin",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-contract",
+ "cf-gears-toolkit-security",
+ "cf-gears-toolkit-transport-grpc",
+ "cf-gears-toolkit-utils",
+ "cf-postgres-cluster-plugin",
+ "cf-redis-cluster-plugin",
+ "clap",
+ "futures-util",
+ "opentelemetry",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-cluster-sdk"
+version = "0.3.5"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-contract",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-security",
+ "cf-gears-toolkit-transport-grpc",
+ "futures-core",
+ "futures-util",
+ "gts",
+ "opentelemetry",
+ "prost",
+ "rand 0.10.3",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tracing",
+]
+
+[[package]]
 name = "cf-gears-construct"
 version = "0.1.6"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -828,6 +946,7 @@ dependencies = [
  "bytes",
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
+ "cf-gears-cluster-sdk",
  "cf-gears-construct-sdk",
  "cf-gears-graph-storage",
  "cf-gears-graph-storage-sdk",
@@ -870,7 +989,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-construct-sdk"
 version = "0.2.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -889,7 +1008,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-graph-storage"
 version = "0.3.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -913,6 +1032,7 @@ dependencies = [
  "sea-orm",
  "sea-orm-migration",
  "serde",
+ "serde_html_form",
  "serde_json",
  "thiserror",
  "time",
@@ -926,7 +1046,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-graph-storage-sdk"
 version = "0.3.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-canonical-errors",
@@ -945,7 +1065,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-grpc-hub"
 version = "0.5.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -970,7 +1090,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-oagw-sdk"
 version = "0.5.18"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "bytes",
@@ -990,7 +1110,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-settings-service-sdk"
 version = "0.2.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-canonical-errors",
@@ -1007,9 +1127,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-standalone-cluster-plugin"
+version = "0.2.14"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+dependencies = [
+ "async-trait",
+ "cf-gears-cluster-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "cf-gears-static-authn-plugin"
 version = "0.4.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1029,7 +1163,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-static-authz-plugin"
 version = "0.2.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1049,7 +1183,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-system-sdk-directory"
 version = "0.3.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1064,7 +1198,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-system-sdks"
 version = "0.1.52"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "cf-gears-system-sdk-directory",
 ]
@@ -1072,7 +1206,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-tenant-resolver-sdk"
 version = "0.4.11"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -1090,7 +1224,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit"
 version = "0.13.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1152,7 +1286,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-canonical-errors"
 version = "0.10.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "axum",
  "cf-gears-toolkit-canonical-errors-macro",
@@ -1168,7 +1302,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-canonical-errors-macro"
 version = "0.6.5"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "gts-id",
  "proc-macro-crate",
@@ -1180,7 +1314,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-contract"
 version = "0.4.6"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1190,6 +1324,8 @@ dependencies = [
  "cf-gears-toolkit-contract-macros",
  "cf-gears-toolkit-http",
  "cf-gears-toolkit-resilience",
+ "cf-gears-toolkit-security",
+ "cf-gears-toolkit-transport-grpc",
  "cf-gears-toolkit-utils",
  "futures-core",
  "futures-util",
@@ -1205,6 +1341,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tonic",
  "tower",
  "tracing",
 ]
@@ -1212,7 +1349,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-contract-macros"
 version = "0.2.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-crate",
@@ -1224,7 +1361,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-db"
 version = "0.17.4"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1260,7 +1397,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-db-macros"
 version = "0.7.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1271,7 +1408,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-gateway"
 version = "0.2.13"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "axum",
@@ -1292,7 +1429,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-gts"
 version = "0.3.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "cf-gears-toolkit-gts-macros",
@@ -1307,7 +1444,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-gts-macros"
 version = "0.3.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "gts",
  "gts-id",
@@ -1320,7 +1457,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-http"
 version = "0.9.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "bytes",
  "cf-gears-toolkit-security",
@@ -1352,7 +1489,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-http-middleware"
 version = "0.3.6"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "axum",
  "cf-gears-toolkit-canonical-errors",
@@ -1366,7 +1503,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-macros"
 version = "0.8.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1378,7 +1515,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-odata"
 version = "0.10.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "base64 0.22.1",
  "bigdecimal",
@@ -1397,7 +1534,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-odata-macros"
 version = "0.7.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1408,7 +1545,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-resilience"
 version = "0.1.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "cf-gears-toolkit-utils",
  "parking_lot",
@@ -1423,7 +1560,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-sdk"
 version = "0.7.17"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "cf-gears-toolkit-odata",
  "cf-gears-toolkit-security",
@@ -1434,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-security"
 version = "0.13.0"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -1459,7 +1596,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-taskward"
 version = "0.1.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "futures-util",
  "tokio",
@@ -1471,7 +1608,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-trace-context"
 version = "0.3.1"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "http",
  "opentelemetry",
@@ -1483,7 +1620,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-transport-grpc"
 version = "0.9.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "cf-gears-toolkit-security",
@@ -1506,7 +1643,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-toolkit-utils"
 version = "0.7.3"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "humantime",
  "regex",
@@ -1518,7 +1655,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-types-registry"
 version = "0.6.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1557,7 +1694,7 @@ dependencies = [
 [[package]]
 name = "cf-gears-types-registry-sdk"
 version = "0.5.2"
-source = "git+https://github.com/constructorfabric/gears-rust?rev=296dc92fc9aeae442d3f9ecb04bb713ade606ca8#296dc92fc9aeae442d3f9ecb04bb713ade606ca8"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1574,6 +1711,49 @@ dependencies = [
  "serde_json",
  "thiserror",
  "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cf-postgres-cluster-plugin"
+version = "0.5.5"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+dependencies = [
+ "async-trait",
+ "cf-gears-cluster-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-macros",
+ "dashmap",
+ "opentelemetry",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cf-redis-cluster-plugin"
+version = "0.2.3"
+source = "git+https://github.com/constructorfabric/gears-rust?rev=1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b#1dc219f5d77c8c47715dd09f65e9b0d2ed3f8f2b"
+dependencies = [
+ "async-trait",
+ "cf-gears-cluster-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-macros",
+ "dashmap",
+ "fred",
+ "futures-util",
+ "opentelemetry",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1626,6 +1806,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap"
+version = "4.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac230478587d0269d8d6998b82ae69ea51509d55df66d9e92edd1f986904cd4a"
+dependencies = [
+ "clap_builder",
+ "clap_derive",
+]
+
+[[package]]
+name = "clap_builder"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap_lex",
+ "strsim",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "895c9d8d2ac2dd8b8a29f3724a14e72aaaa6debcf8c38c82f97305c6a172767a"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
+
+[[package]]
+name = "clap_lex"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1648,6 +1868,12 @@ checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
 dependencies = [
  "thiserror",
 ]
+
+[[package]]
+name = "colorchoice"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "combine"
@@ -1729,8 +1955,10 @@ dependencies = [
  "cf-gears-api-gateway",
  "cf-gears-authn-resolver",
  "cf-gears-authz-resolver",
+ "cf-gears-cluster",
  "cf-gears-construct",
  "cf-gears-graph-storage",
+ "cf-gears-grpc-hub",
  "cf-gears-oagw-sdk",
  "cf-gears-static-authn-plugin",
  "cf-gears-static-authz-plugin",
@@ -1764,6 +1992,12 @@ dependencies = [
  "url",
  "uuid",
 ]
+
+[[package]]
+name = "cookie-factory"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "396de984970346b0d9e93d1415082923c679e5ae5c3ee3dcbd104f5610af126b"
 
 [[package]]
 name = "core-foundation"
@@ -1819,6 +2053,12 @@ name = "crc-catalog"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
+
+[[package]]
+name = "crc16"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
 
 [[package]]
 name = "crc32fast"
@@ -2266,6 +2506,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "fluent-uri"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2337,6 +2586,48 @@ checksum = "e246562084dde8ebbcc943b261c406ce4f68e5032ec28029a251a47d6a295500"
 dependencies = [
  "num",
  "num-bigint 0.4.8",
+]
+
+[[package]]
+name = "fred"
+version = "10.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a7b2fd0f08b23315c13b6156f971aeedb6f75fb16a29ac1872d2eabccc1490e"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "bytes-utils",
+ "float-cmp",
+ "fred-macros",
+ "futures",
+ "log",
+ "parking_lot",
+ "rand 0.8.8",
+ "redis-protocol",
+ "rustls",
+ "rustls-native-certs",
+ "semver",
+ "socket2 0.5.10",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-futures",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
+name = "fred-macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1458c6e22d36d61507034d5afecc64f105c1d39712b7ac6ec3b352c423f715cc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2879,7 +3170,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2",
+ "socket2 0.6.5",
  "tokio",
  "tower-service",
  "tracing",
@@ -3088,6 +3379,12 @@ name = "is_ci"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7655c9839580ee829dfacba1d1278c2b7883e50a277ff7541299489d6bdfdc45"
+
+[[package]]
+name = "is_terminal_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
@@ -3513,6 +3810,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3589,6 +3892,16 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
+]
 
 [[package]]
 name = "nonzero_ext"
@@ -3714,6 +4027,12 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "once_cell_polyfill"
+version = "1.70.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openssl"
@@ -4336,7 +4655,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2",
+ "socket2 0.6.5",
  "thiserror",
  "tokio",
  "tracing",
@@ -4375,7 +4694,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -4493,6 +4812,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "redis-protocol"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cdba59219406899220fc4cdfd17a95191ba9c9afb719b5fa5a083d63109a9f1"
+dependencies = [
+ "bytes",
+ "bytes-utils",
+ "cookie-factory",
+ "crc16",
+ "log",
+ "nom",
 ]
 
 [[package]]
@@ -5415,6 +5748,16 @@ dependencies = [
 
 [[package]]
 name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
@@ -5548,6 +5891,7 @@ dependencies = [
  "sqlx-postgres",
  "sqlx-sqlite",
  "syn 2.0.119",
+ "thiserror",
  "tokio",
  "url",
 ]
@@ -5889,7 +6233,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2",
+ "socket2 0.6.5",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -6012,7 +6356,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
- "socket2",
+ "socket2 0.6.5",
  "sync_wrapper",
  "tokio",
  "tokio-stream",
@@ -6192,6 +6536,16 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
+]
+
+[[package]]
+name = "tracing-futures"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97d095ae15e245a057c8e8451bab9b3ee1e1f68e9ba2b4fbc18d0ac5237835f2"
+dependencies = [
+ "pin-project",
+ "tracing",
 ]
 
 [[package]]
@@ -6404,6 +6758,12 @@ checksum = "af3bd9d3e571c26fcce9d033b87ea5ab061b8d2ffe9b7a5675d810d68f03edf0"
 dependencies = [
  "utf_types",
 ]
+
+[[package]]
+name = "utf8parse"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "utf_types"
