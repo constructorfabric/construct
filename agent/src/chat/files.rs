@@ -13,7 +13,7 @@ use super::tool::{ChatTool, MAX_RESULT};
 use crate::workspace::Workspace;
 
 /// The result when the arguments are not what the schema says.
-const BAD_ARGUMENTS: &str = "the arguments are not valid for this tool";
+pub(super) const BAD_ARGUMENTS: &str = "the arguments are not valid for this tool";
 /// The result of a `Read` of a file with no line.
 const EMPTY_FILE: &str = "The file is empty.";
 /// The result of a `Read` that starts after the last line.
@@ -34,12 +34,12 @@ pub fn file_tools(workspace: &Arc<Workspace>) -> Vec<Arc<dyn ChatTool>> {
     ]
 }
 
-fn parse<'a, T: Deserialize<'a>>(arguments: &'a str) -> Result<T, String> {
+pub(super) fn parse<'a, T: Deserialize<'a>>(arguments: &'a str) -> Result<T, String> {
     serde_json::from_str(arguments).map_err(|_| BAD_ARGUMENTS.to_string())
 }
 
 /// The status line `verb` plus the text of `field` in the arguments, or `name` when there is none.
-fn line(arguments: &str, field: &str, verb: &str, name: &str) -> String {
+pub(super) fn line(arguments: &str, field: &str, verb: &str, name: &str) -> String {
     serde_json::from_str::<serde_json::Value>(arguments)
         .ok()
         .and_then(|v| v[field].as_str().map(|text| format!("{verb} {text}")))
@@ -89,7 +89,7 @@ impl ChatTool for Read {
 /// `lines` as numbered text, the first being line `first`, cut so that the text, note included, is
 /// at most [`MAX_RESULT`] bytes. A cut ends with a note naming the offset to go on with.
 /// `shifted` is whether the read started after the first line.
-fn numbered(lines: &[String], first: usize, shifted: bool) -> String {
+pub(super) fn numbered(lines: &[String], first: usize, shifted: bool) -> String {
     if lines.is_empty() {
         return if shifted { PAST_END } else { EMPTY_FILE }.to_string();
     }
