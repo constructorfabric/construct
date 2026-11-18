@@ -64,6 +64,9 @@ pub enum Grouping {
     Ticket,
     /// The tool that wrote a session.
     Tool,
+    /// The ticket of a session; a session without one is grouped by its project, as
+    /// `No ticket (project)`. This is the grouping of the summary of a day.
+    TicketOrProject,
     /// The days the caller gave, oldest first.
     Day,
 }
@@ -105,6 +108,19 @@ pub struct Group {
     pub share: f64,
     /// The sessions that have time in the group.
     pub sessions: usize,
+}
+
+/// The time one session has in one group: the minutes in which it counted there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    /// The index of the session in the input.
+    pub session: usize,
+    /// The first minute it counted in, since the epoch.
+    pub first: i64,
+    /// The last minute it counted in.
+    pub last: i64,
+    /// How many whole minutes it counted in; a minute shared with other groups counts whole.
+    pub minutes: u64,
 }
 
 /// The answer: the groups, their total and the sessions that have any time in the period.
@@ -230,6 +246,24 @@ pub fn calculate_named(
     grouping: Grouping,
     names: &BTreeMap<String, String>,
 ) -> Result<Report, DaysError> {
+    calculate_spans(sessions, days, kind, grouping, names).map(|(report, _)| report)
+}
+
+/// [`calculate_named`] with, for each group, the sessions that have time in it and when: the
+/// sessions of a group are as many as `Group::sessions` says.
+///
+/// # Errors
+/// Fails when a day is empty or two days overlap.
+// The pass is one loop over the timeline, and its steps share the running state of the open
+// sessions, so cutting it up would only pass that state around.
+#[allow(clippy::too_many_lines)]
+pub fn calculate_spans(
+    sessions: &[SessionMinutes],
+    days: &[Day],
+    kind: Kind,
+    grouping: Grouping,
+    names: &BTreeMap<String, String>,
+) -> Result<(Report, BTreeMap<String, Vec<Span>>), DaysError> {
     let mut days = days.to_vec();
     days.sort_by_key(|d| d.start);
     check_sorted(&days)?;
@@ -246,10 +280,10 @@ pub fn calculate_named(
     }
 
     // group -> (position, parts, sessions with time in it)
-    let mut groups: BTreeMap<String, (usize, u64, BTreeSet<usize>)> = BTreeMap::new();
+    let mut groups: BTreeMap<String, (usize, u64, BTreeMap<usize, Span>)> = BTreeMap::new();
     if grouping == Grouping::Day {
         for (position, day) in days.iter().enumerate() {
-            groups.insert(day.label.clone(), (position, 0, BTreeSet::new()));
+            groups.insert(day.label.clone(), (position, 0, BTreeMap::new()));
         }
     }
     let mut total_parts = 0;
@@ -276,12 +310,16 @@ pub fn calculate_named(
         // The sessions that count in this minute, by the group each belongs to.
         let mut by_key: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for index in winners {
+            let project = || names[&sessions[index].project].clone();
             let key = match grouping {
-                Grouping::Project => names[&sessions[index].project].clone(),
+                Grouping::Project => project(),
+                Grouping::TicketOrProject if sessions[index].ticket.is_empty() => {
+                    format!("{} ({})", assign::NO_TICKET, project())
+                }
                 Grouping::Ticket if sessions[index].ticket.is_empty() => {
                     assign::NO_TICKET.to_owned()
                 }
-                Grouping::Ticket => sessions[index].ticket.clone(),
+                Grouping::Ticket | Grouping::TicketOrProject => sessions[index].ticket.clone(),
                 Grouping::Tool => sessions[index].tool.clone(),
                 Grouping::Day => day.label.clone(),
             };
@@ -293,17 +331,28 @@ pub fn calculate_named(
         for (rank, (key, members)) in by_key.into_iter().enumerate() {
             let parts = PARTS_PER_MINUTE / share_count
                 + u64::from((rank as u64) < PARTS_PER_MINUTE % share_count);
-            let entry = groups.entry(key).or_insert((0, 0, BTreeSet::new()));
+            let entry = groups.entry(key).or_insert((0, 0, BTreeMap::new()));
             entry.1 += parts;
             total_parts += parts;
             counted_sessions.extend(members.iter().copied());
-            entry.2.extend(members);
+            for session in members {
+                let span = entry.2.entry(session).or_insert(Span {
+                    session,
+                    first: *minute,
+                    last: *minute,
+                    minutes: 0,
+                });
+                span.last = *minute;
+                span.minutes += 1;
+            }
         }
     }
 
+    let mut spans: BTreeMap<String, Vec<Span>> = BTreeMap::new();
     let mut groups: Vec<(usize, Group)> = groups
         .into_iter()
         .map(|(key, (position, parts, members))| {
+            spans.insert(key.clone(), members.values().copied().collect());
             #[allow(clippy::cast_precision_loss)] // a total never nears 2^52 parts
             let share = if total_parts == 0 {
                 0.0
@@ -326,11 +375,12 @@ pub fn calculate_named(
     } else {
         groups.sort_by(|(_, a), (_, b)| b.parts.cmp(&a.parts).then_with(|| a.key.cmp(&b.key)));
     }
-    Ok(Report {
+    let report = Report {
         groups: groups.into_iter().map(|(_, group)| group).collect(),
         total_parts,
         sessions: counted_sessions.len(),
-    })
+    };
+    Ok((report, spans))
 }
 
 #[cfg(test)]

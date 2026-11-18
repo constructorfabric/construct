@@ -75,6 +75,17 @@ impl Phase {
     }
 }
 
+/// How far the store is, for the dashboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readiness {
+    /// The store is being built from the record files; `records_done` of them are read.
+    Reading { records_done: u64 },
+    /// The store can be read.
+    Ready,
+    /// The store cannot be read and is not being built.
+    Unavailable,
+}
+
 /// What a queued record costs: its text and a fixed share for the rest.
 fn weight(record: &Record) -> usize {
     RECORD_OVERHEAD
@@ -178,6 +189,21 @@ impl Feed {
                 .ok_or("the activity time is not ready"),
             Phase::Waiting | Phase::ReadingHistory => Err("the activity time is being built"),
             Phase::Off => Err("the activity time is not available"),
+        }
+    }
+
+    /// How far the store is. Before the first build has started it counts as reading, with no
+    /// record done.
+    #[must_use]
+    pub fn readiness(&self) -> Readiness {
+        let phase = lock(&self.0.state).0;
+        let built = lock(&self.0.store).is_some();
+        match phase {
+            Phase::Waiting | Phase::ReadingHistory => Readiness::Reading {
+                records_done: self.0.history_done.load(Ordering::Relaxed),
+            },
+            Phase::Ready | Phase::Behind if built => Readiness::Ready,
+            Phase::Ready | Phase::Behind | Phase::Off => Readiness::Unavailable,
         }
     }
 
@@ -344,6 +370,20 @@ mod tests {
         );
         feed.off("no database");
         assert_eq!(feed.to_json()["state"], "off");
+    }
+
+    #[test]
+    fn readiness_follows_the_build() {
+        let feed = Feed::new();
+        assert_eq!(feed.readiness(), Readiness::Reading { records_done: 0 });
+        feed.set(Phase::ReadingHistory, None);
+        feed.0.history_done.store(7, Ordering::Relaxed);
+        assert_eq!(feed.readiness(), Readiness::Reading { records_done: 7 });
+        // A build that failed before any store was kept leaves nothing to read.
+        feed.set(Phase::Behind, Some("refused".into()));
+        assert_eq!(feed.readiness(), Readiness::Unavailable);
+        feed.off("no database");
+        assert_eq!(feed.readiness(), Readiness::Unavailable);
     }
 
     #[test]

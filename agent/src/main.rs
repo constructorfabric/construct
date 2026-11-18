@@ -113,6 +113,12 @@ fn run() -> std::io::Result<()> {
                 dashboard.clone(),
                 rt.handle().clone(),
             ))
+            .with_details(construct_agent::dashboard_details::Details::new(
+                activity.clone(),
+                dashboard.clone(),
+                settings.clone(),
+                rt.handle().clone(),
+            ))
             .with_dashboard(dashboard),
         None => server,
     };
