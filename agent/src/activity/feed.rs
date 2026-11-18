@@ -124,6 +124,8 @@ struct Shared {
     findings: Mutex<Option<Arc<Workspace>>>,
     /// How many times the file of the findings was read.
     findings_reads: AtomicU64,
+    /// The store [`Feed::run`] works on, from the moment the task starts, built or not.
+    opened: Mutex<Option<Store>>,
 }
 
 /// The queue between the follower and the activity store, and what `status` shows of it.
@@ -153,6 +155,7 @@ impl Feed {
             store: Mutex::new(None),
             findings: Mutex::new(None),
             findings_reads: AtomicU64::new(0),
+            opened: Mutex::new(None),
         }))
     }
 
@@ -346,6 +349,29 @@ impl Feed {
         lock(&self.0.queue).stale = true;
     }
 
+    /// Removes every row of the store, for the person's erasure, after the record files are gone.
+    /// What is queued is dropped, and the store is built again from the files, which are empty,
+    /// so a record that was being applied meanwhile does not stay. A store that is not open yet
+    /// holds nothing that can be read: its first build reads the files.
+    ///
+    /// # Errors
+    /// The reason the rows could not be removed.
+    async fn erase(&self) -> Result<(), String> {
+        {
+            let mut queue = lock(&self.0.queue);
+            queue.records.clear();
+            queue.bytes = 0;
+            queue.stale = true;
+        }
+        let store = lock(&self.0.opened).clone();
+        let cleared = match store {
+            Some(store) => store.clear().await.map_err(|e| e.to_string()),
+            None => Ok(()),
+        };
+        self.0.wake.notify_one();
+        cleared
+    }
+
     /// Builds the store from the files, with the count of records read shown in `status`.
     async fn rebuild(&self, store: &Store, files: &FileSink, retry: Duration) -> bool {
         self.0.history_done.store(0, Ordering::Relaxed);
@@ -400,6 +426,7 @@ impl Feed {
     /// Builds `store` from `files`, then applies every record pushed to the feed, for as long as
     /// the task runs. Nothing here ends the agent: a failure shows in `status`.
     pub async fn run(&self, store: &Store, files: &FileSink) {
+        *lock(&self.0.opened) = Some(store.clone());
         let mut retry = REBUILD_RETRY;
         let mut watch = FindingsWatch::default();
         self.refresh_findings(store, &mut watch).await;
@@ -438,6 +465,36 @@ struct FindingsWatch {
     seen: Option<String>,
     /// The last reason the file was not usable, so that it is logged once.
     complained: Option<String>,
+}
+
+/// The activity time store as a store the person can have erased. It goes after the record
+/// files in the list, for it is made from them.
+pub struct ActivityStore {
+    feed: Feed,
+    runtime: tokio::runtime::Handle,
+}
+
+impl ActivityStore {
+    #[must_use]
+    pub fn new(feed: &Feed, runtime: &tokio::runtime::Handle) -> Self {
+        Self {
+            feed: feed.clone(),
+            runtime: runtime.clone(),
+        }
+    }
+}
+
+impl crate::erase::OwnStore for ActivityStore {
+    fn name(&self) -> &'static str {
+        "the activity time"
+    }
+
+    /// Runs on a thread that is not one of the runtime's.
+    fn erase(&self) -> Result<(), String> {
+        self.runtime
+            .block_on(self.feed.erase())
+            .map_err(|_| "the activity rows could not be removed".to_owned())
+    }
 }
 
 enum Next {
@@ -507,6 +564,33 @@ mod tests {
         assert_eq!(lock(&feed.0.queue).records.len(), 1);
         assert!(matches!(feed.next(), Next::Rebuild));
         assert_eq!(lock(&feed.0.queue).bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn an_erasure_drops_what_is_queued_and_asks_for_a_build_from_the_files() {
+        let feed = Feed::new();
+        feed.set(Phase::Ready, None);
+        assert!(matches!(feed.next(), Next::Rebuild));
+        let record = Record::Mark(connectors::Mark {
+            tools: Vec::new(),
+            tool: "t".into(),
+            session: "s".into(),
+            time: "2026-11-11T10:00:00Z".into(),
+            folder: String::new(),
+            branch: String::new(),
+        });
+        feed.push(&record);
+        feed.push(&record);
+        assert_eq!(lock(&feed.0.queue).records.len(), 2);
+
+        feed.erase().await.unwrap();
+
+        // Nothing queued before the erasure is applied after it; the store is built again from
+        // the files, which are gone, so a record being applied meanwhile does not stay.
+        assert!(lock(&feed.0.queue).records.is_empty());
+        assert_eq!(lock(&feed.0.queue).bytes, 0);
+        assert!(matches!(feed.next(), Next::Rebuild));
+        assert!(matches!(feed.next(), Next::Empty));
     }
 
     #[test]

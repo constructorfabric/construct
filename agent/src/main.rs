@@ -132,7 +132,7 @@ fn run() -> std::io::Result<()> {
         }
         None => (server, None),
     };
-    let server = with_chat(
+    let (server, chat) = with_chat(
         with_settings(server, settings.as_ref()),
         settings.as_ref(),
         rt.handle(),
@@ -141,6 +141,21 @@ fn run() -> std::io::Result<()> {
         &activity,
         render_tool,
     );
+    // What `memory-erase` clears besides the host's copy; the follower is given the handle below.
+    let follow_erase = construct_agent::records::data_dir().ok().map(|dir| {
+        let tools = connectors::Registry::builtin();
+        let names: Vec<&str> = tools.iter().map(connectors::Tool::name).collect();
+        construct_agent::follow::Erase::new(&dir, &names)
+    });
+    if let (Some(manage), Some(sessions)) = (&manage, &follow_erase) {
+        manage.set_own_stores(construct_agent::erase::own_stores(
+            sessions,
+            chat.as_ref(),
+            manage,
+            &activity,
+            rt.handle(),
+        ));
+    }
     eprintln!(
         "construct-agent {} listening on {}",
         env!("CARGO_PKG_VERSION"),
@@ -158,7 +173,13 @@ fn run() -> std::io::Result<()> {
     // The log readers need no database: they scan on a thread of their own, so neither the
     // first scan nor a slow disk holds up `status`. The thread stops when `follow_alive` is
     // dropped, so it is kept until the agent stops (see the end of this function).
-    let follow_alive = spawn_follower(&connectors, settings.as_ref(), manage.as_ref(), &activity);
+    let follow_alive = spawn_follower(
+        &connectors,
+        settings.as_ref(),
+        manage.as_ref(),
+        &activity,
+        follow_erase,
+    );
 
     let (mut term, mut int) = rt.block_on(async {
         Ok::<_, std::io::Error>((
@@ -317,7 +338,7 @@ fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
 }
 
 /// Serve the chat commands; without settings (the model comes from them) or without a data
-/// directory they answer an error.
+/// directory they answer an error. The chat is returned too, for the person's erasure.
 #[cfg(unix)]
 fn with_chat(
     server: construct_agent::ipc::Server,
@@ -327,10 +348,13 @@ fn with_chat(
     manage: Option<&construct_agent::manage::Manager>,
     activity: &construct_agent::activity::Feed,
     render_tool: Option<std::sync::Arc<dyn construct_agent::chat::tool::ChatTool>>,
-) -> construct_agent::ipc::Server {
+) -> (
+    construct_agent::ipc::Server,
+    Option<construct_agent::chat::Chat>,
+) {
     use construct_agent::chat::{Chat, Deadlines};
     let Some(settings) = settings else {
-        return server;
+        return (server, None);
     };
     let chat = construct_agent::records::data_dir()
         .map_err(|e| e.to_string())
@@ -348,10 +372,10 @@ fn with_chat(
                 .map_err(|e| e.to_string())
         });
     match chat {
-        Ok(chat) => server.with_chat(chat),
+        Ok(chat) => (server.with_chat(chat.clone()), Some(chat)),
         Err(e) => {
             eprintln!("chat unavailable: {e}");
-            server
+            (server, None)
         }
     }
 }
@@ -440,6 +464,7 @@ fn spawn_follower(
     settings: Option<&construct_agent::settings::Settings>,
     manage: Option<&construct_agent::manage::Manager>,
     activity: &construct_agent::activity::Feed,
+    erase: Option<construct_agent::follow::Erase>,
 ) -> std::sync::mpsc::Sender<()> {
     let tools = connectors::Registry::builtin();
     let Some(settings) = settings else {
@@ -462,6 +487,7 @@ fn spawn_follower(
         Some(switch),
         manage.map(construct_agent::manage::Manager::observer),
         Some(activity.recorder()),
+        erase,
     )
 }
 

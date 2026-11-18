@@ -20,6 +20,10 @@ use construct_agent::follow::{self, Follower, Stats};
 use construct_agent::ipc::{Server, query_status};
 use construct_agent::records::{FileSink, Sink};
 
+mod common;
+
+use common::tools::{Under, claude_user, codex_item, codex_meta, codex_user};
+
 /// How the fake tool lists its files.
 enum List {
     /// Every entry of its directory.
@@ -396,33 +400,6 @@ fn what_is_copied_from_the_logs_is_for_the_user_only() {
     assert_eq!(mode(s.data.join("connectors-progress.json")), 0o600);
 }
 
-/// A user line of a Claude Code session file.
-fn claude_user(text: &str) -> String {
-    format!(
-        r#"{{"type":"user","timestamp":"2026-11-11T10:15:30.123Z","cwd":"/w","sessionId":"sess-1","message":{{"role":"user","content":"{text}"}}}}"#
-    )
-}
-
-/// A line of a Codex session file: `kind` is its `type`, `payload` its JSON payload.
-fn codex_item(kind: &str, payload: &str) -> String {
-    format!(r#"{{"timestamp":"2026-11-11T10:15:30.123Z","type":"{kind}","payload":{payload}}}"#)
-}
-
-/// The first line of a Codex session file.
-fn codex_meta(id: &str) -> String {
-    codex_item("session_meta", &format!(r#"{{"id":"{id}","cwd":"/w"}}"#))
-}
-
-/// A user message line of a Codex session file.
-fn codex_user(text: &str) -> String {
-    codex_item(
-        "response_item",
-        &format!(
-            r#"{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{text}"}}]}}"#
-        ),
-    )
-}
-
 #[test]
 fn the_real_tools_count_what_they_skip() {
     let s = Setup::new("real");
@@ -657,32 +634,6 @@ fn a_subagent_run_in_files_of_its_own_leaves_no_hole_in_the_parent_minutes() {
     );
 }
 
-/// A real tool that looks for its files under a directory of the test's home instead of
-/// the one its environment variable names; everything else is the tool's own.
-struct Under<T>(T, &'static str);
-
-impl<T: Tool> Tool for Under<T> {
-    fn name(&self) -> &'static str {
-        self.0.name()
-    }
-
-    fn root(&self, home: &Path) -> PathBuf {
-        home.join(self.1)
-    }
-
-    fn find_files(&self, root: &Path) -> io::Result<Listing> {
-        self.0.find_files(root)
-    }
-
-    fn open_file(&self, path: &Path) -> FileState {
-        self.0.open_file(path)
-    }
-
-    fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed {
-        self.0.parse_line(state, line)
-    }
-}
-
 #[test]
 fn a_listing_error_goes_away_when_the_root_can_be_listed_again() {
     let s = Setup::new("flaky");
@@ -895,6 +846,10 @@ impl Sink for Crashing {
 
     fn load_progress(&self) -> io::Result<construct_agent::records::Progress> {
         self.inner.load_progress()
+    }
+
+    fn forget(&mut self) {
+        self.inner.forget();
     }
 }
 

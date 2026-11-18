@@ -105,6 +105,15 @@ impl Journal {
         self.append('!', key)
     }
 
+    /// Forgets every prompt: the file is emptied and so are the sets.
+    pub(super) fn erase(&mut self) -> io::Result<()> {
+        self.file.set_len(0)?;
+        self.file.sync_all()?;
+        self.sent.clear();
+        self.refused.clear();
+        Ok(())
+    }
+
     /// Takes the mark back: the call did not reach the model.
     pub(super) fn undo(&mut self, key: u64) -> io::Result<()> {
         if self.sent.remove(&key) {
@@ -196,5 +205,27 @@ mod tests {
     fn an_absurd_number_of_days_is_an_error_not_a_panic() {
         assert!(days_ago(u32::MAX).is_err());
         assert!(days_ago(30).is_ok());
+    }
+
+    #[test]
+    fn erasing_empties_the_file_and_the_sets_so_the_same_keys_count_again() {
+        let dir = std::env::temp_dir().join(format!("cb-journal-erase-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut journal = Journal::open(&dir).unwrap();
+        assert!(journal.begin(1).unwrap());
+        journal.refuse(2).unwrap();
+        assert!(journal.is_done(1) && journal.is_done(2));
+
+        journal.erase().unwrap();
+
+        assert!(journal.sent.is_empty() && journal.refused.is_empty());
+        assert!(!journal.is_done(1) && !journal.is_done(2));
+        assert_eq!(fs::metadata(dir.join(JOURNAL_FILE)).unwrap().len(), 0);
+        // Appends go on from the start of the emptied file, and a reopen reads only them.
+        assert!(journal.begin(1).unwrap());
+        let reopened = Journal::open(&dir).unwrap();
+        assert!(reopened.sent.contains(&1) && reopened.refused.is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -26,6 +26,8 @@ pub mod scripted;
 pub mod sessions;
 #[cfg(unix)]
 pub mod stand;
+#[cfg(unix)]
+pub mod tools;
 
 use construct_agent::autostart::{CommandRunner, linux, macos};
 use serde_json::{Value, json};

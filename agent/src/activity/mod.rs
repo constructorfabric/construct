@@ -23,7 +23,7 @@ use crate::sync::lock;
 use findings::Findings;
 
 mod feed;
-pub use feed::{FINDINGS_POLL, Feed, Readiness};
+pub use feed::{ActivityStore, FINDINGS_POLL, Feed, Readiness};
 pub mod assign;
 pub mod findings;
 pub mod rules;
@@ -223,17 +223,7 @@ impl Store {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
         lock_store(&mut tx).await?;
         let findings = self.findings();
-        for statement in [
-            "delete from activity.minutes",
-            "delete from activity.turns",
-            "delete from activity.mentions",
-            "delete from activity.sessions",
-        ] {
-            sqlx::query(statement)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| err("clear the store", e))?;
-        }
+        clear_in(&mut tx).await?;
         let mut applied = 0;
         for file in files {
             for record in read_records(&file).map_err(|e| err("read a record file", e))? {
@@ -290,6 +280,17 @@ impl Store {
         tx.commit().await.map_err(|e| err("commit", e))?;
         *lock(&self.findings) = new;
         Ok(changed)
+    }
+
+    /// Removes every row, in one transaction.
+    ///
+    /// # Errors
+    /// Fails when a statement is refused; the store is then as before.
+    pub async fn clear(&self) -> Result<(), Error> {
+        let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
+        lock_store(&mut tx).await?;
+        clear_in(&mut tx).await?;
+        tx.commit().await.map_err(|e| err("commit", e))
     }
 
     /// Every session, ordered by tool and session.
@@ -444,6 +445,22 @@ async fn lock_store(conn: &mut PgConnection) -> Result<(), Error> {
         .execute(&mut *conn)
         .await
         .map_err(|e| err("lock the store", e))?;
+    Ok(())
+}
+
+/// Deletes every row; the caller holds the lock of the store.
+async fn clear_in(conn: &mut PgConnection) -> Result<(), Error> {
+    for statement in [
+        "delete from activity.minutes",
+        "delete from activity.turns",
+        "delete from activity.mentions",
+        "delete from activity.sessions",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| err("clear the store", e))?;
+    }
     Ok(())
 }
 
