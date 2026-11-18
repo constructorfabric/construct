@@ -302,15 +302,19 @@ fn write_answer(text: &mut String, answer: &Answer, kind: Option<WidgetKind>, by
 }
 
 fn errors_text(error: &Value) -> String {
-    let place = match (error["kind"].as_str(), error["place"].as_str()) {
-        (Some("file"), _) | (_, None) => "the file".to_owned(),
-        (_, Some("")) => "the document".to_owned(),
-        (_, Some(place)) => place.to_owned(),
+    // The reader always gives a kind, a place (empty for the whole document) and a message.
+    let place = match (
+        error["kind"].as_str(),
+        error["place"].as_str().unwrap_or(""),
+    ) {
+        (Some("file"), _) => "the file",
+        (_, "") => "the document",
+        (_, place) => place,
     };
     format!(
         "The dashboard file has an error. The page keeps showing the last good version.\n\
          - {place}: {}",
-        error["message"].as_str().unwrap_or("it cannot be used")
+        error["message"].as_str().unwrap_or("")
     )
 }
 
@@ -332,7 +336,7 @@ impl RenderDashboard {
         let mut text = String::new();
         match ask {
             Ask::Document => {
-                let title = document["title"].as_str().unwrap_or("Dashboard");
+                let title = document["title"].as_str().unwrap_or("");
                 let _ = writeln!(text, "Dashboard {title:?}");
                 self.widgets(&payload, &mut text)?;
             }
@@ -362,9 +366,11 @@ impl RenderDashboard {
         for widget in &payload.widgets {
             let spec = spec_of(widget, payload);
             let period = widget.period.unwrap_or(payload.period);
-            let by = spec.grouping.map(|_| match widget.kind {
-                WidgetKind::DaySummary => GroupBy::Project,
-                _ => widget.group_by.unwrap_or(GroupBy::Project),
+            // Only a table names what it groups by (the document refuses one without), and a day
+            // summary is counted by project.
+            let by = spec.grouping.and(match widget.kind {
+                WidgetKind::DaySummary => Some(GroupBy::Project),
+                _ => widget.group_by,
             });
             let _ = writeln!(
                 text,

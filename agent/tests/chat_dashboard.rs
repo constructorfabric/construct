@@ -405,6 +405,33 @@ fn a_period_with_a_grouping_renders_that_table_and_leaves_the_file_alone() {
 }
 
 #[test]
+fn hidden_and_renamed_projects_are_left_out_and_named_as_the_page_does() {
+    let stand = Stand::new(vec![
+        Turn::Calls(vec![(
+            "render_dashboard",
+            json!({ "period": "this_week", "group_by": "project", "sessions": "all" }),
+        )]),
+        Turn::Text("Done."),
+    ]);
+    let mut document = default_activity();
+    document["payload"]["hidden_projects"] = json!(["blog"]);
+    document["payload"]["project_names"] = json!({ "/w/shop": "The shop" });
+    stand.write(&document.to_string());
+    is_done(&stand.say());
+    // The time of `/w/blog` is not counted, `/w/shop` has its new name, and the table says how many
+    // hidden projects had time.
+    assert_eq!(
+        stand.results(),
+        ["Table for this_week, all sessions, by project
+  Total: 1 h 30 min (3 sessions)
+  By project: time, share, sessions
+  The shop: 1 h 0 min, 67%, 2
+  lab: 30 min, 33%, 1
+  Hidden projects with time: 1"]
+    );
+}
+
+#[test]
 fn a_document_with_errors_returns_them_with_their_places() {
     let stand = Stand::new(vec![
         Turn::Calls(vec![("render_dashboard", json!({}))]),
