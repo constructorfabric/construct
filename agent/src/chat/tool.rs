@@ -139,6 +139,19 @@ impl ChatTools {
         })
     }
 
+    /// The list without the tool called `name`, in the same order.
+    pub(super) fn without(&self, name: &str) -> Self {
+        // Part of a list that was accepted is accepted.
+        Self::new(
+            self.tools
+                .iter()
+                .filter(|tool| tool.name() != name)
+                .cloned()
+                .collect(),
+        )
+        .unwrap_or_default()
+    }
+
     /// The `tools` array of the request; `None` when there is no tool.
     pub(super) fn listing(&self) -> Option<&RawValue> {
         self.listing.as_deref()

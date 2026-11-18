@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::TcpListener;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -24,66 +24,11 @@ use serde_json::{Value, json};
 
 mod common;
 
+use common::scripted::{Turn, provider};
 use common::stand::{chat_send, deadlines};
 use common::{Agent, done, head, raw_chunk, read_request};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
-
-/// One model turn: the calls it asks for as `(name, arguments)`, or a text when there are none.
-enum Turn {
-    Calls(Vec<(&'static str, Value)>),
-    Text(&'static str),
-}
-
-/// A provider that answers request `n` with `turns[n]` and notes every request body.
-fn provider(turns: Vec<Turn>) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let bodies = Arc::new(Mutex::new(Vec::new()));
-    let noted = Arc::clone(&bodies);
-    let turns = Arc::new(turns);
-    thread::spawn(move || {
-        let count = Arc::new(AtomicU32::new(0));
-        for stream in listener.incoming() {
-            let mut stream = stream.unwrap();
-            let (body, _) = read_request(&mut stream);
-            noted.lock().unwrap().push(body);
-            let n = count.fetch_add(1, Ordering::SeqCst) as usize;
-            let turns = Arc::clone(&turns);
-            thread::spawn(move || {
-                head(&mut stream);
-                let reason = match turns.get(n) {
-                    Some(Turn::Calls(calls)) => {
-                        for (at, (name, arguments)) in calls.iter().enumerate() {
-                            let call = json!({ "index": at, "id": format!("call_{n}_{at}"),
-                                "type": "function",
-                                "function": { "name": name, "arguments": arguments.to_string() } });
-                            raw_chunk(
-                                &mut stream,
-                                &json!({ "choices": [{ "delta": { "tool_calls": [call] } }] }),
-                            );
-                        }
-                        "tool_calls"
-                    }
-                    Some(Turn::Text(text)) => {
-                        raw_chunk(
-                            &mut stream,
-                            &json!({ "choices": [{ "delta": { "content": text } }] }),
-                        );
-                        "stop"
-                    }
-                    None => "stop",
-                };
-                raw_chunk(
-                    &mut stream,
-                    &json!({ "choices": [{ "delta": {}, "finish_reason": reason }] }),
-                );
-                done(&mut stream);
-            });
-        }
-    });
-    (addr, bodies)
-}
 
 struct Stand {
     base: PathBuf,

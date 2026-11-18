@@ -257,7 +257,17 @@ pub fn request_body(
     records: &[Record],
     tools: Option<&RawValue>,
 ) -> Result<String, serde_json::Error> {
-    let mut messages = vec![plain("system", INSTRUCTION)];
+    request_body_with(INSTRUCTION, model, records, tools)
+}
+
+/// The same as [`request_body`], with `instruction` as the system message.
+pub(super) fn request_body_with(
+    instruction: &str,
+    model: &str,
+    records: &[Record],
+    tools: Option<&RawValue>,
+) -> Result<String, serde_json::Error> {
+    let mut messages = vec![plain("system", instruction)];
     for (at, record) in records.iter().enumerate() {
         match record {
             Record::Turn(Turn { role, text, .. }) => messages.push(plain(
