@@ -1,10 +1,6 @@
 import {
   Alert,
   Button,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
   DatePicker,
   Empty,
   EmptyActions,
@@ -13,52 +9,91 @@ import {
   EmptyTitle,
   Heading,
   Spinner,
-  Text,
-  ToggleGroup,
-  ToggleGroupItem,
 } from '@gears-frontx/ui-kit';
-import { addDays, startOfDay } from 'date-fns';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { isWhose, whoseValues } from '../dashboard-protocol';
-import type { Whose } from '../dashboard-protocol';
+import type { DashboardDocument, DocumentProblem } from '../dashboard-protocol';
 import { t } from '../translation';
 import styles from './app.module.css';
-import { formatMinutes, mondayOf, shortDate } from './dashboard-period';
-import { useDashboard } from './useDashboard';
-import type { DashboardState } from './useDashboard';
+import { DashboardGrid } from './DashboardGrid';
+import { DashboardWidget } from './DashboardWidgets';
+import { addDays, startOfDay } from 'date-fns';
+import { drawnWidgets, useDashboard } from './useDashboard';
+import type { DashboardState, WidgetNumbers } from './useDashboard';
 
-function Total({
-  id,
-  title,
-  value,
+/** Dragging and resizing have no control yet; the address of the page can turn them on. */
+function useArrangeable(): boolean {
+  return new URLSearchParams(window.location.search).has('arrange');
+}
+
+function ProblemNote({
+  problem,
+  shownLast,
 }: {
-  readonly id: string;
-  readonly title: string;
-  readonly value: string;
+  readonly problem: DocumentProblem;
+  readonly shownLast: boolean;
 }): ReactNode {
   return (
-    <Card className={styles.card}>
-      <CardHeader>
-        <CardTitle render={<h2 />}>{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Text id={id} typography="kpi" render={<p />}>
-          {value}
-        </Text>
-      </CardContent>
-    </Card>
+    <Alert id="dashboard-problem" variant="destructive">
+      <span className={styles.alertContent}>
+        <span>
+          {problem.place === ''
+            ? t('DashboardPage.Problem', { message: problem.message })
+            : t('DashboardPage.Problem.At', { place: problem.place, message: problem.message })}
+        </span>
+        {shownLast && <span>{t('DashboardPage.Problem.LastGood')}</span>}
+      </span>
+    </Alert>
+  );
+}
+
+/** Whether nothing was counted for any of the widgets that show numbers. */
+function nothingCounted(
+  document: DashboardDocument,
+  numbers: ReadonlyMap<string, WidgetNumbers>,
+): boolean {
+  const widgets = drawnWidgets(document);
+  return (
+    widgets.length > 0 &&
+    widgets.every((widget) => {
+      const counted = numbers.get(widget.id);
+      return (
+        counted?.ok === true &&
+        counted.numbers.sessionCount === 0 &&
+        counted.numbers.totalMinutes === 0
+      );
+    })
+  );
+}
+
+function Widgets({
+  document,
+  numbers,
+}: {
+  readonly document: DashboardDocument;
+  readonly numbers: ReadonlyMap<string, WidgetNumbers>;
+}): ReactNode {
+  const arrangeable = useArrangeable();
+  // The same list for the same document: the grid starts again from the document's places
+  // when the list changes, and so must not get a new one at every render.
+  const widgets = useMemo(() => drawnWidgets(document), [document]);
+  return (
+    <DashboardGrid
+      widgets={widgets}
+      arrangeable={arrangeable}
+      render={(widget) => (
+        <DashboardWidget document={document} widget={widget} numbers={numbers.get(widget.id)} />
+      )}
+    />
   );
 }
 
 function Body({
   state,
-  day,
   onOpenSettings,
 }: {
   readonly state: DashboardState;
-  readonly day: Date;
   readonly onOpenSettings: () => void;
 }): ReactNode {
   if (state.kind === 'reading') {
@@ -71,31 +106,63 @@ function Body({
       </Alert>
     );
   }
-  const { collecting } = state;
-  if (state.sessionCount === 0 && state.totalMinutes === 0) {
-    return collecting ? (
-      <Empty id="dashboard-empty">
+  const { document, problem, numbers, collecting } = state;
+  if (document === null) {
+    return problem === null ? (
+      <Empty id="dashboard-none">
         <EmptyHeader>
-          <EmptyTitle render={<h2 />}>{t('DashboardPage.Empty.Title')}</EmptyTitle>
-          <EmptyDescription>{t('DashboardPage.Empty.Text')}</EmptyDescription>
+          <EmptyTitle render={<h2 />}>{t('DashboardPage.None.Title')}</EmptyTitle>
+          <EmptyDescription>{t('DashboardPage.None.Text')}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     ) : (
-      <Empty id="dashboard-off">
-        <EmptyHeader>
-          <EmptyTitle render={<h2 />}>{t('DashboardPage.Off.Title')}</EmptyTitle>
-          <EmptyDescription>{t('DashboardPage.Off.Text')}</EmptyDescription>
-        </EmptyHeader>
-        <EmptyActions>
-          <Button id="dashboard-open-settings" variant="link" onClick={onOpenSettings}>
-            {t('DashboardPage.OpenSettings')}
-          </Button>
-        </EmptyActions>
-      </Empty>
+      <ProblemNote problem={problem} shownLast={false} />
+    );
+  }
+  const problemNote = problem === null ? null : <ProblemNote problem={problem} shownLast />;
+  if (drawnWidgets(document).length === 0) {
+    return (
+      <>
+        {problemNote}
+        <Empty id="dashboard-no-widgets">
+          <EmptyHeader>
+            <EmptyTitle render={<h2 />}>{t('DashboardPage.NoWidgets.Title')}</EmptyTitle>
+            <EmptyDescription>{t('DashboardPage.NoWidgets.Text')}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </>
+    );
+  }
+  if (nothingCounted(document, numbers)) {
+    return (
+      <>
+        {problemNote}
+        {collecting ? (
+          <Empty id="dashboard-empty">
+            <EmptyHeader>
+              <EmptyTitle render={<h2 />}>{t('DashboardPage.Empty.Title')}</EmptyTitle>
+              <EmptyDescription>{t('DashboardPage.Empty.Text')}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <Empty id="dashboard-off">
+            <EmptyHeader>
+              <EmptyTitle render={<h2 />}>{t('DashboardPage.Off.Title')}</EmptyTitle>
+              <EmptyDescription>{t('DashboardPage.Off.Text')}</EmptyDescription>
+            </EmptyHeader>
+            <EmptyActions>
+              <Button id="dashboard-open-settings" variant="link" onClick={onOpenSettings}>
+                {t('DashboardPage.OpenSettings')}
+              </Button>
+            </EmptyActions>
+          </Empty>
+        )}
+      </>
     );
   }
   return (
     <>
+      {problemNote}
       {!collecting && (
         <Alert id="dashboard-off-note">
           <span className={styles.alertContent}>
@@ -111,35 +178,19 @@ function Body({
           </span>
         </Alert>
       )}
-      <Total
-        id="dashboard-week-total"
-        title={t('DashboardPage.Week')}
-        value={formatMinutes(state.totalMinutes)}
-      />
-      <Total
-        id="dashboard-day-total"
-        title={t('DashboardPage.Day', { day: shortDate(day) })}
-        value={formatMinutes(state.dayMinutes)}
-      />
-      <Total
-        id="dashboard-sessions"
-        title={t('DashboardPage.Sessions')}
-        value={String(state.sessionCount)}
-      />
+      <Widgets document={document} numbers={numbers} />
     </>
   );
 }
 
-/** The dashboard: the numbers of one week, for the user's own time, the unattended or both. */
+/** The dashboard: the widgets of the dashboard document, counted as of the day the page shows. */
 export function DashboardPage({
   onOpenSettings,
 }: {
   readonly onOpenSettings: () => void;
 }): ReactNode {
   const [day, setDay] = useState(() => startOfDay(new Date()));
-  const [whose, setWhose] = useState<Whose>('own');
-  const state = useDashboard(day, whose);
-  const first = mondayOf(day);
+  const state = useDashboard(day);
   const move = (days: number): void => {
     setDay((current) => addDays(current, days));
   };
@@ -198,30 +249,8 @@ export function DashboardPage({
             onClick={() => move(7)}
           />
         </div>
-        <ToggleGroup
-          id="dashboard-whose"
-          variant="outline"
-          size="sm"
-          aria-label={t('DashboardPage.Whose')}
-          value={[whose]}
-          onValueChange={([next]) => {
-            // Pressing the chosen item again would leave none: the choice stays.
-            if (isWhose(next)) {
-              setWhose(next);
-            }
-          }}
-        >
-          {whoseValues.map((value) => (
-            <ToggleGroupItem key={value} value={value} id={`dashboard-whose-${value}`}>
-              {t(`DashboardPage.Whose.${value}`)}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
       </div>
-      <Text id="dashboard-period" tone="muted" className={styles.period}>
-        {t('DashboardPage.Period', { first: shortDate(first), last: shortDate(addDays(first, 6)) })}
-      </Text>
-      <Body state={state} day={day} onOpenSettings={onOpenSettings} />
+      <Body state={state} onOpenSettings={onOpenSettings} />
     </>
   );
 }

@@ -1,5 +1,5 @@
 import { addDays, format, startOfDay, startOfWeek } from 'date-fns';
-import type { DayBounds } from '../dashboard-protocol';
+import type { DayBounds, Period } from '../dashboard-protocol';
 import { t } from '../translation';
 
 /** The Monday of the week of `date`; the page's weeks run Monday to Sunday. */
@@ -44,4 +44,31 @@ export function formatMinutes(minutes: number): string {
   return whole < 60
     ? t('DashboardPage.Minutes', { minutes: whole })
     : t('DashboardPage.HoursMinutes', { hours: Math.floor(whole / 60), minutes: whole % 60 });
+}
+
+/** The days of a period, as the document names it, counted from `anchor`, which stands for today. */
+export function periodDays(period: Period, anchor: Date): DayBounds[] {
+  const today = startOfDay(anchor);
+  const run = (first: Date, count: number): DayBounds[] =>
+    Array.from({ length: count }, (_, index) => dayBounds(addDays(first, index)));
+  const month = (offset: number): DayBounds[] => {
+    const first = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+    return run(first, new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate());
+  };
+  switch (period) {
+    case 'today':
+      return run(today, 1);
+    case 'this_week':
+      return weekBounds(today);
+    case 'last_week':
+      return weekBounds(addDays(today, -7));
+    case 'this_month':
+      return month(0);
+    case 'last_month':
+      return month(-1);
+    case 'last_7_days':
+      return run(addDays(today, -6), 7);
+    case 'last_30_days':
+      return run(addDays(today, -29), 30);
+  }
 }

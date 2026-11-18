@@ -161,7 +161,7 @@ export async function windowText(page: Page): Promise<string> {
 export async function withStandIn(
   session: Session,
   answer: string | ((line: string) => string | Promise<string>),
-  check: (page: Page) => Promise<void>,
+  check: (page: Page, app: ElectronApplication) => Promise<void>,
 ): Promise<void> {
   const socketPath = agentSocketPath(session.env, process.platform);
   session.agent.kill('SIGTERM');
@@ -186,7 +186,7 @@ export async function withStandIn(
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   const { app, page } = await openApp(session);
   try {
-    await check(page);
+    await check(page, app);
     await expectNoPolicyViolations(page);
   } finally {
     await app.close();

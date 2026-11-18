@@ -6,6 +6,9 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self'; style-src 'self'"
     />
+    <!-- The dragging library looks for this element before it adds a <style> element of its own,
+         which the policy above would refuse; an element it finds is left as it is. -->
+    <meta id="react-draggable-style-el" />
     <title>Construct Browser</title>
   </head>
   <body>
