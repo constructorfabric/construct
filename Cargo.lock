@@ -1751,6 +1751,7 @@ dependencies = [
  "jsonschema 0.60.2",
  "libc",
  "postgresql_embedded",
+ "regex",
  "reqwest",
  "schemars",
  "serde",

@@ -258,6 +258,25 @@ impl Workspace {
         Ok(found)
     }
 
+    /// Removes a folder and everything in it, or a file. Links inside are removed, never
+    /// followed. A path that is not there is not an error.
+    ///
+    /// # Errors
+    /// The path is not valid, or what is there cannot be removed.
+    pub fn remove_all(&self, path: &str) -> Result<(), Error> {
+        let path = relative(path)?;
+        let removed = match self.root.remove_dir_all(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotADirectory => {
+                self.root.remove_file(&path)
+            }
+            other => other,
+        };
+        match removed {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
+    }
+
     fn read_text(&self, path: &Path) -> Result<String, Error> {
         // Not blocking: a named pipe with no writer is opened at once and refused below instead of
         // holding the call for ever.
@@ -440,6 +459,39 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["c.txt"], "no temporary file is left behind");
+    }
+
+    #[test]
+    fn remove_all_removes_a_folder_or_a_file_and_never_follows_a_link_out() {
+        let (data, ws) = open();
+        let outside = data.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), "keep").unwrap();
+        ws.write("a/b/c.txt", "text").unwrap();
+        std::os::unix::fs::symlink(&outside, data.path().join("workspace/a/link")).unwrap();
+
+        ws.remove_all("a").unwrap();
+
+        assert!(!data.path().join("workspace/a").exists());
+        assert_eq!(
+            fs::read_to_string(outside.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            ws.remove_all("a"),
+            Ok(()),
+            "a missing folder is not an error"
+        );
+        assert_eq!(ws.remove_all("../outside"), Err(Error::InvalidPath));
+
+        ws.write("f.txt", "file").unwrap();
+        ws.remove_all("f.txt").unwrap();
+        assert!(!data.path().join("workspace/f.txt").exists());
+
+        std::os::unix::fs::symlink(&outside, data.path().join("workspace/l")).unwrap();
+        ws.remove_all("l").unwrap();
+        assert!(!data.path().join("workspace/l").exists());
+        assert!(outside.join("keep.txt").exists());
     }
 
     #[test]
