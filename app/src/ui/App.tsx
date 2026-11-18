@@ -12,20 +12,21 @@ import {
   SidebarProvider,
   StatusDot,
 } from '@gears-frontx/ui-kit';
-import { Activity, MessageSquare, Settings } from 'lucide-react';
+import { Activity, ChartColumn, MessageSquare, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { ChatPage } from './ChatPage';
 import { ConversationList } from './ConversationList';
+import { DashboardPage } from './DashboardPage';
 import { SettingsPage } from './SettingsPage';
 import { tones } from './state-tones';
 import { StatusPage } from './StatusPage';
 import { useAgentStatus } from './useAgentStatus';
 import { useChat } from './useChat';
 
-type Page = 'chat' | 'status' | 'settings';
+type Page = 'chat' | 'dashboard' | 'status' | 'settings';
 
 export function App(): ReactNode {
   // A page is a piece of state: the app has no addresses to navigate to.
@@ -73,6 +74,21 @@ export function App(): ReactNode {
                   >
                     <MessageSquare aria-hidden />
                     <span>{t('App.Chat')}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    isActive={page === 'dashboard'}
+                    render={
+                      <button
+                        type="button"
+                        aria-current={page === 'dashboard' ? 'page' : undefined}
+                        onClick={() => setPage('dashboard')}
+                      />
+                    }
+                  >
+                    <ChartColumn aria-hidden />
+                    <span>{t('App.Dashboard')}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
@@ -143,7 +159,13 @@ export function App(): ReactNode {
           />
         ) : (
           <div className={styles.column}>
-            {page === 'status' ? <StatusPage status={status} /> : <SettingsPage />}
+            {page === 'status' ? (
+              <StatusPage status={status} />
+            ) : page === 'dashboard' ? (
+              <DashboardPage onOpenSettings={() => setPage('settings')} />
+            ) : (
+              <SettingsPage />
+            )}
           </div>
         )}
       </SidebarInset>

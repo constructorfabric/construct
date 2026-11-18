@@ -1,8 +1,10 @@
 import { execFileSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { agentSocketPath } from '../src/agent-socket';
 import { _electron as electron, expect, test as base } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
 
@@ -149,6 +151,47 @@ export async function windowText(page: Page): Promise<string> {
       JSON.stringify({ ...sessionStorage }),
     ].join('\n');
   });
+}
+
+/**
+ * Stops the real agent, puts a stand-in on its socket that answers each request line with
+ * `answer` (a fixed reply, or a function of the line), and runs `check` on a new window; any
+ * `securitypolicyviolation` of the page fails the check.
+ */
+export async function withStandIn(
+  session: Session,
+  answer: string | ((line: string) => string | Promise<string>),
+  check: (page: Page) => Promise<void>,
+): Promise<void> {
+  const socketPath = agentSocketPath(session.env, process.platform);
+  session.agent.kill('SIGTERM');
+  if (session.agent.exitCode === null && session.agent.signalCode === null) {
+    await new Promise((resolve) => session.agent.once('exit', resolve));
+  }
+  mkdirSync(path.dirname(socketPath), { recursive: true });
+  rmSync(socketPath, { force: true });
+  const server = net.createServer((socket) => {
+    socket.on('error', () => undefined);
+    if (typeof answer === 'string') {
+      socket.end(`${answer}\n`);
+      return;
+    }
+    socket.setEncoding('utf8');
+    socket.once('data', (data: string) => {
+      void Promise.resolve(answer(data.trim())).then((reply) => {
+        socket.end(`${reply}\n`);
+      });
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  const { app, page } = await openApp(session);
+  try {
+    await check(page);
+    await expectNoPolicyViolations(page);
+  } finally {
+    await app.close();
+    server.close();
+  }
 }
 
 export const test = base.extend<{ session: Session; app: ElectronApplication; page: Page }>({

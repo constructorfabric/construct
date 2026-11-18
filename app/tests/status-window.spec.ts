@@ -1,10 +1,7 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
-import { agentSocketPath } from '../src/agent-socket';
 import type { Page } from '@playwright/test';
-import { appDir, expect, expectNoPolicyViolations, openApp, test as base } from './fixtures';
+import { appDir, expect, test as base, withStandIn } from './fixtures';
 import type { Session } from './fixtures';
 import { screenshotBothThemes, screenshotInTheme } from './screenshots';
 
@@ -78,38 +75,6 @@ test('the Status page shows stopped, with its reason, when no agent runs', async
   await expect(page.locator('#agent-detail')).toContainText(/ENOENT|ECONNREFUSED/);
   await expect(page.locator('#agent-model')).toHaveCount(0);
 });
-
-/**
- * Stops the real agent, puts a stand-in on its socket that answers every request with `reply`,
- * and runs `check` on a new window; any `securitypolicyviolation` of the page fails the check.
- */
-async function withStandIn(
-  session: Session,
-  reply: string,
-  check: (page: Page) => Promise<void>,
-): Promise<void> {
-  const socketPath = agentSocketPath(session.env, process.platform);
-  const socketDir = path.dirname(socketPath);
-  session.agent.kill('SIGTERM');
-  if (session.agent.exitCode === null && session.agent.signalCode === null) {
-    await new Promise((resolve) => session.agent.once('exit', resolve));
-  }
-  mkdirSync(socketDir, { recursive: true });
-  rmSync(socketPath, { force: true });
-  const server = net.createServer((socket) => {
-    socket.on('error', () => undefined);
-    socket.end(`${reply}\n`);
-  });
-  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
-  const { app, page } = await openApp(session);
-  try {
-    await check(page);
-    await expectNoPolicyViolations(page);
-  } finally {
-    await app.close();
-    server.close();
-  }
-}
 
 function runningReply(fields: Record<string, unknown>): string {
   return JSON.stringify({
@@ -336,7 +301,9 @@ test('the window cannot navigate away or open another window', async ({ app, pag
   expect(app.windows()).toHaveLength(1);
 });
 
-test('the sidebar switches between the Chat, Status and Settings pages', async ({ page }) => {
+test('the sidebar switches between the Chat, Dashboard, Status and Settings pages', async ({
+  page,
+}) => {
   const sidebar = page.getByRole('navigation', { name: 'Pages' });
   await expect(sidebar).toBeVisible();
   await expect(sidebar.locator('#sidebar-agent-state')).toBeVisible();
@@ -354,6 +321,13 @@ test('the sidebar switches between the Chat, Status and Settings pages', async (
 
   await page.getByRole('button', { name: 'Status', exact: true }).click();
   await expect(page.locator('#agent-status')).toHaveText('running');
+
+  await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Dashboard', exact: true })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
 });
 
 test('the window opens at 960 by 640 with a 720 by 480 minimum', async ({ app, page }) => {
