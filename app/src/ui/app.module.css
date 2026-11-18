@@ -360,3 +360,29 @@
   gap: var(--space-2);
   justify-content: space-between;
 }
+
+.memoryKind {
+  margin-top: var(--space-6);
+}
+
+.branchTrigger {
+  padding: var(--space-2) var(--space-4);
+}
+
+.branchLabel {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.branchLabel svg {
+  flex: none;
+  height: var(--icon-size-sm);
+  width: var(--icon-size-sm);
+}
+
+.branchContent {
+  padding-inline-start: var(--space-6);
+}

@@ -16,6 +16,8 @@ import {
 } from './dashboard-protocol';
 import type { DashboardResult, DocumentResult } from './dashboard-protocol';
 import { OPEN_LINK_CHANNEL } from './external';
+import { MEMORY_FACTS_CHANNEL, MEMORY_VERSION_CHANNEL } from './memory-protocol';
+import type { FactsResult, VersionResult } from './memory-protocol';
 import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
 import type { AgentStatus, ConstructAgentApi } from './agent-status';
 import {
@@ -59,6 +61,8 @@ const api: ConstructAgentApi = {
     ipcRenderer.invoke(DASHBOARD_DOCUMENT_CHANNEL) as Promise<DocumentResult>,
   changeDashboardProject: (change) =>
     ipcRenderer.invoke(DASHBOARD_PROJECT_CHANNEL, change) as Promise<DocumentResult>,
+  getMemoryFacts: () => ipcRenderer.invoke(MEMORY_FACTS_CHANNEL) as Promise<FactsResult>,
+  getMemoryVersion: () => ipcRenderer.invoke(MEMORY_VERSION_CHANNEL) as Promise<VersionResult>,
   openLink: (url) => ipcRenderer.invoke(OPEN_LINK_CHANNEL, url) as Promise<boolean>,
   onChatEvent: (listener) => {
     // Only the event goes through, never Electron's own event object.

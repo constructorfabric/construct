@@ -2,6 +2,7 @@ import type { ModelSettingsApi } from './agent-settings';
 import type { ChatApi } from './chat-protocol';
 import type { DashboardApi } from './dashboard-protocol';
 import type { ExternalApi } from './external';
+import type { MemoryApi } from './memory-protocol';
 
 /**
  * Whether the agent starts at login. `unknown` when the agent is not running or its reply has no
@@ -40,7 +41,8 @@ export type AgentStatus =
 export type ConstructAgentApi = ModelSettingsApi &
   ChatApi &
   DashboardApi &
-  ExternalApi & {
+  ExternalApi &
+  MemoryApi & {
     readonly getStatus: () => Promise<AgentStatus>;
     /** `true` when the app runs from a place macOS will remove, so no login service was set up. */
     readonly getNeedsMove: () => Promise<boolean>;

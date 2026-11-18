@@ -12,7 +12,7 @@ import {
   SidebarProvider,
   StatusDot,
 } from '@gears-frontx/ui-kit';
-import { Activity, ChartColumn, MessageSquare, Settings } from 'lucide-react';
+import { Activity, Brain, ChartColumn, MessageSquare, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { t } from '../translation';
@@ -20,13 +20,14 @@ import styles from './app.module.css';
 import { ChatPage } from './ChatPage';
 import { ConversationList } from './ConversationList';
 import { DashboardPage } from './DashboardPage';
+import { MemoryPage } from './MemoryPage';
 import { SettingsPage } from './SettingsPage';
 import { tones } from './state-tones';
 import { StatusPage } from './StatusPage';
 import { useAgentStatus } from './useAgentStatus';
 import { useChat } from './useChat';
 
-type Page = 'chat' | 'dashboard' | 'status' | 'settings';
+type Page = 'chat' | 'dashboard' | 'memory' | 'status' | 'settings';
 
 export function App(): ReactNode {
   // A page is a piece of state: the app has no addresses to navigate to.
@@ -89,6 +90,21 @@ export function App(): ReactNode {
                   >
                     <ChartColumn aria-hidden />
                     <span>{t('App.Dashboard')}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    isActive={page === 'memory'}
+                    render={
+                      <button
+                        type="button"
+                        aria-current={page === 'memory' ? 'page' : undefined}
+                        onClick={() => setPage('memory')}
+                      />
+                    }
+                  >
+                    <Brain aria-hidden />
+                    <span>{t('App.Memory')}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
@@ -163,6 +179,8 @@ export function App(): ReactNode {
               <StatusPage status={status} />
             ) : page === 'dashboard' ? (
               <DashboardPage onOpenSettings={() => setPage('settings')} />
+            ) : page === 'memory' ? (
+              <MemoryPage onOpenSettings={() => setPage('settings')} />
             ) : (
               <SettingsPage />
             )}

@@ -36,6 +36,8 @@ import {
 } from './dashboard-protocol';
 import { createLinkHandler } from './external-calls';
 import { OPEN_LINK_CHANNEL } from './external';
+import { createMemoryHandlers } from './memory-calls';
+import { MEMORY_FACTS_CHANNEL, MEMORY_VERSION_CHANNEL } from './memory-protocol';
 import { offerMoveToApplications } from './move-to-applications';
 import { createSettingsHandlers } from './settings-calls';
 
@@ -187,6 +189,9 @@ function startApp(): void {
     ipcMain.handle(DASHBOARD_PROJECT_CHANNEL, (_event, change: unknown) =>
       dashboard.project(change),
     );
+    const memory = createMemoryHandlers({ env: process.env, platform: process.platform });
+    ipcMain.handle(MEMORY_FACTS_CHANNEL, () => memory.facts());
+    ipcMain.handle(MEMORY_VERSION_CHANNEL, () => memory.version());
     // The window never opens a page itself: a link of an answer comes here, and only a web address
     // goes on to the system browser.
     const openLink = createLinkHandler((address) => shell.openExternal(address));
