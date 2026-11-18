@@ -1,5 +1,4 @@
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -10,7 +9,16 @@ import {
 import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 import { isRecord } from '../src/agent-json';
-import { checkInApp, expect, openSettings, restartAgent, test as base } from './fixtures';
+import {
+  checkInApp,
+  claudeFile,
+  claudePrompt,
+  expect,
+  openSettings,
+  restartAgent,
+  test as base,
+  writeLine,
+} from './fixtures';
 import type { Session } from './fixtures';
 
 // The agent looks at the session files every 5 seconds. A wait is for several passes, so a slow
@@ -18,7 +26,6 @@ import type { Session } from './fixtures';
 const waitMs = 60_000;
 
 const codexSessionId = '01a0bee2-6260-73a3-b389-43c86bb8930f';
-const claudeSessionId = 'sess-1';
 
 const stamp = (): string => new Date().toISOString();
 
@@ -31,25 +38,6 @@ function codexFile(session: Session): string {
     '13',
     `rollout-2026-11-13T10-00-00-${codexSessionId}.jsonl`,
   );
-}
-
-function claudeFile(session: Session): string {
-  return path.join(session.claudeHome, 'projects', '-w', `${claudeSessionId}.jsonl`);
-}
-
-function writeLine(file: string, line: unknown): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  appendFileSync(file, `${JSON.stringify(line)}\n`);
-}
-
-function claudePrompt(session: Session, text: string): void {
-  writeLine(claudeFile(session), {
-    type: 'user',
-    timestamp: stamp(),
-    cwd: '/w',
-    sessionId: claudeSessionId,
-    message: { content: text },
-  });
 }
 
 /** The text of a stored record when it is a turn; anything else the agent writes gives `[]`. */

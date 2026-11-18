@@ -30,6 +30,8 @@ export interface Provider {
   readonly url: string;
   /** What each request carried, in order. */
   readonly seen: readonly Seen[];
+  /** The messages of each request, in order. */
+  readonly conversations: readonly unknown[];
   /** A plain (not streamed) answer is held back this long, so a test can look at the window. */
   delayMs: number;
   /** A model that answers plain text where a request offers tools, and never calls one. */
@@ -89,6 +91,7 @@ function toolTurn(messages: unknown): Record<string, unknown> {
  */
 export async function startProvider(): Promise<{ provider: Provider; server: Server }> {
   const seen: Seen[] = [];
+  const conversations: unknown[] = [];
   let sent = 0;
   let aborted = 0;
   let open = (): void => undefined;
@@ -102,6 +105,7 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
   const provider: Provider = {
     url: '',
     seen,
+    conversations,
     delayMs: 0,
     ignoresTools: false,
     script: { chunks: ['pong'], pauseMs: 0 },
@@ -161,6 +165,7 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
       const model = String(body.model);
       const { authorization } = request.headers;
       seen.push({ authorization, model });
+      conversations.push(body.messages);
       const answer = (status: number, payload: unknown): void => {
         setTimeout(() => {
           response.writeHead(status, { 'Content-Type': 'application/json' });

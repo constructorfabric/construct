@@ -27,3 +27,6 @@ export async function ask(page: Page, message: string): Promise<void> {
   await input(page).fill(message);
   await input(page).press('Enter');
 }
+
+/** The line the thread shows for each tool call. */
+export const toolLines = (page: Page) => page.locator('[data-role=tool]');
