@@ -6,8 +6,9 @@ import {
   SETTINGS_REMOVE_KEY_CHANNEL,
   SETTINGS_SAVE_CHANNEL,
   SETTINGS_TEST_CHANNEL,
+  SETTINGS_TEST_PROGRESS_CHANNEL,
 } from './agent-settings';
-import type { ModelTestResult, SettingsResult } from './agent-settings';
+import type { ModelTestResult, SettingsResult, TestProgress } from './agent-settings';
 import { OPEN_LINK_CHANNEL } from './external';
 import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
 import type { AgentStatus, ConstructAgentApi } from './agent-status';
@@ -28,6 +29,16 @@ const api: ConstructAgentApi = {
   saveModel: (input) => ipcRenderer.invoke(SETTINGS_SAVE_CHANNEL, input) as Promise<SettingsResult>,
   testModel: (input) =>
     ipcRenderer.invoke(SETTINGS_TEST_CHANNEL, input) as Promise<ModelTestResult>,
+  onTestProgress: (listener) => {
+    // Only the progress goes through, never Electron's own event object.
+    const handler = (_event: IpcRendererEvent, progress: TestProgress): void => {
+      listener(progress);
+    };
+    ipcRenderer.on(SETTINGS_TEST_PROGRESS_CHANNEL, handler);
+    return () => {
+      ipcRenderer.removeListener(SETTINGS_TEST_PROGRESS_CHANNEL, handler);
+    };
+  },
   removeKey: () => ipcRenderer.invoke(SETTINGS_REMOVE_KEY_CHANNEL) as Promise<SettingsResult>,
   listConversations: () => ipcRenderer.invoke(CHAT_LIST_CHANNEL) as Promise<ListResult>,
   getConversation: (conversation) =>

@@ -15,6 +15,9 @@ import { DEFAULT_BASE_URL, DEFAULT_MODEL } from '../agent-settings';
 import type { ModelInput, ModelSettings, ModelTestResult } from '../agent-settings';
 import { t } from '../translation';
 import styles from './app.module.css';
+import { CheckList } from './CheckList';
+import { withProgress } from './check-reasons';
+import type { CheckRow } from './check-reasons';
 
 /** Shown in the empty key field of a saved key. The key itself never reaches the window. */
 const savedKeyDots = '••••••••';
@@ -61,6 +64,8 @@ export function ModelSettingsForm({
   const [touched, setTouched] = useState<ReadonlySet<Required>>(new Set());
   const [busy, setBusy] = useState<Busy>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  // The checks of the last Test; they stay on the page with its outcome.
+  const [rows, setRows] = useState<readonly CheckRow[] | null>(null);
 
   const touch = (...names: Required[]): void => {
     setTouched((current) => new Set([...current, ...names]));
@@ -84,6 +89,7 @@ export function ModelSettingsForm({
     }
     setBusy('saving');
     setOutcome(null);
+    setRows(null);
     const result = await window.constructAgent.saveModel(modelInput(values));
     setBusy(null);
     if (result.ok) {
@@ -100,14 +106,28 @@ export function ModelSettingsForm({
   const test = async (): Promise<void> => {
     setBusy('testing');
     setOutcome(null);
-    const result = await window.constructAgent.testModel(modelInput(values));
+    setRows(null);
+    const stopListening = window.constructAgent.onTestProgress((progress) => {
+      setRows((current) => withProgress(current ?? [], progress));
+    });
+    let result: ModelTestResult;
+    try {
+      result = await window.constructAgent.testModel(modelInput(values));
+    } finally {
+      stopListening();
+    }
     setBusy(null);
+    // A failed Test has no checks; one that did not finish leaves no row waiting.
+    setRows(
+      result.checks.length > 0 ? result.checks.map((check) => ({ name: check.name, check })) : null,
+    );
     setOutcome({ kind: 'test', result });
   };
 
   const removeKey = async (): Promise<void> => {
     setBusy('removing');
     setOutcome(null);
+    setRows(null);
     const result = await window.constructAgent.removeKey();
     setBusy(null);
     if (result.ok) {
@@ -198,6 +218,7 @@ export function ModelSettingsForm({
           )}
         </div>
       </form>
+      {rows !== null && <CheckList rows={rows} />}
       {outcome !== null && <OutcomeMessage id="model-outcome" outcome={outcome} />}
     </section>
   );
@@ -252,6 +273,14 @@ function describeTest(result: ModelTestResult): Description {
       return { text: t('OutcomeMessage.Timeout'), ok: false };
     case 'error':
       return { text: t('OutcomeMessage.Status', { status: result.status }), ok: false };
+    case 'tools refused':
+      return { text: t('OutcomeMessage.ToolsRefused'), ok: false };
+    case 'no tool call':
+      return { text: t('OutcomeMessage.NoToolCall'), ok: false };
+    case 'bad tool call':
+      return { text: t('OutcomeMessage.BadToolCall'), ok: false };
+    case 'wrong answer':
+      return { text: t('OutcomeMessage.WrongAnswer'), ok: false };
     case 'failed':
       return { text: t('OutcomeMessage.Refused', { reason: result.error }), ok: false };
   }

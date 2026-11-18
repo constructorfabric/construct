@@ -32,6 +32,8 @@ export interface Provider {
   readonly seen: readonly Seen[];
   /** A plain (not streamed) answer is held back this long, so a test can look at the window. */
   delayMs: number;
+  /** A model that answers plain text where a request offers tools, and never calls one. */
+  ignoresTools: boolean;
   /** What a streamed answer is made of. */
   script: Script;
   /** Tool calls for the next streamed requests, one call for each: a request takes the first. */
@@ -60,6 +62,25 @@ function readBody(request: IncomingMessage): Promise<string> {
   });
 }
 
+/** What a model that uses tools answers: the call of `add`, then, with its result, the sum. */
+function toolTurn(messages: unknown): Record<string, unknown> {
+  const answered = Array.isArray(messages) && messages.some((m) => Object(m).role === 'tool');
+  if (answered) {
+    return { role: 'assistant', content: 'The sum is 5.' };
+  }
+  return {
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      {
+        id: 'call_add',
+        type: 'function',
+        function: { name: 'add', arguments: JSON.stringify({ a: 2, b: 3 }) },
+      },
+    ],
+  };
+}
+
 /**
  * A fake provider on a local port: it accepts one key and one model, like the real one would, and
  * answers a request with `stream: true` in pieces and any other with one message. A refusal
@@ -82,6 +103,7 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
     url: '',
     seen,
     delayMs: 0,
+    ignoresTools: false,
     script: { chunks: ['pong'], pauseMs: 0 },
     calls: [],
     sent: () => sent,
@@ -157,6 +179,8 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
         } else {
           streamCall(response, call);
         }
+      } else if (Array.isArray(body.tools) && !provider.ignoresTools) {
+        answer(200, { choices: [{ message: toolTurn(body.messages) }] });
       } else {
         answer(200, { choices: [{ message: { role: 'assistant', content: 'pong' } }] });
       }

@@ -14,6 +14,7 @@ import {
   SETTINGS_REMOVE_KEY_CHANNEL,
   SETTINGS_SAVE_CHANNEL,
   SETTINGS_TEST_CHANNEL,
+  SETTINGS_TEST_PROGRESS_CHANNEL,
 } from './agent-settings';
 import { readAgentStatus } from './agent-socket';
 import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
@@ -149,7 +150,14 @@ function startApp(): void {
   void app.whenReady().then(async () => {
     ipcMain.handle(NEEDS_MOVE_CHANNEL, () => needsMove);
     ipcMain.handle(STATUS_CHANNEL, () => readAgentStatus(process.env, process.platform));
-    const settings = createSettingsHandlers({ env: process.env, platform: process.platform });
+    const settings = createSettingsHandlers(
+      { env: process.env, platform: process.platform },
+      (progress) => {
+        if (mainWindow !== null && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(SETTINGS_TEST_PROGRESS_CHANNEL, progress);
+        }
+      },
+    );
     ipcMain.handle(SETTINGS_GET_CHANNEL, () => settings.get());
     ipcMain.handle(SETTINGS_SAVE_CHANNEL, (_event, input: unknown) => settings.save(input));
     ipcMain.handle(SETTINGS_TEST_CHANNEL, (_event, input: unknown) => settings.test(input));

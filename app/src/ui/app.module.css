@@ -50,6 +50,54 @@
   margin-top: var(--space-4);
 }
 
+.checks {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+}
+
+/* The row is as tall with a loader as with an icon, so a check ending moves nothing. */
+.check {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+  min-height: var(--space-6);
+}
+
+.checkIcon {
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  height: var(--icon-size-sm);
+  justify-content: center;
+  width: var(--icon-size-sm);
+}
+
+.checkIcon svg {
+  height: 100%;
+  width: 100%;
+}
+
+.checkText {
+  overflow-wrap: anywhere;
+}
+
+.checkName {
+  font-weight: var(--text-label-weight);
+}
+
+.checkWorks {
+  color: var(--success-foreground);
+}
+
+.checkFailed {
+  color: var(--destructive);
+}
+
+.checkSkipped {
+  color: var(--muted-foreground);
+}
+
 .outcome {
   margin-top: var(--space-4);
   overflow-wrap: anywhere;
