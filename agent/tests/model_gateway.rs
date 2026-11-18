@@ -525,3 +525,73 @@ async fn an_address_in_a_hand_edited_file_that_would_send_the_key_in_the_clear_i
     ));
     assert_eq!(state.health(&settings.model()), ModelHealth::NotConfigured);
 }
+
+/// What the API answers to function tools next to a reasoning effort on `/chat/completions`.
+const TOOLS_WITH_REASONING: &str = r#"{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","type":"invalid_request_error","param":"reasoning_effort","code":null}}"#;
+
+/// A server that refuses tools unless the request says `reasoning_effort: "none"`.
+async fn server_that_refuses_tools_with_reasoning() -> (String, Arc<Mutex<Vec<Seen>>>) {
+    fake_server(Box::new(|request, _| {
+        if request.body["reasoning_effort"] == "none" {
+            (200, json!({ "ok": true }).to_string())
+        } else {
+            (400, TOOLS_WITH_REASONING.to_string())
+        }
+    }))
+    .await
+}
+
+#[tokio::test]
+async fn a_refusal_of_tools_with_reasoning_is_answered_with_none_and_remembered() {
+    let (url, seen) = server_that_refuses_tools_with_reasoning().await;
+    let gateway = gateway(&url, KEY);
+
+    for _ in 0..2 {
+        let response = gateway
+            .proxy_request(context(), planner_request())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await, json!({ "ok": true }));
+    }
+
+    // The first call is refused and sent again; the second goes out with `none` at once.
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    assert!(seen[0].body.get("reasoning_effort").is_none());
+    assert_eq!(seen[1].body["reasoning_effort"], "none");
+    assert_eq!(seen[2].body["reasoning_effort"], "none");
+    // The request is otherwise the planner's.
+    assert_eq!(seen[1].body["tools"][0]["function"]["name"], "read_profile");
+    assert_eq!(seen[1].body["response_format"]["type"], "json_schema");
+}
+
+#[tokio::test]
+async fn a_refusal_that_none_does_not_cure_is_passed_on_after_one_more_request() {
+    let (url, seen) = fake_server(Box::new(|_, _| (400, TOOLS_WITH_REASONING.to_string()))).await;
+
+    let response = gateway(&url, KEY)
+        .proxy_request(context(), planner_request())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_request_without_tools_is_not_sent_again_after_that_refusal() {
+    let (url, seen) = server_that_refuses_tools_with_reasoning().await;
+    let body = json!({ "model": "gpt-4.1", "messages": [{ "role": "user", "content": "hi" }] });
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/model")
+        .body(Body::Bytes(body.to_string().into()))
+        .unwrap();
+
+    let response = gateway(&url, KEY)
+        .proxy_request(context(), request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}

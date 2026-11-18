@@ -49,7 +49,9 @@ use uuid::Uuid;
 
 use crate::host::Connection;
 use crate::ipc::error_response;
-use crate::model::{ANSWER_LIMIT, Target, read_capped};
+use crate::model::{
+    ANSWER_LIMIT, Target, read_capped, refuses_tools_with_reasoning, without_reasoning,
+};
 use crate::records::FileSink;
 use crate::settings::Settings;
 use crate::sync::lock;
@@ -180,6 +182,8 @@ enum Failure {
     Timeout,
     Status(u16),
     TooLong,
+    /// The API refused function tools next to a reasoning effort; it is asked again without one.
+    ToolsWithReasoning,
     Cut,
     CannotSave,
     Internal,
@@ -193,6 +197,7 @@ impl Failure {
             Self::Unreachable => "unreachable".into(),
             Self::Timeout => "timeout".into(),
             Self::Status(status) => format!("error {status}"),
+            Self::ToolsWithReasoning => "error 400".into(),
             Self::TooLong => "too long".into(),
             Self::Cut => "cut".into(),
             Self::CannotSave => "cannot save".into(),
@@ -761,7 +766,40 @@ impl Chat {
     /// One request to the provider and its answer, until it ends. The text so far is in `text`
     /// whatever the end, and the tool calls the model asked for in `calls`. `emit` gets each piece
     /// of text and returns `false` when the client is gone.
+    ///
+    /// A model the API refuses function tools for next to a reasoning effort gets the request
+    /// again with `reasoning_effort: "none"`, and every later request of its own with it.
     async fn stream_answer(
+        &self,
+        target: &Target,
+        body: String,
+        cancel: &CancellationToken,
+        text: &mut String,
+        calls: &mut Calls,
+        emit: &mut dyn FnMut(Piece<'_>) -> bool,
+    ) -> End {
+        let body = target
+            .prepared(body.as_bytes())
+            .and_then(|plain| String::from_utf8(plain).ok())
+            .unwrap_or(body);
+        let end = self
+            .stream_once(target, body.clone(), cancel, text, calls, emit)
+            .await;
+        if end != End::Failed(Failure::ToolsWithReasoning) {
+            return end;
+        }
+        let Some(plain) =
+            without_reasoning(body.as_bytes()).and_then(|plain| String::from_utf8(plain).ok())
+        else {
+            return end;
+        };
+        target.refused_tools_with_reasoning();
+        self.stream_once(target, plain, cancel, text, calls, emit)
+            .await
+    }
+
+    /// One request to the provider and its answer, as [`Chat::stream_answer`] without the retry.
+    async fn stream_once(
         &self,
         target: &Target,
         body: String,
@@ -1006,6 +1044,8 @@ async fn refusal(status: StatusCode, response: reqwest::Response) -> Failure {
             let body = String::from_utf8_lossy(&body);
             if body.contains("context_length_exceeded") {
                 Failure::TooLong
+            } else if refuses_tools_with_reasoning(status.as_u16(), body.as_bytes()) {
+                Failure::ToolsWithReasoning
             } else {
                 Failure::Status(status.as_u16())
             }

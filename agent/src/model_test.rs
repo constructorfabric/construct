@@ -31,6 +31,7 @@ use serde_json::{Value, json};
 use url::Url;
 
 use crate::ipc::error_response;
+use crate::model::{refuses_tools_with_reasoning, without_reasoning};
 use crate::settings::{Error, Model, check_base_url, check_key};
 
 /// The model used when neither the request nor the settings name one.
@@ -483,16 +484,44 @@ struct Answered {
 }
 
 /// Make the call: with `max_completion_tokens`, and once more with `max_tokens` when the
-/// provider answers a 400 that names `max_completion_tokens`. Both share one `deadline`.
-/// Fails with what a request that got no answer came to.
+/// provider answers a 400 that names `max_completion_tokens`. A 400 that refuses function tools
+/// next to a reasoning effort is answered with the same request and `reasoning_effort: "none"`.
+/// All of them share one `deadline`. Fails with what a request that got no answer came to.
 fn post(
     probe: &Probe,
     body: &dyn Fn(LimitField) -> String,
     deadline: Duration,
 ) -> Result<Answered, Outcome> {
     let started = Instant::now();
-    let first = send(probe, &body(LimitField::MaxCompletionTokens), deadline)?;
+    // The request for a limit field, with `reasoning_effort: "none"` once the provider asked for it.
+    let mut reasoning_off = false;
+    let request = |field, reasoning_off: bool| {
+        let request = body(field);
+        if reasoning_off {
+            without_reasoning(request.as_bytes())
+                .and_then(|plain| String::from_utf8(plain).ok())
+                .unwrap_or(request)
+        } else {
+            request
+        }
+    };
+    let mut first = send(
+        probe,
+        &request(LimitField::MaxCompletionTokens, reasoning_off),
+        deadline,
+    )?;
     // The body is only searched here, never passed on.
+    if refuses_tools_with_reasoning(first.status, &first.body) {
+        reasoning_off = true;
+        let Some(left) = deadline.checked_sub(started.elapsed()) else {
+            return Err(Outcome::Timeout);
+        };
+        first = send(
+            probe,
+            &request(LimitField::MaxCompletionTokens, reasoning_off),
+            left,
+        )?;
+    }
     let refused_limit_field = first.status == 400
         && String::from_utf8_lossy(&first.body).contains("max_completion_tokens");
     if !refused_limit_field {
@@ -501,7 +530,7 @@ fn post(
     let Some(left) = deadline.checked_sub(started.elapsed()) else {
         return Err(Outcome::Timeout);
     };
-    send(probe, &body(LimitField::MaxTokens), left)
+    send(probe, &request(LimitField::MaxTokens, reasoning_off), left)
 }
 
 /// Read at most `MAX_ANSWER` bytes of the answer.

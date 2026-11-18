@@ -940,3 +940,32 @@ fn a_tool_call_without_an_id_is_a_bad_tool_call() {
     let fake = Fake::start(vec![completion("pong"), Reply::Status(200, without_id)]);
     assert_eq!(last(&test_lines(&fake, ""))["result"], "bad tool call");
 }
+
+/// What the API answers to function tools next to a reasoning effort on `/chat/completions`.
+const TOOLS_WITH_REASONING: &str = r#"{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","type":"invalid_request_error","param":"reasoning_effort","code":null}}"#;
+
+#[test]
+fn a_refusal_of_tools_with_reasoning_is_answered_with_none_in_both_tool_requests() {
+    let refusal = || Reply::Status(400, TOOLS_WITH_REASONING.to_string());
+    let fake = Fake::start(vec![
+        completion("pong"),
+        refusal(),
+        tool_call("{\"a\":2,\"b\":3}"),
+        refusal(),
+        completion("2 + 3 = 5"),
+    ]);
+    let lines = test_lines(&fake, "");
+    assert_eq!(last(&lines)["result"], "works");
+    assert_eq!(
+        last(&lines)["checks"][1],
+        json!({ "name": "uses tools", "result": "works" })
+    );
+
+    let seen = fake.seen.lock().unwrap();
+    assert_eq!(seen.len(), 5);
+    assert!(seen[0].body.get("reasoning_effort").is_none());
+    assert!(seen[1].body.get("reasoning_effort").is_none());
+    assert_eq!(seen[2].body["reasoning_effort"], "none");
+    assert_eq!(seen[2].body["tools"][0]["function"]["name"], "add");
+    assert_eq!(seen[4].body["reasoning_effort"], "none");
+}
