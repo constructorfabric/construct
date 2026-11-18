@@ -44,6 +44,8 @@ pub enum Error {
     NotRegularFile,
     /// The file is not UTF-8 text.
     NotText,
+    /// The file is longer than the limit the caller gave.
+    TooLarge,
     /// The text to replace is empty.
     EmptyOld,
     /// The text to replace is the same as the new text.
@@ -67,6 +69,7 @@ impl fmt::Display for Error {
             Self::NotFound => f.write_str("no such file or folder"),
             Self::NotRegularFile => f.write_str("not a regular file"),
             Self::NotText => f.write_str("the file is not UTF-8 text"),
+            Self::TooLarge => f.write_str("the file is too large"),
             Self::EmptyOld => f.write_str("the text to replace is empty"),
             Self::Unchanged => f.write_str("the old and the new text are the same"),
             Self::NoMatch => f.write_str("the text to replace was not found"),
@@ -130,6 +133,15 @@ impl Workspace {
             .take(limit.unwrap_or(usize::MAX))
             .map(str::to_owned)
             .collect())
+    }
+
+    /// Returns the whole text of a file, as it is: with its line breaks, so a position in it
+    /// is a position in the file.
+    ///
+    /// # Errors
+    /// As [`Self::read`], and the file is longer than `max` bytes ([`Error::TooLarge`]).
+    pub fn read_whole(&self, path: &str, max: u64) -> Result<String, Error> {
+        self.read_text_limited(&relative(path)?, Some(max))
     }
 
     /// Replaces the file, or creates it with the folders of its path, in one step: the content
@@ -278,6 +290,10 @@ impl Workspace {
     }
 
     fn read_text(&self, path: &Path) -> Result<String, Error> {
+        self.read_text_limited(path, None)
+    }
+
+    fn read_text_limited(&self, path: &Path, max: Option<u64>) -> Result<String, Error> {
         // Not blocking: a named pipe with no writer is opened at once and refused below instead of
         // holding the call for ever.
         let mut options = OpenOptions::new();
@@ -287,7 +303,18 @@ impl Workspace {
             return Err(Error::NotRegularFile);
         }
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
+        match max {
+            // One byte more than the limit tells a file that is too long from one that fits.
+            Some(max) => {
+                file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+                if bytes.len() as u64 > max {
+                    return Err(Error::TooLarge);
+                }
+            }
+            None => {
+                file.read_to_end(&mut bytes)?;
+            }
+        }
         if bytes.contains(&0) {
             return Err(Error::NotText);
         }

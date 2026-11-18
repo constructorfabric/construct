@@ -91,7 +91,7 @@ fn run() -> std::io::Result<()> {
     let activity = construct_agent::activity::Feed::new();
     let model_state = construct_agent::model::ModelState::default();
     let settings = open_settings();
-    write_default_dashboard();
+    let dashboard = open_dashboard();
     // Built before the socket server: a chat answer runs on this runtime, driven by the
     // thread of its connection.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -99,17 +99,19 @@ fn run() -> std::io::Result<()> {
         .build()?;
     let link = construct_agent::chat::Link::default();
     let manage = open_manage(settings.as_ref(), &link);
+    let server = construct_agent::ipc::Server::bind(&socket)?
+        .with_database(health.clone())
+        .with_construct(construct_health.clone())
+        .with_connectors(connectors.clone())
+        .with_activity(activity.clone())
+        .with_model(model_state.clone())
+        .with_service(login_service());
+    let server = match dashboard {
+        Some(dashboard) => server.with_dashboard(dashboard),
+        None => server,
+    };
     let server = with_chat(
-        with_settings(
-            construct_agent::ipc::Server::bind(&socket)?
-                .with_database(health.clone())
-                .with_construct(construct_health.clone())
-                .with_connectors(connectors.clone())
-                .with_activity(activity.clone())
-                .with_model(model_state.clone())
-                .with_service(login_service()),
-            settings.as_ref(),
-        ),
+        with_settings(server, settings.as_ref()),
         settings.as_ref(),
         rt.handle(),
         &link,
@@ -255,20 +257,35 @@ fn open_settings() -> Option<construct_agent::settings::Settings> {
     }
 }
 
-/// Writes the default activity dashboard into the workspace when there is none. A failure is
-/// only logged: the dashboard is a document the app can do without.
+/// Writes the default activity dashboard into the workspace when there is none, reads the
+/// document and keeps reading it when it changes. A failure is only logged: the dashboard is a
+/// document the app can do without.
 #[cfg(unix)]
-fn write_default_dashboard() {
-    use construct_agent::{dashboard, records, workspace::Workspace};
+fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
+    use construct_agent::{
+        dashboard, dashboard_document::Dashboard, records, workspace::Workspace,
+    };
 
-    let written = records::data_dir()
+    let opened = records::data_dir()
         .map_err(construct_agent::workspace::Error::from)
         .and_then(|dir| Workspace::open(&dir))
-        .and_then(|workspace| dashboard::ensure_default(&workspace));
-    match written {
-        Ok(true) => eprintln!("the default activity dashboard written"),
-        Ok(false) => {}
-        Err(e) => eprintln!("the default activity dashboard not written: {e}"),
+        .and_then(|workspace| {
+            let written = dashboard::ensure_default(&workspace)?;
+            Ok((workspace, written))
+        });
+    match opened {
+        Ok((workspace, written)) => {
+            if written {
+                eprintln!("the default activity dashboard written");
+            }
+            let dashboard = Dashboard::open(std::sync::Arc::new(workspace));
+            dashboard.watch();
+            Some(dashboard)
+        }
+        Err(e) => {
+            eprintln!("the dashboard is not available: {e}");
+            None
+        }
     }
 }
 
