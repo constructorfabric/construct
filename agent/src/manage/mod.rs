@@ -31,7 +31,7 @@ mod person;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use connectors::{Registry, Role, Tool, Turn, compare_times};
@@ -39,6 +39,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::chat::Link;
+use crate::erase::{OwnStore, OwnStores};
 use crate::host::Connection;
 use crate::ipc::{create_private_dir, error_response};
 use crate::model::Target;
@@ -175,7 +176,7 @@ struct Inner {
     settings: Settings,
     link: Link,
     timing: Timing,
-    journal: Mutex<Journal>,
+    journal: Arc<Mutex<Journal>>,
     queue: Mutex<Queue>,
     wake: Condvar,
     counts: Mutex<Counts>,
@@ -185,6 +186,23 @@ struct Inner {
     /// Keys of the live prompts that were stored at any erasure of the person: one that was being
     /// sent at that moment and then fails is not given back for a later start.
     erased: Mutex<HashSet<u64>>,
+    /// The agent's own stores, erased with the person (see `erase`); set once at start.
+    own: OnceLock<OwnStores>,
+}
+
+/// The journal of the sent prompts as a store the person can have erased.
+struct JournalStore(Arc<Mutex<Journal>>);
+
+impl OwnStore for JournalStore {
+    fn name(&self) -> &'static str {
+        "the journal of the sent prompts"
+    }
+
+    fn erase(&self) -> Result<(), String> {
+        lock(&self.0)
+            .erase()
+            .map_err(|_| "the journal could not be emptied".to_owned())
+    }
 }
 
 /// The prompts the user typed, sent to the host. Cheap to clone.
@@ -223,14 +241,27 @@ impl Manager {
                 settings,
                 link,
                 timing,
-                journal: Mutex::new(Journal::open(data_dir)?),
+                journal: Arc::new(Mutex::new(Journal::open(data_dir)?)),
                 queue: Mutex::new(Queue::default()),
                 wake: Condvar::new(),
                 counts: Mutex::new(Counts::default()),
                 person: Mutex::new(()),
                 erased: Mutex::new(HashSet::new()),
+                own: OnceLock::new(),
             }),
         })
+    }
+
+    /// The journal of the sent prompts, for the list of the agent's own stores.
+    #[must_use]
+    pub fn journal_store(&self) -> Arc<dyn OwnStore> {
+        Arc::new(JournalStore(Arc::clone(&self.inner.journal)))
+    }
+
+    /// The stores `memory-erase` clears besides the host's copy. Set once; a second call is
+    /// ignored.
+    pub fn set_own_stores(&self, stores: OwnStores) {
+        let _ = self.inner.own.set(stores);
     }
 
     /// What a record store calls with every new user turn (the log readers' and the chat's): a
@@ -292,10 +323,29 @@ impl Manager {
         }
         // What was typed before and not yet sent must not come back after a switch-on.
         self.inner.forget_unsent();
-        match person::request_erasure(&connection) {
-            Ok(()) => json!({ "erasure": "started", "collection_enabled": false }).to_string(),
-            Err(reason) => error_response(&format!(
+        // The agent's own copies go too, also when the host's erasure does not start.
+        let left = self
+            .inner
+            .own
+            .get()
+            .map(OwnStores::erase)
+            .unwrap_or_default();
+        let host = person::request_erasure(&connection);
+        match (host, left.as_slice()) {
+            (Ok(()), []) => {
+                json!({ "erasure": "started", "collection_enabled": false }).to_string()
+            }
+            (Ok(()), left) => error_response(&format!(
+                "collection is off and the erasure started, but the agent could not erase: {}; \
+                 run it again when the erasure has ended",
+                left.join(", ")
+            )),
+            (Err(reason), []) => error_response(&format!(
                 "collection is off, but the erasure did not start: {reason}"
+            )),
+            (Err(reason), left) => error_response(&format!(
+                "collection is off, but the erasure did not start: {reason}; the agent could not erase: {}",
+                left.join(", ")
             )),
         }
     }

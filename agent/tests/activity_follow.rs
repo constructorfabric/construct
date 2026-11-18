@@ -19,9 +19,13 @@ use std::time::{Duration, Instant};
 use common::pg_stand::{PgStand, append};
 use connectors::{Author, FileState, Listing, Parsed, Record, Registry, Role, Tool, Turn};
 use construct_agent::activity::{Feed, Session, Store};
-use construct_agent::follow::{self, Follower, Stats};
+use construct_agent::chat::Link;
+use construct_agent::erase::own_stores;
+use construct_agent::follow::{self, Erase, Follower, Stats};
 use construct_agent::ipc::{Server, query_status};
+use construct_agent::manage::Manager;
 use construct_agent::records::FileSink;
+use construct_agent::settings::Settings;
 
 struct Fake;
 
@@ -216,6 +220,7 @@ async fn a_record_appended_to_a_log_shows_in_the_store_within_ten_seconds() {
         None,
         None,
         Some(feed.recorder()),
+        None,
     );
     append(
         &stand.log("s1"),
@@ -497,6 +502,65 @@ async fn a_failed_write_is_counted_and_retried_and_a_record_that_keeps_failing_m
     let built = contents(&store).await;
     assert_eq!(session(&built.0, "r").turns, 2);
     assert_eq!(session(&built.0, "r").active_minutes, 2);
+
+    stand.finish(&store, task).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn the_erasure_leaves_no_activity_row_and_the_store_goes_on_with_what_is_written_after() {
+    let stand = Stand::new("follow-erase").await;
+    let feed = Feed::new();
+    let store = Arc::new(stand.store().await);
+    let task = stand.run(&feed, &store);
+    wait_phase(&feed, "ready", true, Duration::from_secs(60)).await;
+    let erase = Erase::new(&stand.data(), &["fake"]);
+    let mut follower = stand.follower(&feed).with_erase(erase.clone());
+    append(
+        &stand.log("s1"),
+        "2026-11-11T10:00:05Z person /work/x main\n2026-11-11T10:03:05Z person /work/x main\n",
+    );
+    follower.pass().unwrap();
+    wait_for(&store, Duration::from_secs(10), |s| {
+        s.iter().any(|s| s.session == "s1" && s.turns == 2)
+    })
+    .await;
+    assert!(!store.minutes().await.unwrap().is_empty());
+
+    // The list of the stores, as `main` builds it: the files go first, then the rows made from
+    // them. Removing the activity time from the list makes this test fail.
+    let settings = Settings::open(&stand.root.join("config")).unwrap();
+    let manage = Manager::open(&stand.root.join("manage"), settings, Link::default()).unwrap();
+    let stores = own_stores(
+        &erase,
+        None,
+        &manage,
+        &feed,
+        &tokio::runtime::Handle::current(),
+    );
+    let left = tokio::task::spawn_blocking(move || stores.erase())
+        .await
+        .unwrap();
+    assert!(left.is_empty(), "{left:?}");
+    assert!(store.sessions().await.unwrap().is_empty());
+    assert!(store.minutes().await.unwrap().is_empty());
+    assert!(store.is_empty().await.unwrap());
+
+    // The store is built again from the files, which are gone, so it stays empty; the old log is
+    // read once without storing, and a line written after that is stored.
+    wait_phase(&feed, "ready", true, Duration::from_secs(60)).await;
+    follower.pass().unwrap();
+    assert!(store.sessions().await.unwrap().is_empty());
+    append(
+        &stand.log("s1"),
+        "2026-11-11T11:00:05Z person /work/x main\n",
+    );
+    follower.pass().unwrap();
+    let took = wait_for(&store, Duration::from_secs(10), |s| {
+        s.len() == 1 && s[0].turns == 1
+    })
+    .await;
+    assert!(took < Duration::from_secs(10));
 
     stand.finish(&store, task).await;
 }

@@ -100,6 +100,10 @@ pub trait Sink {
     /// # Errors
     /// Fails when the file is there but cannot be read or parsed.
     fn load_progress(&self) -> io::Result<Progress>;
+
+    /// Forgets what the sink remembers of the records it stored, so that the files being gone
+    /// does not leave a record dropped as a replay. The files are not touched.
+    fn forget(&mut self);
 }
 
 /// What is known about one session file after it was first touched in this run.
@@ -342,6 +346,31 @@ impl FileSink {
             Ok(()) => dir.parent().map_or(Ok(()), sync_dir),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e),
+        }
+    }
+
+    /// Removes the record files of the sources `tools` name, and the saved progress of the
+    /// readers. A source that is not named is left alone, so each store clears only its own.
+    /// Only files under the data directory of the agent are touched; the session files of the
+    /// tools are never opened here. What this sink remembers is not forgotten: it is a sink of
+    /// its own, made for this, and the follower forgets what it holds (see `Sink::forget`).
+    ///
+    /// # Errors
+    /// Fails when a directory or a file cannot be removed.
+    pub fn delete_collected(&mut self, tools: &[String]) -> io::Result<()> {
+        for tool in tools {
+            self.delete_source(tool)?;
+        }
+        for name in [PROGRESS_FILE.to_owned(), format!("{PROGRESS_FILE}.tmp")] {
+            match fs::remove_file(self.dir.join(name)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        match sync_dir(&self.dir) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
         }
     }
 
@@ -616,6 +645,11 @@ impl Sink for FileSink {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Progress::default()),
             Err(e) => Err(e),
         }
+    }
+
+    fn forget(&mut self) {
+        self.sessions.clear();
+        self.unsynced.clear();
     }
 }
 

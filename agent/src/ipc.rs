@@ -9,7 +9,9 @@
 //! `settings-get`, `settings-set <JSON object>` (the fields to change; see `settings`), and
 //! `settings-test [JSON object]` (the checks on the model; see `model_test`).
 //! `backfill [JSON object]` sends the prompts of the past to Construct (see `manage`).
-//! `memory-erase` switches all collection off and has Construct erase everything about the person.
+//! `memory-erase` switches all collection off, has Construct erase everything about the person and
+//! erases the agent's own copies: the collected sessions, the chats and the activity time (see
+//! `erase`).
 //! `dashboard-get` answers the current dashboard document and, when the file does not pass its
 //! type, the error with its place (see `dashboard_document`). `dashboard-hide <JSON object>`,
 //! `dashboard-show <JSON object>` (`{"project": <folder>}`) and `dashboard-rename <JSON object>`

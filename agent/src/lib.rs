@@ -19,6 +19,7 @@ pub mod dashboard_numbers;
 pub mod dashboard_projects;
 #[cfg(unix)]
 pub mod database;
+pub mod erase;
 pub mod follow;
 #[cfg(unix)]
 pub mod host;

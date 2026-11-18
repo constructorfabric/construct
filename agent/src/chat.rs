@@ -89,6 +89,8 @@ const ERROR_BODY_DEADLINE: Duration = Duration::from_secs(5);
 const TITLE_CHARS: usize = 60;
 /// The result of a call that was cut short by `chat-stop`.
 const STOPPED_RESULT: &str = "stopped by the user";
+/// How long the erasure waits for a running answer to end after it was stopped.
+const ERASE_WAIT: Duration = Duration::from_secs(30);
 /// A client that does not read for this long is gone.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1002,6 +1004,30 @@ impl Chat {
             .collect()
     }
 
+    /// Erases every conversation, for the person's erasure: a running answer is stopped first and
+    /// waited for, so that nothing is written after the files are gone, and no answer can start
+    /// until they are.
+    fn erase_all(&self) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + ERASE_WAIT;
+        loop {
+            let running = lock(&self.inner.running);
+            match running.as_ref() {
+                None => {
+                    // The guard is held to the end: no answer starts while the files go.
+                    return lock(&self.inner.sink)
+                        .delete_source(SOURCE)
+                        .map_err(|_| "the conversations could not be removed".to_owned());
+                }
+                Some(answer) => answer.cancel.cancel(),
+            }
+            drop(running);
+            if std::time::Instant::now() >= deadline {
+                return Err("the running answer did not stop".to_owned());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// The JSON line for `chat-delete` of one conversation or `all`. A conversation that is
     /// answering is not deleted.
     #[must_use]
@@ -1033,6 +1059,16 @@ impl Chat {
             Ok(n) => json!({ "deleted": n }).to_string(),
             Err(_) => error_response("cannot delete"),
         }
+    }
+}
+
+impl crate::erase::OwnStore for Chat {
+    fn name(&self) -> &'static str {
+        "the chat conversations"
+    }
+
+    fn erase(&self) -> Result<(), String> {
+        self.erase_all()
     }
 }
 
