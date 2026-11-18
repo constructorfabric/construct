@@ -100,6 +100,8 @@ struct Shared {
     history_done: AtomicU64,
     /// Writes that failed, since the agent started.
     failed_writes: AtomicU64,
+    /// The store, once a build of it has finished, for the answers that read it.
+    store: Mutex<Option<Store>>,
 }
 
 /// The queue between the follower and the activity store, and what `status` shows of it.
@@ -126,6 +128,7 @@ impl Feed {
             state: Mutex::new((Phase::Waiting, None)),
             history_done: AtomicU64::new(0),
             failed_writes: AtomicU64::new(0),
+            store: Mutex::new(None),
         }))
     }
 
@@ -160,6 +163,22 @@ impl Feed {
             }
         }
         self.0.wake.notify_one();
+    }
+
+    /// The store to read from, once a build of it has finished. While the store is behind it still
+    /// holds the last good state, which the answer is then of.
+    ///
+    /// # Errors
+    /// The reason, in plain words, that there is nothing to read yet.
+    pub fn readable_store(&self) -> Result<Store, &'static str> {
+        let phase = lock(&self.0.state).0;
+        match phase {
+            Phase::Ready | Phase::Behind => lock(&self.0.store)
+                .clone()
+                .ok_or("the activity time is not ready"),
+            Phase::Waiting | Phase::ReadingHistory => Err("the activity time is being built"),
+            Phase::Off => Err("the activity time is not available"),
+        }
     }
 
     /// Says the store cannot be opened, with the reason.
@@ -228,6 +247,7 @@ impl Feed {
         match store.rebuild_counting(files, &self.0.history_done).await {
             Ok(applied) => {
                 Self::log(&format!("ready: {applied} records applied"));
+                *lock(&self.0.store) = Some(store.clone());
                 self.set(Phase::Ready, None);
                 true
             }

@@ -27,6 +27,11 @@ export interface CallLimits {
 
 export const statusLimits: CallLimits = { deadlineMs: 2000, maxReplyChars: 4096 };
 export const settingsLimits: CallLimits = { deadlineMs: 5000, maxReplyChars: 4096 };
+/**
+ * `dashboard-numbers`: the agent reads the activity store, and the answer lists every group of a
+ * table and every day of a period, so it is far longer than a status.
+ */
+export const dashboardLimits: CallLimits = { deadlineMs: 10_000, maxReplyChars: 512 * 1024 };
 
 /** How a streamed call is bounded: silence, one line, and everything together. */
 export interface StreamLimits {

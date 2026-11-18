@@ -3,7 +3,13 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { agentSocketPath, readAgentStatus } from '../src/agent-socket';
+import {
+  agentSocketPath,
+  callAgent,
+  dashboardLimits,
+  readAgentStatus,
+  settingsLimits,
+} from '../src/agent-socket';
 
 const shortDeadlineMs = 300;
 
@@ -155,5 +161,50 @@ describe('readAgentStatus', () => {
         startAtLogin: 'unknown',
       });
     });
+  });
+});
+
+describe('callAgent with the dashboard limits', () => {
+  // One JSON line of about `chars` characters, as the agent answers `dashboard-numbers`.
+  const longReply = (chars: number): string =>
+    `${JSON.stringify({ groups: [{ key: 'x'.repeat(chars) }] })}\n`;
+
+  it('takes an answer far longer than a status', async () => {
+    const reply = longReply(200_000);
+    await withFakeAgent(
+      (client) => {
+        client.end(reply);
+      },
+      async (env) => {
+        const line = await callAgent(env, 'linux', 'dashboard-numbers {}', dashboardLimits);
+        expect(line).toBe(reply.trim());
+      },
+    );
+  });
+
+  it('refuses the same answer under the limits of a status or a setting', async () => {
+    await withFakeAgent(
+      (client) => {
+        client.end(longReply(200_000));
+      },
+      async (env) => {
+        await expect(callAgent(env, 'linux', 'settings-get', settingsLimits)).rejects.toThrow(
+          /too long/,
+        );
+      },
+    );
+  });
+
+  it('refuses an answer past its own limit', async () => {
+    await withFakeAgent(
+      (client) => {
+        client.end(longReply(dashboardLimits.maxReplyChars + 10));
+      },
+      async (env) => {
+        await expect(
+          callAgent(env, 'linux', 'dashboard-numbers {}', dashboardLimits),
+        ).rejects.toThrow(/too long/);
+      },
+    );
   });
 });

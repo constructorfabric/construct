@@ -11,6 +11,8 @@
 //! `backfill [JSON object]` sends the prompts of the past to Construct (see `manage`).
 //! `dashboard-get` answers the current dashboard document and, when the file does not pass its
 //! type, the error with its place (see `dashboard_document`).
+//! `dashboard-numbers <JSON object>` answers the numbers of a widget, or of a period, for the days
+//! the request lists (see `dashboard_numbers`); the answer is longer than a status.
 //! `settings-test` answers with several JSON lines when its request has `"progress": true`.
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
@@ -151,6 +153,7 @@ mod unix {
     use crate::activity::Feed;
     use crate::chat::{self, Chat};
     use crate::dashboard_document::Dashboard;
+    use crate::dashboard_numbers::Numbers;
     use crate::database::Health;
     use crate::follow::Stats;
     use crate::manage::Manager;
@@ -194,6 +197,7 @@ mod unix {
         manage: Option<Manager>,
         activity: Option<Feed>,
         dashboard: Option<Dashboard>,
+        numbers: Option<Numbers>,
     }
 
     impl Server {
@@ -230,6 +234,7 @@ mod unix {
                 manage: None,
                 activity: None,
                 dashboard: None,
+                numbers: None,
             })
         }
 
@@ -310,6 +315,14 @@ mod unix {
             self
         }
 
+        /// Serve `dashboard-numbers` from the activity time and the dashboard document. Without
+        /// it the command answers an error.
+        #[must_use]
+        pub fn with_numbers(mut self, numbers: Numbers) -> Self {
+            self.numbers = Some(numbers);
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -333,6 +346,7 @@ mod unix {
                         let manage = self.manage.clone();
                         let activity = self.activity.clone();
                         let dashboard = self.dashboard.clone();
+                        let numbers = self.numbers.clone();
                         thread::spawn(move || {
                             let shared = Shared {
                                 database: &database,
@@ -345,6 +359,7 @@ mod unix {
                                 manage: manage.as_ref(),
                                 activity: activity.as_ref(),
                                 dashboard: dashboard.as_ref(),
+                                numbers: numbers.as_ref(),
                             };
                             if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
@@ -468,6 +483,7 @@ mod unix {
         manage: Option<&'a Manager>,
         activity: Option<&'a Feed>,
         dashboard: Option<&'a Dashboard>,
+        numbers: Option<&'a Numbers>,
     }
 
     /// Never log, or return in an error, any part of `line`: it can hold a key.
@@ -509,6 +525,10 @@ mod unix {
             ("dashboard-get", _) if argument.is_empty() => shared.dashboard.map_or_else(
                 || error_response("the dashboard is not available"),
                 Dashboard::to_json_line,
+            ),
+            ("dashboard-numbers", _) => shared.numbers.map_or_else(
+                || error_response("the dashboard numbers are not available"),
+                |numbers| numbers.answer(argument),
             ),
             ("settings-get", Some(s)) if argument.is_empty() => s.get_response(),
             ("settings-set", Some(s)) => {
