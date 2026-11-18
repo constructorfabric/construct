@@ -1,5 +1,6 @@
 import type { ModelSettingsApi } from './agent-settings';
 import type { ChatApi } from './chat-protocol';
+import type { DashboardApi } from './dashboard-protocol';
 import type { ExternalApi } from './external';
 
 /**
@@ -38,6 +39,7 @@ export type AgentStatus =
 
 export type ConstructAgentApi = ModelSettingsApi &
   ChatApi &
+  DashboardApi &
   ExternalApi & {
     readonly getStatus: () => Promise<AgentStatus>;
     /** `true` when the app runs from a place macOS will remove, so no login service was set up. */

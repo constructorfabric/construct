@@ -28,6 +28,8 @@ import {
   CHAT_SEND_CHANNEL,
   CHAT_STOP_CHANNEL,
 } from './chat-protocol';
+import { createDashboardHandlers } from './dashboard-calls';
+import { DASHBOARD_NUMBERS_CHANNEL } from './dashboard-protocol';
 import { createLinkHandler } from './external-calls';
 import { OPEN_LINK_CHANNEL } from './external';
 import { offerMoveToApplications } from './move-to-applications';
@@ -175,6 +177,8 @@ function startApp(): void {
     ipcMain.handle(CHAT_SEND_CHANNEL, (_event, input: unknown) => chat.send(input));
     ipcMain.handle(CHAT_STOP_CHANNEL, () => chat.stop());
     app.on('before-quit', chat.close);
+    const dashboard = createDashboardHandlers({ env: process.env, platform: process.platform });
+    ipcMain.handle(DASHBOARD_NUMBERS_CHANNEL, (_event, input: unknown) => dashboard.numbers(input));
     // The window never opens a page itself: a link of an answer comes here, and only a web address
     // goes on to the system browser.
     const openLink = createLinkHandler((address) => shell.openExternal(address));
