@@ -123,7 +123,7 @@ export function App(): ReactNode {
             {page === 'status' ? (
               <StatusPage status={status} />
             ) : page === 'dashboard' ? (
-              <DashboardPage onOpenSettings={() => setPage('settings')} />
+              <DashboardPage status={status} onOpenSettings={() => setPage('settings')} />
             ) : page === 'memory' ? (
               <MemoryPage onOpenSettings={() => setPage('settings')} />
             ) : (

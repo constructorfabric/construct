@@ -200,6 +200,7 @@ describe('parseDocumentReply', () => {
         title: 'Activity',
         period: 'this_week',
         sessions: 'own',
+        source: 'ai_sessions',
         hiddenProjects: ['scratch'],
         projectNames: { '/home/me/billing': 'Billing' },
         widgets: [
@@ -428,6 +429,90 @@ describe('parseSessionsInput', () => {
   });
 });
 
+describe('the time on screen in a drill-down call', () => {
+  const day = { label: '2026-11-16', start: '2026-11-16T00:00Z', end: '2026-11-17T00:00Z' };
+  const page = { days: [day], group: 'Safari', offset: 0, limit: 20 };
+
+  it('names the source and no sessions, and is sent in the agent names', () => {
+    const input = parseSessionsInput({ ...page, source: 'on_screen', groupBy: 'day' });
+    expect(input).toEqual({ ...page, source: 'on_screen', groupBy: 'day' });
+    expect(input && dashboardSessionsLine(input)).toBe(
+      `dashboard-sessions ${JSON.stringify({ ...page, source: 'on_screen', group_by: 'day' })}`,
+    );
+  });
+
+  it('refuses sessions for the time on screen, and a source that is not known', () => {
+    expect(
+      parseSessionsInput({ ...page, source: 'on_screen', sessions: 'own', groupBy: 'day' }),
+    ).toBeNull();
+    expect(
+      parseSessionsInput({ ...page, source: 'elsewhere', sessions: 'own', groupBy: 'day' }),
+    ).toBeNull();
+  });
+
+  it('keeps the grouping it names, whichever of the five it is', () => {
+    for (const groupBy of ['app', 'site', 'project', 'ticket', 'day'] as const) {
+      expect(parseSessionsInput({ ...page, source: 'on_screen', groupBy })).toEqual({
+        ...page,
+        source: 'on_screen',
+        groupBy,
+      });
+    }
+  });
+
+  it('sends the filter it names, and only that', () => {
+    const filter = { projects: ['billing'], tickets: ['alpha-7'] };
+    const input = parseSessionsInput({ ...page, source: 'on_screen', groupBy: 'app', filter });
+    expect(input).toEqual({ ...page, source: 'on_screen', groupBy: 'app', filter });
+    expect(
+      input && JSON.parse(dashboardSessionsLine(input).slice('dashboard-sessions '.length)),
+    ).toEqual({
+      ...page,
+      source: 'on_screen',
+      filter,
+      group_by: 'app',
+    });
+    expect(
+      parseSessionsInput({ ...page, source: 'on_screen', groupBy: 'app', filter: { projects: 3 } }),
+    ).toBeNull();
+  });
+});
+
+describe('the source of a document', () => {
+  const payload = { period: 'this_week', sessions: 'own', hidden_projects: [], project_names: {} };
+  const widget = (more: object): object => ({
+    id: 'a',
+    kind: 'table',
+    group_by: 'app',
+    position: { column: 0, row: 0, width: 4, height: 4 },
+    ...more,
+  });
+
+  it('reads the source of the page and of a widget, and the groupings of the time on screen', () => {
+    const reply = parseDocumentReply(
+      JSON.stringify({
+        document: {
+          title: 'Activity',
+          payload: {
+            ...payload,
+            source: 'on_screen',
+            widgets: [widget({ source: 'ai_sessions' })],
+          },
+        },
+      }),
+    );
+    expect(reply).toMatchObject({
+      ok: true,
+      document: { source: 'on_screen', widgets: [{ source: 'ai_sessions', groupBy: 'app' }] },
+    });
+  });
+
+  it('refuses a source the app does not know', () => {
+    const document = { title: 'Activity', payload: { ...payload, source: 'cloud', widgets: [] } };
+    expect(() => parseDocumentReply(JSON.stringify({ document }))).toThrow('a source');
+  });
+});
+
 describe('dashboardSessionsLine', () => {
   it('names the fields as the agent does', () => {
     expect(dashboardSessionsLine({ days: [day], widget: 'by-project', ...page })).toBe(
@@ -473,8 +558,42 @@ describe('parseSessionsReply', () => {
       ok: true,
       total: 3,
       nextOffset: 2,
-      sessions: [row, row],
+      kind: 'sessions',
+      rows: [row, row],
     });
+  });
+
+  it('turns a page of the time on screen into blocks, with no title and no address', () => {
+    const block = {
+      start: '2026-11-17T10:00:00+00:00',
+      end: '2026-11-17T10:05:20+00:00',
+      seconds: 320,
+      app: 'Safari',
+      site: 'example.org',
+      project: 'billing',
+      ticket: 'No ticket',
+    };
+    const reply = JSON.stringify({
+      source: 'on_screen',
+      group: 'Safari',
+      total: 1,
+      offset: 0,
+      limit: 20,
+      next_offset: null,
+      blocks: [block],
+    });
+    expect(parseSessionsReply(reply)).toEqual({
+      ok: true,
+      total: 1,
+      nextOffset: null,
+      kind: 'blocks',
+      rows: [block],
+    });
+  });
+
+  it('refuses a block that is not times with an app and a site', () => {
+    const reply = JSON.stringify({ total: 1, next_offset: null, blocks: [{ seconds: 1 }] });
+    expect(() => parseSessionsReply(reply)).toThrow('not times with an app and a site');
   });
 
   it('has no next page after the last one', () => {

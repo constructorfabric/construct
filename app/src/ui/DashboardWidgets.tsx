@@ -31,6 +31,7 @@ import styles from './app.module.css';
 import { dateOfLabel, dayLabel, formatMinutes, periodDays, rangeLabel } from './dashboard-period';
 import { DaySummary } from './DaySummary';
 import { SessionsDialog } from './SessionsDialog';
+import { sourceOf } from './dashboard-source';
 import { drillSource } from './drill-source';
 import type { SessionsSource } from './useSessions';
 import type { Split, WidgetNumbers } from './useDashboard';
@@ -40,7 +41,11 @@ import type { ProjectActions } from './ProjectMenu';
 import { useSize } from './useSize';
 
 /** The colours of the two series, from the kit's chart tokens. */
-const seriesColour = { own: 'var(--chart-3)', unattended: 'var(--chart-2)' } as const;
+const seriesColour = {
+  own: 'var(--chart-3)',
+  unattended: 'var(--chart-2)',
+  screen: 'var(--chart-1)',
+} as const;
 
 type Series = keyof typeof seriesColour;
 
@@ -85,22 +90,26 @@ function Bars({
   days,
   split,
   sessions,
+  screen,
   onOpen,
 }: {
   readonly id: string;
   readonly days: readonly DayMinutes[];
   readonly split: readonly Split[] | null;
   readonly sessions: Whose;
+  /** The bars are the time on screen: one series. */
+  readonly screen: boolean;
   /** Opens the sessions of a day. */
   readonly onOpen: (day: string) => void;
 }): ReactNode {
   const [ref, { width, height }] = useSize<HTMLDivElement>();
   const single: Series = sessions === 'unattended' ? 'unattended' : 'own';
-  const series: Series[] = split === null ? [single] : ['own', 'unattended'];
+  const series: Series[] = screen ? ['screen'] : split === null ? [single] : ['own', 'unattended'];
   const rows = days.map((day, index) => ({
     label: day.label,
-    own: split?.[index]?.own ?? (single === 'own' ? day.minutes : 0),
+    own: split?.[index]?.own ?? (single === 'own' && !screen ? day.minutes : 0),
     unattended: split?.[index]?.unattended ?? (single === 'unattended' ? day.minutes : 0),
+    screen: screen ? day.minutes : 0,
   }));
   return (
     <figure id={id} className={styles.chart}>
@@ -178,7 +187,9 @@ function Bars({
                       onOpen(row.label);
                     }}
                   >
-                    {t('DashboardPage.Drill.Open', { name: row.label })}
+                    {t(screen ? 'DashboardPage.Drill.Blocks.Open' : 'DashboardPage.Drill.Open', {
+                      name: row.label,
+                    })}
                   </button>
                 </th>
                 {series.map((name) => (
@@ -212,10 +223,13 @@ function GroupTable({
   groupBy,
   groups,
   actions,
+  screen,
   onOpen,
 }: {
   readonly id: string;
   readonly groupBy: GroupBy;
+  /** The groups are of the time on screen, which has blocks where the sessions would be. */
+  readonly screen: boolean;
   readonly groups: readonly GroupMinutes[];
   /** Opens the sessions of a row. */
   readonly onOpen: (group: string) => void;
@@ -269,7 +283,9 @@ function GroupTable({
           <TableHead>{t(`DashboardPage.Column.Group.${groupBy}`)}</TableHead>
           <TableHead>{t('DashboardPage.Column.Time')}</TableHead>
           <TableHead>{t('DashboardPage.Column.Share')}</TableHead>
-          <TableHead>{t('DashboardPage.Column.Sessions')}</TableHead>
+          <TableHead>
+            {t(screen ? 'DashboardPage.Column.Blocks' : 'DashboardPage.Column.Sessions')}
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -288,7 +304,10 @@ function GroupTable({
                   <button
                     type="button"
                     className={styles.openName}
-                    aria-label={t('DashboardPage.Drill.Open', { name: group.key })}
+                    aria-label={t(
+                      screen ? 'DashboardPage.Drill.Blocks.Open' : 'DashboardPage.Drill.Open',
+                      { name: group.key },
+                    )}
                     onClick={(event) => {
                       // The row opens it once.
                       event.stopPropagation();
@@ -347,6 +366,8 @@ export function DashboardWidget({
   const [drill, setDrill] = useState<SessionsSource | null>(null);
   const period = t(`DashboardPage.Period.${widget.period ?? document.period}`);
   const sessions = widget.sessions ?? document.sessions;
+  const source = sourceOf(document, widget);
+  const screen = source === 'on_screen';
   const groupBy = widget.groupBy ?? 'project';
   const title =
     widget.kind === 'table'
@@ -358,7 +379,7 @@ export function DashboardWidget({
           : t('DashboardPage.Widget.Total');
   const days = periodDays(widget.period ?? document.period, day);
   const open = (group: string): void => {
-    setDrill(drillSource(widget, days, sessions, group));
+    setDrill(drillSource(widget, days, sessions, group, source));
   };
   const actions: ProjectActions | null =
     groupBy === 'project'
@@ -398,6 +419,7 @@ export function DashboardWidget({
           days={numbers.numbers.days}
           split={numbers.split}
           sessions={sessions}
+          screen={screen}
           onOpen={open}
         />
       );
@@ -406,6 +428,7 @@ export function DashboardWidget({
       <GroupTable
         id={`table-${widget.id}`}
         groupBy={groupBy}
+        screen={screen}
         groups={numbers.numbers.groups}
         actions={actions}
         onOpen={open}
@@ -415,12 +438,15 @@ export function DashboardWidget({
   return (
     <WidgetCard
       title={title}
-      period={widget.kind === 'day_summary' ? dayLabel(day) : `${period} · ${rangeLabel(days)}`}
+      period={`${t(`DashboardPage.Source.${source}`)} · ${
+        widget.kind === 'day_summary' ? dayLabel(day) : `${period} · ${rangeLabel(days)}`
+      }`}
     >
       {body}
       {drill !== null && (
         <SessionsDialog
           source={drill}
+          screen={screen}
           onClose={() => {
             setDrill(null);
           }}

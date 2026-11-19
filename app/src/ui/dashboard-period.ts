@@ -53,6 +53,19 @@ export function formatMinutes(minutes: number): string {
     : t('DashboardPage.HoursMinutes', { hours: Math.floor(whole / 60), minutes: whole % 60 });
 }
 
+/** A length of time on screen to the second, as `1 h 2 min 5 s`; the blocks' own seconds. */
+export function secondsText(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  if (hours > 0) {
+    return t('DashboardPage.HoursMinutesSeconds', { hours, minutes, seconds: rest });
+  }
+  return minutes > 0
+    ? t('DashboardPage.MinutesSeconds', { minutes, seconds: rest })
+    : t('DashboardPage.Seconds', { seconds: rest });
+}
+
 /** The days of a period, as the document names it, counted from `anchor`, which stands for today. */
 export function periodDays(period: Period, anchor: Date): [DayBounds, ...DayBounds[]] {
   const today = startOfDay(anchor);
