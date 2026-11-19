@@ -28,7 +28,7 @@ import type {
 } from '../dashboard-protocol';
 import { t } from '../translation';
 import styles from './app.module.css';
-import { dayLabel, formatMinutes, periodDays } from './dashboard-period';
+import { dateOfLabel, dayLabel, formatMinutes, periodDays, rangeLabel } from './dashboard-period';
 import { DaySummary } from './DaySummary';
 import { SessionsDialog } from './SessionsDialog';
 import { drillSource } from './drill-source';
@@ -46,14 +46,9 @@ type Series = keyof typeof seriesColour;
 
 /** A day label, `2026-11-16`, as `Mon 16`. */
 function shortDay(label: string): string {
-  const [year, month, day] = label.split('-').map(Number);
-  if (year === undefined || month === undefined || day === undefined) {
-    return label;
-  }
-  return new Date(year, month - 1, day).toLocaleDateString('en-US', {
-    weekday: 'short',
-    day: 'numeric',
-  });
+  return (
+    dateOfLabel(label)?.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' }) ?? label
+  );
 }
 
 function WidgetCard({
@@ -418,7 +413,10 @@ export function DashboardWidget({
     );
   })();
   return (
-    <WidgetCard title={title} period={widget.kind === 'day_summary' ? dayLabel(day) : period}>
+    <WidgetCard
+      title={title}
+      period={widget.kind === 'day_summary' ? dayLabel(day) : `${period} · ${rangeLabel(days)}`}
+    >
       {body}
       {drill !== null && (
         <SessionsDialog

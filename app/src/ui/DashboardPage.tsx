@@ -20,6 +20,7 @@ import { cancelRowsBack, expectRowsBack } from './focus-after-show';
 import { DashboardGrid } from './DashboardGrid';
 import { DashboardWidget } from './DashboardWidgets';
 import { addDays, startOfDay } from 'date-fns';
+import { countsDay, mondayOf, pageLabel, periodAnchor } from './dashboard-period';
 import { useDashboard } from './useDashboard';
 import type { DashboardState, WidgetNumbers } from './useDashboard';
 
@@ -293,7 +294,10 @@ export function DashboardPage({
   readonly onOpenSettings: () => void;
 }): ReactNode {
   const [day, setDay] = useState(() => startOfDay(new Date()));
-  const { state, change, failure, dismissFailure } = useDashboard(day);
+  const { state, document, change, failure, dismissFailure } = useDashboard(day);
+  // The arrows step by the shortest period a widget counts: a day when one counts a day, else a
+  // week, and then the week arrows are the only ones.
+  const byDay = countsDay(document);
   const move = (days: number): void => {
     setDay((current) => addDays(current, days));
   };
@@ -317,32 +321,37 @@ export function DashboardPage({
             icon={<ChevronsLeft />}
             onClick={() => move(-7)}
           />
-          <Button
-            id="dashboard-previous-day"
-            variant="outline"
-            size="sm"
-            aria-label={t('DashboardPage.Previous.Day')}
-            icon={<ChevronLeft />}
-            onClick={() => move(-1)}
-          />
+          {byDay && (
+            <Button
+              id="dashboard-previous-day"
+              variant="outline"
+              size="sm"
+              aria-label={t('DashboardPage.Previous.Day')}
+              icon={<ChevronLeft />}
+              onClick={() => move(-1)}
+            />
+          )}
           <DatePicker
             id="dashboard-date"
             selected={day}
             onSelect={(picked) => {
               if (picked !== undefined) {
-                setDay(startOfDay(picked));
+                // The date of a page that counts weeks only stands for its week.
+                setDay(byDay ? startOfDay(picked) : mondayOf(startOfDay(picked)));
               }
             }}
             placeholder={t('DashboardPage.PickDate')}
           />
-          <Button
-            id="dashboard-next-day"
-            variant="outline"
-            size="sm"
-            aria-label={t('DashboardPage.Next.Day')}
-            icon={<ChevronRight />}
-            onClick={() => move(1)}
-          />
+          {byDay && (
+            <Button
+              id="dashboard-next-day"
+              variant="outline"
+              size="sm"
+              aria-label={t('DashboardPage.Next.Day')}
+              icon={<ChevronRight />}
+              onClick={() => move(1)}
+            />
+          )}
           <Button
             id="dashboard-next-week"
             variant="outline"
@@ -352,6 +361,11 @@ export function DashboardPage({
             onClick={() => move(7)}
           />
         </div>
+        {document !== null && (
+          <p id="dashboard-period" className={styles.toolbarPeriod}>
+            {pageLabel(document, day)}
+          </p>
+        )}
       </div>
       {failure !== null && (
         <Alert id="dashboard-change-failed" variant="destructive">
@@ -370,7 +384,7 @@ export function DashboardPage({
       )}
       <Body
         state={state}
-        day={day}
+        day={periodAnchor(document, day)}
         onOpenSettings={onOpenSettings}
         onChange={(changes) => void change(changes)}
         onShow={(projects, focusRows) => {

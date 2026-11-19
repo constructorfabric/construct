@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { DashboardDocument, Period, WidgetKind } from '../src/dashboard-protocol';
 import {
+  countsDay,
   dayBounds,
+  dayLabel,
   formatMinutes,
   mondayOf,
+  pageLabel,
+  periodAnchor,
   periodDays,
+  rangeLabel,
   shortDate,
   weekBounds,
 } from '../src/ui/dashboard-period';
@@ -129,5 +135,64 @@ describe('the days of a period of the document', () => {
     expect(labels('last_7_days')[6]).toBe('2026-11-18');
     expect(labels('last_30_days')).toHaveLength(30);
     expect(labels('last_30_days')[0]).toBe('2026-10-20');
+  });
+});
+
+describe('the period the page shows', () => {
+  const page = (
+    period: Period,
+    widgets: readonly { kind: WidgetKind; period?: Period }[],
+  ): DashboardDocument =>
+    ({
+      period,
+      widgets: widgets.map((widget, index) => ({ id: `w${index}`, ...widget })),
+    }) as unknown as DashboardDocument;
+  const wednesday = new Date(2026, 10, 18);
+
+  it('is a day when a widget counts a day, and a week when none does', () => {
+    expect(countsDay(page('this_week', [{ kind: 'total' }]))).toBe(false);
+    expect(countsDay(page('this_week', [{ kind: 'total', period: 'today' }]))).toBe(true);
+    expect(countsDay(page('today', [{ kind: 'total' }]))).toBe(true);
+    expect(countsDay(page('this_week', [{ kind: 'total' }, { kind: 'day_summary' }]))).toBe(true);
+    expect(countsDay(page('last_30_days', [{ kind: 'bars_per_day' }]))).toBe(false);
+    expect(countsDay(null)).toBe(false);
+    expect(countsDay(page('this_week', []))).toBe(false);
+    expect(countsDay(page('today', []))).toBe(false);
+  });
+
+  it('stands on the chosen day for a day, and on the last day of the week for a week', () => {
+    const day = page('this_week', [{ kind: 'day_summary' }]);
+    const week = page('this_week', [{ kind: 'total' }]);
+    expect(dayLabel(periodAnchor(day, wednesday))).toBe('2026-11-18');
+    expect(dayLabel(periodAnchor(week, wednesday))).toBe('2026-11-22');
+    expect(dayLabel(periodAnchor(week, new Date(2026, 10, 16)))).toBe('2026-11-22');
+    // The Sunday is the last day of its own week, not of the next.
+    expect(dayLabel(periodAnchor(week, new Date(2026, 10, 22)))).toBe('2026-11-22');
+    // A week across a month and a year.
+    expect(dayLabel(periodAnchor(week, new Date(2026, 10, 30)))).toBe('2026-12-06');
+    expect(dayLabel(periodAnchor(week, new Date(2026, 11, 30)))).toBe('2027-01-03');
+    // The seven days up to that day are the week.
+    expect(periodDays('last_7_days', periodAnchor(week, wednesday))[0]?.label).toBe('2026-11-16');
+  });
+
+  it('is named by its day, or by the first and the last day of its week', () => {
+    expect(pageLabel(page('this_week', [{ kind: 'day_summary' }]), wednesday)).toBe('Nov 18, 2026');
+    expect(pageLabel(page('this_week', [{ kind: 'total' }]), wednesday)).toBe(
+      'Nov 16 – Nov 22, 2026',
+    );
+  });
+
+  it('names a week across a month and a year by its own days', () => {
+    const week = page('this_week', [{ kind: 'total' }]);
+    expect(pageLabel(week, new Date(2026, 10, 30))).toBe('Nov 30 – Dec 6, 2026');
+    expect(pageLabel(week, new Date(2026, 11, 31))).toBe('Dec 28 – Jan 3, 2027');
+  });
+
+  it('names the first and the last day of a period of a widget', () => {
+    expect(rangeLabel(periodDays('today', wednesday))).toBe('Nov 18');
+    expect(rangeLabel(periodDays('this_week', wednesday))).toBe('Nov 16 – Nov 22');
+    expect(rangeLabel(periodDays('last_month', wednesday))).toBe('Oct 1 – Oct 31');
+    // A week across a month and a year.
+    expect(rangeLabel(periodDays('this_week', new Date(2026, 11, 30)))).toBe('Dec 28 – Jan 3');
   });
 });
