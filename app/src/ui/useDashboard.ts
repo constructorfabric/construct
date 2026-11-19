@@ -4,9 +4,11 @@ import type {
   DashboardResult,
   DocumentProblem,
   ProjectChange,
+  SummaryResult,
   Widget,
 } from '../dashboard-protocol';
-import { dayLabel, periodDays } from './dashboard-period';
+import { dayBounds, dayLabel, periodDays } from './dashboard-period';
+import { lostAgent } from './lost-agent';
 
 /** How long the page waits before it asks again while the agent reads the history. */
 const retryMs = 2000;
@@ -15,6 +17,7 @@ const retryMs = 2000;
 const documentPollMs = 2000;
 
 type Numbers = Extract<DashboardResult, { ok: true }>;
+type Summary = Extract<SummaryResult, { ok: true }>;
 
 /** The own and the unattended minutes of each day of a chart that shows both. */
 export interface Split {
@@ -26,6 +29,7 @@ export interface Split {
 /** What one widget has to draw, or why it cannot. */
 export type WidgetNumbers =
   | { readonly ok: true; readonly numbers: Numbers; readonly split: readonly Split[] | null }
+  | { readonly ok: true; readonly summary: Summary }
   | { readonly ok: false; readonly error: string; readonly reading?: true };
 
 /** What the page knows of the dashboard it shows. */
@@ -49,16 +53,18 @@ type File = {
   readonly problem: DocumentProblem | null;
 };
 
-/** The widgets that show numbers; the summary of the day has no drawing here. */
-export function drawnWidgets(document: DashboardDocument): Widget[] {
-  return document.widgets.filter((widget) => widget.kind !== 'day_summary');
-}
-
 async function widgetNumbers(
   document: DashboardDocument,
   widget: Widget,
   anchor: Date,
 ): Promise<WidgetNumbers> {
+  if (widget.kind === 'day_summary') {
+    const summary = await window.constructAgent.getDashboardSummary({
+      day: dayBounds(anchor),
+      widget: widget.id,
+    });
+    return summary.ok ? { ok: true, summary } : summary;
+  }
   const days = periodDays(widget.period ?? document.period, anchor);
   const all = await window.constructAgent.getDashboardNumbers({ days, widget: widget.id });
   if (!all.ok) {
@@ -93,10 +99,6 @@ export interface DashboardControls {
   /** Why the last change was not made, until the next change or `dismissFailure`. */
   readonly failure: string | null;
   readonly dismissFailure: () => void;
-}
-
-function lostAgent(error: unknown): string {
-  return error instanceof Error ? error.message : 'the window lost the agent';
 }
 
 /**
@@ -207,7 +209,7 @@ export function useDashboard(anchor: Date): DashboardControls {
     const read = (): void => {
       Promise.all([
         Promise.all(
-          drawnWidgets(document).map(
+          document.widgets.map(
             async (widget) => [widget.id, await widgetNumbers(document, widget, anchor)] as const,
           ),
         ),

@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
 import started from 'electron-squirrel-startup';
 import {
   agentBinaryPath,
@@ -33,6 +33,8 @@ import {
   DASHBOARD_DOCUMENT_CHANNEL,
   DASHBOARD_NUMBERS_CHANNEL,
   DASHBOARD_PROJECT_CHANNEL,
+  DASHBOARD_SESSIONS_CHANNEL,
+  DASHBOARD_SUMMARY_CHANNEL,
 } from './dashboard-protocol';
 import { createDashboardSetupHandlers } from './dashboard-setup-calls';
 import {
@@ -40,8 +42,8 @@ import {
   SETUP_START_CHANNEL,
   SETUP_STATUS_CHANNEL,
 } from './dashboard-setup-protocol';
-import { createLinkHandler } from './external-calls';
-import { OPEN_LINK_CHANNEL } from './external';
+import { createCopyHandler, createLinkHandler } from './external-calls';
+import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL } from './external';
 import { createMemoryHandlers } from './memory-calls';
 import { MEMORY_FACTS_CHANNEL, MEMORY_VERSION_CHANNEL } from './memory-protocol';
 import { offerMoveToApplications } from './move-to-applications';
@@ -191,6 +193,10 @@ function startApp(): void {
     app.on('before-quit', chat.close);
     const dashboard = createDashboardHandlers({ env: process.env, platform: process.platform });
     ipcMain.handle(DASHBOARD_NUMBERS_CHANNEL, (_event, input: unknown) => dashboard.numbers(input));
+    ipcMain.handle(DASHBOARD_SESSIONS_CHANNEL, (_event, input: unknown) =>
+      dashboard.sessions(input),
+    );
+    ipcMain.handle(DASHBOARD_SUMMARY_CHANNEL, (_event, input: unknown) => dashboard.summary(input));
     ipcMain.handle(DASHBOARD_DOCUMENT_CHANNEL, () => dashboard.document());
     ipcMain.handle(DASHBOARD_PROJECT_CHANNEL, (_event, change: unknown) =>
       dashboard.project(change),
@@ -206,6 +212,11 @@ function startApp(): void {
     // goes on to the system browser.
     const openLink = createLinkHandler((address) => shell.openExternal(address));
     ipcMain.handle(OPEN_LINK_CHANNEL, (_event, url: unknown) => openLink(url));
+    // The window never touches the clipboard itself: the main process writes plain text for it.
+    const copyText = createCopyHandler((text) => {
+      clipboard.writeText(text);
+    });
+    ipcMain.handle(COPY_TEXT_CHANNEL, (_event, text: unknown) => copyText(text));
     ipcMain.handle(SETTINGS_COLLECTION_CHANNEL, (_event, input: unknown) =>
       settings.saveCollection(input),
     );

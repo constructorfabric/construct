@@ -11,7 +11,7 @@ import {
   Spinner,
 } from '@gears-frontx/ui-kit';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { DashboardDocument, DocumentProblem, ProjectChange } from '../dashboard-protocol';
 import { t } from '../translation';
@@ -20,7 +20,7 @@ import { cancelRowsBack, expectRowsBack } from './focus-after-show';
 import { DashboardGrid } from './DashboardGrid';
 import { DashboardWidget } from './DashboardWidgets';
 import { addDays, startOfDay } from 'date-fns';
-import { drawnWidgets, useDashboard } from './useDashboard';
+import { useDashboard } from './useDashboard';
 import type { DashboardState, WidgetNumbers } from './useDashboard';
 
 /** Dragging and resizing have no control yet; the address of the page can turn them on. */
@@ -49,21 +49,23 @@ function ProblemNote({
   );
 }
 
-/** Whether nothing was counted for any of the widgets that show numbers. */
+/** Whether nothing was counted for any widget. */
 function nothingCounted(
   document: DashboardDocument,
   numbers: ReadonlyMap<string, WidgetNumbers>,
 ): boolean {
-  const widgets = drawnWidgets(document);
+  const { widgets } = document;
   return (
     widgets.length > 0 &&
     widgets.every((widget) => {
       const counted = numbers.get(widget.id);
-      return (
-        counted?.ok === true &&
-        counted.numbers.sessionCount === 0 &&
-        counted.numbers.totalMinutes === 0
-      );
+      if (counted?.ok !== true) {
+        return false;
+      }
+      // A summary with a line is time; one without is none.
+      return 'summary' in counted
+        ? counted.summary.lines.length === 0
+        : counted.numbers.sessionCount === 0 && counted.numbers.totalMinutes === 0;
     })
   );
 }
@@ -72,7 +74,9 @@ function nothingCounted(
 function hiddenCount(numbers: ReadonlyMap<string, WidgetNumbers>): number {
   return Math.max(
     0,
-    ...[...numbers.values()].map((counted) => (counted.ok ? counted.numbers.hiddenProjects : 0)),
+    ...[...numbers.values()].map((counted) =>
+      counted.ok && 'numbers' in counted ? counted.numbers.hiddenProjects : 0,
+    ),
   );
 }
 
@@ -141,16 +145,18 @@ function AllHidden({
 function Widgets({
   document,
   numbers,
+  day,
   onChange,
 }: {
   readonly document: DashboardDocument;
   readonly numbers: ReadonlyMap<string, WidgetNumbers>;
+  readonly day: Date;
   readonly onChange: (changes: readonly ProjectChange[]) => void;
 }): ReactNode {
   const arrangeable = useArrangeable();
   // The same list for the same document: the grid starts again from the document's places
   // when the list changes, and so must not get a new one at every render.
-  const widgets = useMemo(() => drawnWidgets(document), [document]);
+  const widgets = document.widgets;
   return (
     <DashboardGrid
       widgets={widgets}
@@ -160,6 +166,7 @@ function Widgets({
           document={document}
           widget={widget}
           numbers={numbers.get(widget.id)}
+          day={day}
           onChange={onChange}
         />
       )}
@@ -169,11 +176,13 @@ function Widgets({
 
 function Body({
   state,
+  day,
   onOpenSettings,
   onChange,
   onShow,
 }: {
   readonly state: DashboardState;
+  readonly day: Date;
   readonly onOpenSettings: () => void;
   readonly onChange: (changes: readonly ProjectChange[]) => void;
   readonly onShow: ShowHidden;
@@ -203,7 +212,7 @@ function Body({
   }
   const problemNote = problem === null ? null : <ProblemNote problem={problem} shownLast />;
   const hidden = hiddenCount(numbers);
-  if (drawnWidgets(document).length === 0) {
+  if (document.widgets.length === 0) {
     return (
       <>
         {problemNote}
@@ -272,7 +281,7 @@ function Body({
       {hidden > 0 && (
         <HiddenNote count={hidden} document={document} focusRows={false} onShow={onShow} />
       )}
-      <Widgets document={document} numbers={numbers} onChange={onChange} />
+      <Widgets document={document} numbers={numbers} day={day} onChange={onChange} />
     </>
   );
 }
@@ -361,6 +370,7 @@ export function DashboardPage({
       )}
       <Body
         state={state}
+        day={day}
         onOpenSettings={onOpenSettings}
         onChange={(changes) => void change(changes)}
         onShow={(projects, focusRows) => {

@@ -3,19 +3,32 @@ import type { Where } from './agent-socket';
 import {
   dashboardGetLine,
   dashboardNumbersLine,
+  dashboardSessionsLine,
+  dashboardSummaryLine,
   parseDashboardInput,
   parseDashboardReply,
   parseDocumentReply,
   parseProjectChange,
+  parseSessionsInput,
+  parseSessionsReply,
+  parseSummaryInput,
+  parseSummaryReply,
   projectChangeLine,
 } from './dashboard-protocol';
-import type { DashboardResult, DocumentResult } from './dashboard-protocol';
+import type {
+  DashboardResult,
+  DocumentResult,
+  SessionsResult,
+  SummaryResult,
+} from './dashboard-protocol';
 
 const invalidInput = 'the window sent a dashboard request in a form the app does not accept';
 const invalidChange = 'the window sent a project change in a form the app does not accept';
 
 export interface DashboardHandlers {
   readonly numbers: (value: unknown) => Promise<DashboardResult>;
+  readonly sessions: (value: unknown) => Promise<SessionsResult>;
+  readonly summary: (value: unknown) => Promise<SummaryResult>;
   readonly document: () => Promise<DocumentResult>;
   readonly project: (value: unknown) => Promise<DocumentResult>;
 }
@@ -31,6 +44,32 @@ export function createDashboardHandlers(where: Where): DashboardHandlers {
       try {
         return parseDashboardReply(
           await callAgent(where.env, where.platform, dashboardNumbersLine(input), dashboardLimits),
+        );
+      } catch (error) {
+        return { ok: false, error: failureText(error) };
+      }
+    },
+    sessions: async (value) => {
+      const input = parseSessionsInput(value);
+      if (input === null) {
+        return { ok: false, error: invalidInput };
+      }
+      try {
+        return parseSessionsReply(
+          await callAgent(where.env, where.platform, dashboardSessionsLine(input), dashboardLimits),
+        );
+      } catch (error) {
+        return { ok: false, error: failureText(error) };
+      }
+    },
+    summary: async (value) => {
+      const input = parseSummaryInput(value);
+      if (input === null) {
+        return { ok: false, error: invalidInput };
+      }
+      try {
+        return parseSummaryReply(
+          await callAgent(where.env, where.platform, dashboardSummaryLine(input), dashboardLimits),
         );
       } catch (error) {
         return { ok: false, error: failureText(error) };

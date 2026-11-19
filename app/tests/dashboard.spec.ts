@@ -189,6 +189,16 @@ async function withAgent(
         await (agent.hold ?? Promise.resolve());
         return numbersReply(agent, request);
       }
+      if (line.startsWith('dashboard-summary ')) {
+        const day = (
+          JSON.parse(line.slice('dashboard-summary '.length)) as { day: { label: string } }
+        ).day.label;
+        return JSON.stringify({
+          day,
+          total_minutes: agent.empty ? 0 : 30,
+          lines: agent.empty ? [] : ['No ticket (billing): 30 min'],
+        });
+      }
       if (line === 'dashboard-get') {
         agent.looks += 1;
         if (agent.documentError !== null) {
@@ -284,14 +294,11 @@ test('the default dashboard draws a total, bars and two tables where the documen
     await expect(page.locator('#value-total')).toHaveText(ownWeek);
     await expect(page.locator('#widget-total h2')).toHaveText('Time');
 
-    for (const widgetPlace of defaultDocument.payload.widgets.filter(
-      (w) => w.kind !== 'day_summary',
-    )) {
+    for (const widgetPlace of defaultDocument.payload.widgets) {
       const { column, row, width, height } = widgetPlace.position;
       expect(await placeOf(page, widgetPlace.id)).toEqual([column, row, width, height]);
     }
-    // The summary of the day is not drawn by this page yet.
-    await expect(page.locator('#widget-end-of-day')).toHaveCount(0);
+    await expect(page.locator('#widget-end-of-day h2')).toHaveText('End of day');
 
     // On the screen: the total is as wide as the grid, the bars sit two rows below it, and the
     // two tables share the width of the row under them.
@@ -469,11 +476,19 @@ test('a failed look at the file keeps the last good dashboard', async ({ session
 });
 
 test('a document with nothing to draw says so', async ({ session }) => {
+  const agent = newAgent({ document: gridPlaces([]) });
+  await withAgent(session, agent, async (page) => {
+    await expect(page.locator('#dashboard-no-widgets')).toContainText('Nothing to draw');
+  });
+});
+
+test('a document with only the summary of the day draws it', async ({ session }) => {
   const agent = newAgent({
     document: gridPlaces([widget('end-of-day', 'day_summary', [0, 0, 12, 3])]),
   });
   await withAgent(session, agent, async (page) => {
-    await expect(page.locator('#dashboard-no-widgets')).toContainText('Nothing to draw');
+    await expect(page.locator('#widget-end-of-day h2')).toHaveText('End of day');
+    await expect(page.locator('#dashboard-no-widgets')).toHaveCount(0);
   });
 });
 

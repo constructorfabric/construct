@@ -13,15 +13,22 @@ import {
   DASHBOARD_DOCUMENT_CHANNEL,
   DASHBOARD_NUMBERS_CHANNEL,
   DASHBOARD_PROJECT_CHANNEL,
+  DASHBOARD_SESSIONS_CHANNEL,
+  DASHBOARD_SUMMARY_CHANNEL,
 } from './dashboard-protocol';
-import type { DashboardResult, DocumentResult } from './dashboard-protocol';
+import type {
+  DashboardResult,
+  DocumentResult,
+  SessionsResult,
+  SummaryResult,
+} from './dashboard-protocol';
 import {
   SETUP_CANCEL_CHANNEL,
   SETUP_START_CHANNEL,
   SETUP_STATUS_CHANNEL,
 } from './dashboard-setup-protocol';
 import type { SetupResult } from './dashboard-setup-protocol';
-import { OPEN_LINK_CHANNEL } from './external';
+import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL } from './external';
 import { MEMORY_FACTS_CHANNEL, MEMORY_VERSION_CHANNEL } from './memory-protocol';
 import type { FactsResult, VersionResult } from './memory-protocol';
 import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
@@ -67,12 +74,17 @@ const api: ConstructAgentApi = {
     ipcRenderer.invoke(DASHBOARD_DOCUMENT_CHANNEL) as Promise<DocumentResult>,
   changeDashboardProject: (change) =>
     ipcRenderer.invoke(DASHBOARD_PROJECT_CHANNEL, change) as Promise<DocumentResult>,
+  getDashboardSessions: (input) =>
+    ipcRenderer.invoke(DASHBOARD_SESSIONS_CHANNEL, input) as Promise<SessionsResult>,
+  getDashboardSummary: (input) =>
+    ipcRenderer.invoke(DASHBOARD_SUMMARY_CHANNEL, input) as Promise<SummaryResult>,
   getMemoryFacts: () => ipcRenderer.invoke(MEMORY_FACTS_CHANNEL) as Promise<FactsResult>,
   getMemoryVersion: () => ipcRenderer.invoke(MEMORY_VERSION_CHANNEL) as Promise<VersionResult>,
   startDashboardSetup: () => ipcRenderer.invoke(SETUP_START_CHANNEL) as Promise<SetupResult>,
   getDashboardSetup: () => ipcRenderer.invoke(SETUP_STATUS_CHANNEL) as Promise<SetupResult>,
   cancelDashboardSetup: () => ipcRenderer.invoke(SETUP_CANCEL_CHANNEL) as Promise<SetupResult>,
   openLink: (url) => ipcRenderer.invoke(OPEN_LINK_CHANNEL, url) as Promise<boolean>,
+  copyText: (text) => ipcRenderer.invoke(COPY_TEXT_CHANNEL, text) as Promise<boolean>,
   onChatEvent: (listener) => {
     // Only the event goes through, never Electron's own event object.
     const handler = (_event: IpcRendererEvent, chatEvent: ChatEvent): void => {

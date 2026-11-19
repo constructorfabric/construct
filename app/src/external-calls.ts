@@ -1,4 +1,4 @@
-import { webAddress } from './external';
+import { copyableText, webAddress } from './external';
 
 /**
  * The handler of `openLink`: it opens a web address with `open` and refuses anything else, whoever
@@ -14,6 +14,26 @@ export function createLinkHandler(
     }
     try {
       await open(address);
+    } catch (error) {
+      console.error(error);
+      return false;
+    }
+    return true;
+  };
+}
+
+/**
+ * The handler of `copyText`: it writes a text of a fitting size with `write` and refuses anything
+ * else, whoever asks. A clipboard that cannot be written is a refusal too.
+ */
+export function createCopyHandler(write: (text: string) => void): (text: unknown) => boolean {
+  return (text) => {
+    const copyable = copyableText(text);
+    if (copyable === null) {
+      return false;
+    }
+    try {
+      write(copyable);
     } catch (error) {
       console.error(error);
       return false;
