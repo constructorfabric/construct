@@ -227,6 +227,7 @@ fn a_name_the_user_gave_still_holds_when_the_findings_name_the_project() {
                     .iter()
                     .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
                     .collect(),
+                ..Spec::default()
             },
         )
         .unwrap()
@@ -321,7 +322,12 @@ fn a_widget_that_groups_by_collection_is_answered_through_the_page_request() {
     })
     .to_string();
     let reply: Value =
-        serde_json::from_str(&respond(&request, Some(&document), || Ok(sessions.clone()))).unwrap();
+        serde_json::from_str(&respond(
+            &request,
+            Some(&document),
+            |_| Ok(sessions.clone()),
+        ))
+        .unwrap();
     let keys: Vec<&str> = reply["groups"]
         .as_array()
         .unwrap_or_else(|| panic!("no groups in {reply}"))

@@ -127,7 +127,7 @@ fn the_tool_names_both_files_and_the_instruction_does_not_change() {
     let dashboard = Dashboard::open(Arc::new(workspace));
     let tool = dashboard_view::tool(
         dashboard,
-        Arc::new(|| Ok(Vec::new())),
+        Arc::new(|_| Ok(construct_agent::dashboard_numbers::Data::default())),
         dashboard_view::Calendar::default(),
     );
     let description = construct_agent::chat::tool::ChatTool::description(&*tool);
@@ -146,4 +146,29 @@ You have a workspace folder with the user's files, and the files are text. You w
 never put them in the text you give to `Edit` or `Write`. When a tool returns an error, say what the error says, \
 and never say that a change was made when it failed. Answer in the language of the user."
     );
+}
+
+#[test]
+fn the_guide_and_the_schema_name_the_source_and_the_groupings() {
+    for word in [
+        "ai_sessions",
+        "on_screen",
+        "`app`",
+        "`site`",
+        "`tool`",
+        "`collection`",
+        "No site",
+    ] {
+        assert!(GUIDE.contains(word), "the guide names {word}");
+    }
+    let schema = document_schema().to_string();
+    for word in [
+        "\"ai_sessions\"",
+        "\"on_screen\"",
+        "\"app\"",
+        "\"site\"",
+        "\"tool\"",
+    ] {
+        assert!(schema.contains(word), "the schema names {word}");
+    }
 }

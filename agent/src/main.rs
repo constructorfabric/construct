@@ -91,7 +91,7 @@ fn run() -> std::io::Result<()> {
     let activity = construct_agent::activity::Feed::new();
     let model_state = construct_agent::model::ModelState::default();
     let settings = open_settings();
-    let dashboard = open_dashboard();
+    let dashboard = open_dashboard(settings.clone());
     // Built before the socket server: a chat answer runs on this runtime, driven by the
     // thread of its connection.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -116,7 +116,7 @@ fn run() -> std::io::Result<()> {
             let read = numbers.clone();
             let tool = construct_agent::chat::dashboard_view::tool(
                 dashboard.clone(),
-                std::sync::Arc::new(move || read.read_sessions()),
+                std::sync::Arc::new(move |source| read.read_data(source)),
                 construct_agent::chat::dashboard_view::Calendar::default(),
             );
             let server = server
@@ -328,7 +328,9 @@ fn open_settings() -> Option<construct_agent::settings::Settings> {
 /// logged: the dashboard is a document the app can do without, and the guide files are text the
 /// dashboard can do without too.
 #[cfg(unix)]
-fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
+fn open_dashboard(
+    settings: Option<construct_agent::settings::Settings>,
+) -> Option<construct_agent::dashboard_document::Dashboard> {
     use construct_agent::{
         dashboard, dashboard_document::Dashboard, dashboard_guide, records, workspace::Workspace,
     };
@@ -337,7 +339,10 @@ fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
         .map_err(construct_agent::workspace::Error::from)
         .and_then(|dir| Workspace::open(&dir))
         .and_then(|workspace| {
-            let written = dashboard::ensure_default(&workspace)?;
+            let screen = settings
+                .as_ref()
+                .is_some_and(|settings| settings.collects(construct_agent::screen::SOURCE));
+            let written = dashboard::ensure_default_for(&workspace, screen)?;
             Ok((workspace, written))
         });
     match opened {
@@ -348,7 +353,12 @@ fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
             if let Err(e) = dashboard_guide::write(&workspace) {
                 eprintln!("the dashboard guide files are not written: {e}");
             }
-            let dashboard = Dashboard::open(std::sync::Arc::new(workspace));
+            let switch = settings.map(
+                |settings| -> construct_agent::dashboard_document::ScreenSwitch {
+                    std::sync::Arc::new(move || settings.collects(construct_agent::screen::SOURCE))
+                },
+            );
+            let dashboard = Dashboard::open_with(std::sync::Arc::new(workspace), switch);
             dashboard.watch();
             Some(dashboard)
         }

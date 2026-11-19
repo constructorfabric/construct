@@ -15,6 +15,7 @@ use common::pg_stand::PgStand;
 use connectors::{Author, Record, Role, Turn};
 use construct_agent::activity::Feed;
 use construct_agent::dashboard::{ACTIVITY_FILE, default_activity};
+use construct_agent::dashboard_details::Details;
 use construct_agent::dashboard_document::Dashboard;
 use construct_agent::dashboard_numbers::Numbers;
 use construct_agent::ipc::{Server, request};
@@ -34,6 +35,24 @@ fn prompt(session: &str, time: &str, folder: &str, author: Author) -> Record {
         text: "words nobody may see".into(),
         tools: Vec::new(),
     })
+}
+
+/// A minute of Safari on a docs site, as the sampler keeps it.
+fn write_screen(data: &Path) {
+    let dir = data.join("records/screen");
+    std::fs::create_dir_all(&dir).unwrap();
+    let line = json!({
+        "time": "2026-11-10T12:00:00Z",
+        "until": "2026-11-10T12:00:55Z",
+        "samples": 12,
+        "idle_seconds": 0,
+        "call": false,
+        "locked": false,
+        "app": { "name": "Safari", "bundle_id": "com.apple.Safari" },
+        "window_title": "secret page",
+        "tab": { "title": "secret page", "url": "https://docs.example.com/secret", "private": false },
+    });
+    std::fs::write(dir.join("2026-11-10.jsonl"), format!("{line}\n")).unwrap();
 }
 
 fn ask(socket: &Path, line: &str) -> Value {
@@ -82,12 +101,33 @@ fn write_records(data: &Path) {
     }
 }
 
+/// The numbers by site and the blocks of one site, of the time on screen the store holds (not of
+/// the sessions): the answers of `dashboard-numbers` and `dashboard-sessions`.
+fn screen_answers(socket: &Path) -> (Value, Value) {
+    let days = json!([{ "label": "2026-11-10", "start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z" }]);
+    let request = |group: Option<&str>| {
+        let mut request = json!({ "source": "on_screen", "group_by": "site", "days": days });
+        if let Some(group) = group {
+            request["group"] = json!(group);
+        }
+        request
+    };
+    (
+        ask(socket, &format!("dashboard-numbers {}", request(None))),
+        ask(
+            socket,
+            &format!("dashboard-sessions {}", request(Some("docs.example.com"))),
+        ),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "starts PostgreSQL; run with --ignored"]
 async fn the_socket_answers_the_numbers_of_a_widget_from_the_store() {
     let stand = PgStand::new("numbers-store").await;
     let data = stand.root.join("data/records");
     write_records(&data);
+    write_screen(&data);
 
     let workspace = Arc::new(Workspace::open(&stand.root.join("workspace")).unwrap());
     let mut document = default_activity();
@@ -102,6 +142,12 @@ async fn the_socket_answers_the_numbers_of_a_widget_from_the_store() {
         .unwrap()
         .with_activity(feed.clone())
         .with_dashboard(dashboard.clone())
+        .with_details(Details::new(
+            feed.clone(),
+            dashboard.clone(),
+            None,
+            tokio::runtime::Handle::current(),
+        ))
         .with_numbers(Numbers::new(
             feed.clone(),
             dashboard,
@@ -170,6 +216,20 @@ async fn the_socket_answers_the_numbers_of_a_widget_from_the_store() {
         unknown,
         json!({ "error": "there is no widget \"none\" in the dashboard" })
     );
+
+    let screen = tokio::task::spawn_blocking({
+        let socket = socket.clone();
+        move || screen_answers(&socket)
+    })
+    .await
+    .unwrap();
+    assert_eq!(screen.0["source"], "on_screen");
+    assert_eq!(screen.0["total_minutes"], 1.0);
+    assert_eq!(screen.0["groups"][0]["key"], "docs.example.com");
+    assert_eq!(screen.1["blocks"][0]["seconds"], 60);
+    assert_eq!(screen.1["blocks"][0]["app"], "Safari");
+    assert!(!screen.0.to_string().contains("secret page"));
+    assert!(!screen.1.to_string().contains("secret page"));
 
     task.abort();
     let _ = task.await;

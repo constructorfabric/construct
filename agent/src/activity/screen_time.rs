@@ -72,7 +72,7 @@ pub struct Block {
 }
 
 /// The seconds between two times, `None` when either is not RFC 3339.
-fn epoch(time: &str) -> Option<i64> {
+pub(crate) fn epoch(time: &str) -> Option<i64> {
     OffsetDateTime::parse(time, &Rfc3339)
         .ok()
         .map(OffsetDateTime::unix_timestamp)

@@ -8,17 +8,20 @@
 //! is not judged. A file that changes at every pass is not judged until it stops, and the last
 //! good document stays meanwhile. A document that does not pass is not used: the last good one
 //! stays and the error is kept, with the place in the file. A missing file is made again from
-//! the default. The text of the document is never logged, and no value from it is part of an
-//! error.
+//! the default, which holds the time on screen while the person collects it. A file that is still
+//! the default written without it gets the time on screen when the person starts to collect it;
+//! a file that differs in anything is theirs and is left alone. The text of the document is never
+//! logged, and no value from it is part of an error.
 
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::dashboard::{ACTIVITY_FILE, ensure_default, validate_activity};
+use crate::dashboard::{ACTIVITY_FILE, ensure_default_for, offer_screen, validate_activity};
 use crate::dashboard_projects::Edit;
 use crate::sync::lock;
 use crate::workspace::{Error, Workspace};
@@ -51,8 +54,15 @@ struct Refusal {
     message: String,
 }
 
+/// Tells whether the person collects the time on screen.
+pub type ScreenSwitch = Arc<dyn Fn() -> bool + Send + Sync>;
+
 struct Inner {
     workspace: Arc<Workspace>,
+    /// Whether the time on screen is collected; none for a dashboard that has no say in it.
+    screen: Option<ScreenSwitch>,
+    /// What the switch said at the last look: the time on screen is offered when it turns on.
+    screen_was_on: AtomicBool,
     state: Mutex<State>,
     /// Held while an edit reads the file and writes it, so two edits never start from one text.
     editing: Mutex<()>,
@@ -68,17 +78,31 @@ impl Dashboard {
     /// no document and the error.
     #[must_use]
     pub fn open(workspace: Arc<Workspace>) -> Self {
+        Self::open_with(workspace, None)
+    }
+
+    /// [`Self::open`] with the switch of the time on screen: the default document holds it while
+    /// `screen` says it is collected, and a default document written without it gets it when
+    /// `screen` first says so (at the first look too).
+    #[must_use]
+    pub fn open_with(workspace: Arc<Workspace>, screen: Option<ScreenSwitch>) -> Self {
         let dashboard = Self(Arc::new(Inner {
             workspace,
+            screen,
+            screen_was_on: AtomicBool::new(false),
             state: Mutex::new(State::default()),
             editing: Mutex::new(()),
         }));
-        dashboard.guarded(|| dashboard.pass(true));
+        dashboard.guarded(|| {
+            dashboard.offer_screen();
+            dashboard.pass(true);
+        });
         dashboard
     }
 
     /// Looks at the file once.
     pub fn poll(&self) {
+        self.offer_screen();
         self.pass(false);
     }
 
@@ -126,6 +150,25 @@ impl Dashboard {
         }
     }
 
+    fn screen_on(&self) -> bool {
+        self.0.screen.as_ref().is_some_and(|on| on())
+    }
+
+    /// Puts the time on screen into a default document when the person has just started to
+    /// collect it. The file is read and written under the lock of the edits, so none is lost, and
+    /// so no edit may be running when this is called.
+    fn offer_screen(&self) {
+        let on = self.screen_on();
+        if !on || self.0.screen_was_on.swap(true, Ordering::SeqCst) {
+            self.0.screen_was_on.store(on, Ordering::SeqCst);
+            return;
+        }
+        let _one_at_a_time = lock(&self.0.editing);
+        // A file that cannot be read or written now is looked at again at the next change of the
+        // switch; the page keeps its document meanwhile.
+        let _ = offer_screen(&self.0.workspace, MAX_BYTES);
+    }
+
     fn pass(&self, at_once: bool) {
         let text = match self.read() {
             Ok(text) => text,
@@ -168,7 +211,7 @@ impl Dashboard {
             // Made again only when the file is still missing a moment later; a writer that
             // creates it in the instant between the two steps loses its first version.
             Err(Error::NotFound) => {
-                ensure_default(workspace)?;
+                ensure_default_for(workspace, self.screen_on())?;
                 workspace.read_whole(ACTIVITY_FILE, MAX_BYTES)
             }
             other => other,
@@ -284,7 +327,7 @@ fn check(text: &str) -> Result<Value, Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dashboard::default_activity;
+    use crate::dashboard::{default_activity, ensure_default};
 
     fn stand(name: &str) -> (Dashboard, Arc<Workspace>, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!("cb-document-{name}-{}", std::process::id()));

@@ -7,10 +7,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use construct_agent::dashboard::{ACTIVITY_FILE, default_activity, ensure_default};
+use construct_agent::dashboard::{
+    ACTIVITY_FILE, default_activity, default_activity_with_screen, ensure_default,
+};
 use construct_agent::dashboard_document::Dashboard;
 use construct_agent::ipc::{Server, request};
 use construct_agent::workspace::Workspace;
@@ -304,4 +307,90 @@ fn a_file_over_the_limit_is_refused() {
         "{answer}"
     );
     assert_eq!(answer["document"], default_activity());
+}
+
+/// A workspace with `text` as the document (none when `None`) and a dashboard over it that
+/// collects the screen while `on` says so.
+fn with_switch(
+    name: &str,
+    text: Option<&Value>,
+    on: &Arc<AtomicBool>,
+) -> (Dashboard, Arc<Workspace>) {
+    let root = std::env::temp_dir().join(format!("cb-document-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let workspace = Arc::new(Workspace::open(&root).unwrap());
+    if let Some(text) = text {
+        workspace.write(ACTIVITY_FILE, &text.to_string()).unwrap();
+    }
+    let on = Arc::clone(on);
+    let dashboard = Dashboard::open_with(
+        Arc::clone(&workspace),
+        Some(Arc::new(move || on.load(Ordering::SeqCst))),
+    );
+    (dashboard, workspace)
+}
+
+fn widget_ids(dashboard: &Dashboard) -> Vec<String> {
+    dashboard.to_json()["document"]["payload"]["widgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_first_start_with_the_screen_collected_writes_the_default_with_it() {
+    let on = Arc::new(AtomicBool::new(true));
+    let (dashboard, _) = with_switch("first-on", None, &on);
+    assert_eq!(
+        dashboard.to_json()["document"],
+        default_activity_with_screen()
+    );
+    let off = Arc::new(AtomicBool::new(false));
+    let (dashboard, _) = with_switch("first-off", None, &off);
+    assert_eq!(dashboard.to_json()["document"], default_activity());
+}
+
+#[test]
+fn collecting_the_screen_puts_it_into_the_default_document_once() {
+    let on = Arc::new(AtomicBool::new(false));
+    let (dashboard, workspace) = with_switch("turn-on", Some(&default_activity()), &on);
+    dashboard.settle();
+    assert_eq!(widget_ids(&dashboard).len(), 5);
+    on.store(true, Ordering::SeqCst);
+    dashboard.settle();
+    assert_eq!(
+        dashboard.to_json()["document"],
+        default_activity_with_screen()
+    );
+    // The person takes the screen's widgets out: they stay out while the switch stays on, and
+    // when it goes off and on again, because the document is no longer the default.
+    let mut mine = default_activity_with_screen();
+    mine["payload"]["widgets"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(4);
+    workspace.write(ACTIVITY_FILE, &mine.to_string()).unwrap();
+    dashboard.settle();
+    on.store(false, Ordering::SeqCst);
+    dashboard.settle();
+    on.store(true, Ordering::SeqCst);
+    dashboard.settle();
+    assert_eq!(widget_ids(&dashboard).len(), 4);
+}
+
+#[test]
+fn a_changed_document_is_not_touched_when_the_screen_is_collected() {
+    let mut mine = default_activity();
+    mine["payload"]["hidden_projects"] = json!(["scratch"]);
+    let on = Arc::new(AtomicBool::new(true));
+    let (dashboard, workspace) = with_switch("changed", Some(&mine), &on);
+    dashboard.settle();
+    assert_eq!(dashboard.to_json()["document"], mine);
+    let text = workspace
+        .read(ACTIVITY_FILE, None, None)
+        .unwrap()
+        .join("\n");
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), mine);
 }
