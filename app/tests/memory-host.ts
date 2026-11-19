@@ -167,7 +167,7 @@ export function newHost(session: Session): Host {
 export async function withHostAndAgent(
   session: Session,
   host: Host,
-  answer: (line: string) => string,
+  answer: (line: string) => string | Promise<string>,
   check: (page: Page) => Promise<void>,
 ): Promise<void> {
   try {

@@ -5,6 +5,7 @@ import { firstCells, now, settingsReply } from './dashboard-shared';
 import {
   expect,
   expectNoPolicyViolations,
+  gate,
   openApp,
   restartAgent,
   test as base,
@@ -259,6 +260,8 @@ function projectsAgent(): {
   readonly lines: string[];
   hidden: string[];
   refuse: boolean;
+  /** The agent cannot give its settings: the page fails. */
+  settingsError: boolean;
   /** Held replies: the lookups at the document, the numbers and the first change. */
   gate: {
     document: Promise<void> | null;
@@ -296,6 +299,7 @@ function projectsAgent(): {
     lines: [] as string[],
     hidden: [] as string[],
     refuse: false,
+    settingsError: false,
     gate: { document: null, numbers: null, hide: null } as {
       document: Promise<void> | null;
       numbers: Promise<void> | null;
@@ -343,6 +347,9 @@ function projectsAgent(): {
           ? [...agent.hidden, project]
           : agent.hidden.filter((name) => name !== project);
         return JSON.stringify({ document: document(agent.hidden) });
+      }
+      if (line === 'settings-get' && agent.settingsError) {
+        return JSON.stringify({ error: 'settings unavailable' });
       }
       return settingsReply(true);
     },
@@ -486,6 +493,39 @@ test('the rows stay while the numbers are counted again after a change', async (
     agent.gate.numbers = null;
     await expect.poll(() => rowNames(page)).toEqual(['search']);
     await expect(page.locator('#dashboard-hidden-note')).toBeVisible();
+  });
+});
+
+test('a page that was shown gives way to the loader at once when it is counted for another week', async ({
+  session,
+}) => {
+  const agent = projectsAgent();
+  await openStandIn(session, agent, async (page) => {
+    const numbers = gate();
+    agent.gate.numbers = numbers.promise;
+    await page.locator('#dashboard-previous-week').click();
+    // No retrying: the loader is there at the moment of the click, not after a quarter second.
+    expect(await page.locator('#dashboard-reading').count()).toBe(1);
+    numbers.release();
+    agent.gate.numbers = null;
+    await expect(page.locator('#dashboard-reading')).toHaveCount(0);
+  });
+});
+
+test('a page that failed gives way to the loader at once when it is counted for another week', async ({
+  session,
+}) => {
+  const agent = projectsAgent();
+  agent.settingsError = true;
+  await withStandIn(session, agent.answer, async (page) => {
+    await page.clock.install({ time: now });
+    await page.reload();
+    await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+    await expect(page.locator('#dashboard-failed')).toBeVisible();
+    agent.gate.numbers = new Promise<void>(() => undefined);
+    await page.locator('#dashboard-previous-week').click();
+    // No retrying: the page has answered once, so the loader is there with no wait.
+    expect(await page.locator('#dashboard-reading').count()).toBe(1);
   });
 });
 

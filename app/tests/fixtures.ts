@@ -18,6 +18,15 @@ import type { ElectronApplication, Page } from '@playwright/test';
 
 export { expect };
 
+/** A promise that waits until `release` is called. */
+export function gate(): { readonly promise: Promise<void>; readonly release: () => void } {
+  let release = (): void => undefined;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 export const appDir = path.resolve(__dirname, '..');
 export const agentBinary = path.resolve(appDir, '..', 'target', 'release', 'construct-agent');
 
