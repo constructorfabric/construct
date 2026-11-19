@@ -579,27 +579,27 @@ test('with weekly widgets only, the arrows step by a week and the date picker ju
   });
 });
 
-test('the arrows and the header stay while the numbers of the next period are read', async ({
+test('the day arrows and the header stay while the numbers of the next day are read', async ({
   session,
 }) => {
-  const agent = newAgent({ document: weeklyDocument });
+  const agent = newAgent();
   await withAgent(session, agent, async (page) => {
     const header = page.locator('#dashboard-period');
-    await expect(header).toHaveText('Nov 16 – Nov 22, 2026');
+    await expect(header).toHaveText('Nov 18, 2026');
     await expect(page.locator('#value-total')).toHaveText(ownWeek);
     let release: () => void = () => undefined;
     agent.hold = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const previous = page.locator('#dashboard-previous-week');
+    const previous = page.locator('#dashboard-previous-day');
     await previous.focus();
     await previous.click();
     await expect(page.getByText('Reading the history')).toBeVisible();
-    // Nothing of the toolbar goes while the page reads: the header names the new week, and the
-    // arrow that was pressed is still there, with the focus.
-    await expect(header).toHaveText('Nov 9 – Nov 15, 2026');
+    // Nothing of the toolbar goes while the page reads: the header names the new day, and the
+    // arrow that was pressed is still there, with the focus, to be pressed again.
+    await expect(header).toHaveText('Nov 17, 2026');
     await expect(previous).toBeFocused();
-    await expect(page.locator('#dashboard-date')).toBeVisible();
+    await expect(page.locator('#dashboard-next-day')).toBeVisible();
     release();
     await expect(page.locator('#value-total')).toBeVisible();
   });
