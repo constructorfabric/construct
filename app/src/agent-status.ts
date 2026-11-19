@@ -45,9 +45,6 @@ export interface Connector {
   readonly lastTurnAt?: number;
 }
 
-/** A turn stored within this long counts as data just collected. */
-export const justCollectedMs = 60_000;
-
 export type AgentStatus =
   | {
       readonly state: 'running';
@@ -155,34 +152,6 @@ export function parseConnectors(value: unknown): readonly Connector[] | undefine
     });
   }
   return connectors;
-}
-
-/** What the sidebar says about collection; nothing when there is nothing worth saying. */
-export type CollectionSummary = 'failed' | 'collecting' | 'scanning' | 'off';
-
-export function summarizeCollection(
-  connectors: readonly Connector[] | undefined,
-  now: number,
-): CollectionSummary | undefined {
-  if (connectors === undefined || connectors.length === 0) {
-    return undefined;
-  }
-  if (connectors.some((connector) => connector.state === 'failed')) {
-    return 'failed';
-  }
-  const justCollected = (connector: Connector): boolean =>
-    connector.state === 'collecting' &&
-    connector.lastTurnAt !== undefined &&
-    // A time after the app's clock is not a turn just stored.
-    now >= connector.lastTurnAt &&
-    now - connector.lastTurnAt <= justCollectedMs;
-  if (connectors.some(justCollected)) {
-    return 'collecting';
-  }
-  if (connectors.some((connector) => connector.state === 'scanning')) {
-    return 'scanning';
-  }
-  return connectors.every((connector) => connector.state === 'off') ? 'off' : undefined;
 }
 
 function isPartState(value: unknown): value is PartState {

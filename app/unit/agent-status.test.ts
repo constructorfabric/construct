@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePart, parseStatusReply, summarizeCollection } from '../src/agent-status';
-import type { Connector } from '../src/agent-status';
+import { parsePart, parseStatusReply } from '../src/agent-status';
 
 describe('parseStatusReply', () => {
   it('turns a running reply into a running status and drops unknown fields', () => {
@@ -286,53 +285,5 @@ describe('the connectors of a status reply', () => {
       connectors: [{ name: 'b', state: 'collecting', turns: 0, skipped: 0 }],
     });
     expect(status).not.toHaveProperty('connectors.0.lastTurnAt');
-  });
-});
-
-describe('summarizeCollection', () => {
-  const now = Date.parse('2026-01-02T03:04:05Z');
-  const tool = (fields: Partial<Connector>): Connector => ({
-    name: 'codex',
-    state: 'collecting',
-    turns: 1,
-    skipped: 0,
-    unreadable: 0,
-    ...fields,
-  });
-
-  it('says nothing for an agent with no connectors', () => {
-    expect(summarizeCollection(undefined, now)).toBeUndefined();
-    expect(summarizeCollection([], now)).toBeUndefined();
-  });
-
-  it('says collecting for a turn stored within a minute, and nothing after that', () => {
-    expect(summarizeCollection([tool({ lastTurnAt: now - 5_000 })], now)).toBe('collecting');
-    expect(summarizeCollection([tool({ lastTurnAt: now - 60_001 })], now)).toBeUndefined();
-    expect(summarizeCollection([tool({})], now)).toBeUndefined();
-    // A time after the app's clock is not a turn just stored.
-    expect(summarizeCollection([tool({ lastTurnAt: now + 5_000 })], now)).toBeUndefined();
-  });
-
-  it('does not count a turn of a tool that is off or scanning as data just collected', () => {
-    const recent = now - 5_000;
-    expect(summarizeCollection([tool({ state: 'off', lastTurnAt: recent })], now)).toBe('off');
-    expect(summarizeCollection([tool({ state: 'scanning', lastTurnAt: recent })], now)).toBe(
-      'scanning',
-    );
-  });
-
-  it('says off only when every tool is off', () => {
-    expect(summarizeCollection([tool({ state: 'off' }), tool({ state: 'off' })], now)).toBe('off');
-    expect(summarizeCollection([tool({ state: 'off' }), tool({})], now)).toBeUndefined();
-  });
-
-  it('says scanning for a tool reading its files, and failed above all', () => {
-    expect(summarizeCollection([tool({ state: 'scanning' })], now)).toBe('scanning');
-    expect(
-      summarizeCollection(
-        [tool({ lastTurnAt: now - 1_000 }), tool({ state: 'failed', reason: 'x' })],
-        now,
-      ),
-    ).toBe('failed');
   });
 });

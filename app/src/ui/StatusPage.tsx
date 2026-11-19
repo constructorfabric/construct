@@ -17,7 +17,8 @@ import type { AgentStatus, Connector, Part } from '../agent-status';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { useDelayedLoader } from './components/useDelayedLoader';
-import { tones } from './state-tones';
+import { connectorName } from './connector-name';
+import { connectorTones, tones } from './state-tones';
 
 const loginVariants = {
   registered: 'success',
@@ -63,26 +64,13 @@ function PartCard({
   );
 }
 
+const toneVariants = { success: 'success', neutral: 'secondary', danger: 'danger' } as const;
 const connectorVariants = {
-  collecting: 'success',
-  scanning: 'secondary',
-  off: 'secondary',
-  failed: 'danger',
+  collecting: toneVariants[connectorTones.collecting],
+  scanning: toneVariants[connectorTones.scanning],
+  off: toneVariants[connectorTones.off],
+  failed: toneVariants[connectorTones.failed],
 } as const;
-const connectorTones = {
-  collecting: 'success',
-  scanning: 'neutral',
-  off: 'neutral',
-  failed: 'danger',
-} as const;
-
-function connectorName(name: string): string {
-  return name === 'claude-code'
-    ? t('StatusPage.Connector.claude-code')
-    : name === 'codex'
-      ? t('StatusPage.Connector.codex')
-      : name;
-}
 
 /** When the last turn was stored, in words; an older agent that sends no time has none to show. */
 function lastTurnText(lastTurnAt: number | undefined, now: number): string {
