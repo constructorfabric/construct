@@ -13,11 +13,12 @@ import {
   StatusDot,
 } from '@gears-frontx/ui-kit';
 import { Activity, Brain, ChartColumn, MessageSquare, Settings } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { ChatPage } from './ChatPage';
+import type { ThreadPosition } from './ChatPage';
 import { ConversationList } from './ConversationList';
 import { DashboardPage } from './DashboardPage';
 import { MemoryPage } from './MemoryPage';
@@ -35,7 +36,9 @@ export function App(): ReactNode {
   const [page, setPage] = useState<Page>('chat');
   const { status, refresh } = useAgentStatus();
   const state = status?.state ?? 'unknown';
-  const chat = useChat(page === 'chat');
+  const chat = useChat();
+  // Where the thread was scrolled to, kept here because the chat page is gone on other pages.
+  const threadPosition = useRef<ThreadPosition>({ atBottom: true, top: 0 });
   const erasing = useErasing(chat.reload);
   // The model may have been set in Settings a moment ago; the chat page must not say otherwise.
   useEffect(() => {
@@ -169,6 +172,7 @@ export function App(): ReactNode {
         {page === 'chat' ? (
           <ChatPage
             chat={chat}
+            position={threadPosition.current}
             modelSet={modelSet}
             profileAvailable={profileAvailable}
             onOpenSettings={() => {

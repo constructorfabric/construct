@@ -46,6 +46,8 @@ export interface Provider {
   readonly aborted: () => number;
   /** Lets a streamed answer go on from its `holdAt`. */
   readonly release: () => void;
+  /** Cuts the connection of every streamed answer that is running, as a failing network would. */
+  readonly drop: () => void;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -94,6 +96,7 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
   const conversations: unknown[] = [];
   let sent = 0;
   let aborted = 0;
+  const streaming = new Set<ServerResponse>();
   let open = (): void => undefined;
   const state = { gate: new Promise<void>(() => undefined) };
   const newGate = (): void => {
@@ -115,11 +118,18 @@ export async function startProvider(): Promise<{ provider: Provider; server: Ser
     release: () => {
       open();
     },
+    drop: () => {
+      for (const response of streaming) {
+        response.destroy();
+      }
+    },
   };
 
   const stream = async (response: ServerResponse, script: Script): Promise<void> => {
     let closed = false;
+    streaming.add(response);
     response.on('close', () => {
+      streaming.delete(response);
       if (!response.writableEnded) {
         closed = true;
         aborted += 1;
