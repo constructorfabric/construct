@@ -5,6 +5,7 @@ import { isRunning, setupDays } from '../dashboard-setup-protocol';
 import type { SetupStatus } from '../dashboard-setup-protocol';
 import { t } from '../translation';
 import styles from './app.module.css';
+import { ButtonRow } from './components/ButtonRow';
 import { Markdown } from './markdown';
 import { formatSize } from './setup-text';
 import type { DashboardSetup, SetupView } from './useDashboardSetup';
@@ -90,7 +91,7 @@ function Progress({
           received: formatSize(status.received),
         })}
       </p>
-      <div className={styles.actions}>
+      <ButtonRow>
         <Button
           id="setup-cancel"
           type="button"
@@ -100,7 +101,7 @@ function Progress({
         >
           {cancelling ? t('DashboardSetup.Cancelling') : t('DashboardSetup.Cancel')}
         </Button>
-      </div>
+      </ButtonRow>
     </>
   );
 }
@@ -132,11 +133,11 @@ function Report({
           />
         )}
       </div>
-      <div className={styles.actions}>
+      <ButtonRow>
         <Button id="setup-open-dashboard" type="button" variant="link" onClick={onOpenDashboard}>
           {t('DashboardSetup.OpenDashboard')}
         </Button>
-      </div>
+      </ButtonRow>
     </>
   );
 }
@@ -184,7 +185,7 @@ function Starter({
           {t('DashboardSetup.CollectionOff')}
         </Alert>
       )}
-      <div className={styles.actions}>
+      <ButtonRow>
         <Button
           id="setup-start"
           type="button"
@@ -201,7 +202,7 @@ function Starter({
         >
           {label}
         </Button>
-      </div>
+      </ButtonRow>
     </>
   );
 }
