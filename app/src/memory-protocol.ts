@@ -41,15 +41,33 @@ export type VersionResult =
   | { readonly ok: true; readonly version: number | null }
   | { readonly ok: false; readonly error: string };
 
+const factIdShape = /^[\w.~:-]{1,128}$/;
+
+/**
+ * Whether an id may go into a route: a short text of letters, digits and a few marks, and not a
+ * dot segment. The page offers Delete only for such an id.
+ */
+export function isDeletableFactId(factId: string): boolean {
+  return factIdShape.test(factId) && factId !== '.' && factId !== '..';
+}
+
+/** Whether a fact is gone: it was deleted, or it was already not there. */
+export type FactDeleteResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: string };
+
 export interface MemoryApi {
   /** Every fact of the person, over all pages, with the profile's version at the first page. */
   readonly getMemoryFacts: () => Promise<FactsResult>;
   /** Only the profile's version, from a page of one fact. */
   readonly getMemoryVersion: () => Promise<VersionResult>;
+  /** Deletes one fact by its id. Sending it again after a failure is safe. */
+  readonly deleteMemoryFact: (factId: string) => Promise<FactDeleteResult>;
 }
 
 export const MEMORY_FACTS_CHANNEL = 'memory:facts';
 export const MEMORY_VERSION_CHANNEL = 'memory:version';
+export const MEMORY_DELETE_CHANNEL = 'memory:delete';
 
 /** What the app says when it cannot reach the gear; fixed texts that never hold an answer. */
 export const reasonAgentNotRunning = 'the agent is not running';

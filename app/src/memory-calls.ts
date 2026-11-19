@@ -4,8 +4,13 @@ import path from 'node:path';
 import { isRecord } from './agent-json';
 import { agentSocketPath } from './agent-socket';
 import type { Where } from './agent-socket';
-import { parseFactsPage, reasonAgentNotRunning, reasonNotReady } from './memory-protocol';
-import type { FactsResult, MemoryFact, VersionResult } from './memory-protocol';
+import {
+  isDeletableFactId,
+  parseFactsPage,
+  reasonAgentNotRunning,
+  reasonNotReady,
+} from './memory-protocol';
+import type { FactDeleteResult, FactsResult, MemoryFact, VersionResult } from './memory-protocol';
 
 /** The person the agent's host serves: the one identity of a desktop. */
 const personId = '11111111-6a88-4768-9dfc-6bcd5187d9ed';
@@ -34,6 +39,8 @@ export const memoryLimits: MemoryLimits = {
 export interface MemoryHandlers {
   readonly facts: () => Promise<FactsResult>;
   readonly version: () => Promise<VersionResult>;
+  /** The id comes from the window, so it is checked here before it is put in a route. */
+  readonly remove: (factId: unknown) => Promise<FactDeleteResult>;
 }
 
 /** A failure whose text is one of the app's fixed reasons: it never holds a token or an answer. */
@@ -90,8 +97,19 @@ async function readConnection(where: Where): Promise<Connection> {
   return { port, token };
 }
 
-/** One GET to the host on the loopback address, with the token; the answer is a 200 JSON body. */
-function getJson(connection: Connection, route: string, limits: MemoryLimits): Promise<unknown> {
+/**
+ * One request to the host on the loopback address, with the token. It succeeds on a status in
+ * `accepted`: with the JSON body when `readBody` is set, else without reading the body. Any other
+ * status, or a body that is too large or not JSON, is a gear that is not ready.
+ */
+function send(
+  connection: Connection,
+  method: 'GET' | 'DELETE',
+  route: string,
+  limits: MemoryLimits,
+  accepted: readonly number[],
+  readBody: boolean,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (finish: () => void): void => {
@@ -106,15 +124,23 @@ function getJson(connection: Connection, route: string, limits: MemoryLimits): P
         host: '127.0.0.1',
         port: connection.port,
         path: route,
-        method: 'GET',
+        method,
         headers: { Authorization: `Bearer ${connection.token}`, Accept: 'application/json' },
       },
       (response) => {
-        if (response.statusCode !== 200) {
+        if (!accepted.includes(response.statusCode ?? 0)) {
           response.resume();
           settle(() => {
             request.destroy();
             reject(notReady());
+          });
+          return;
+        }
+        if (!readBody) {
+          response.resume();
+          settle(() => {
+            request.destroy();
+            resolve(undefined);
           });
           return;
         }
@@ -174,7 +200,7 @@ async function readPage(
 ): Promise<ReturnType<typeof parseFactsPage>> {
   // The file is read again for every page: the host may have come back in between.
   const connection = await readConnection(where);
-  return parseFactsPage(await getJson(connection, factsRoute(query), limits));
+  return parseFactsPage(await send(connection, 'GET', factsRoute(query), limits, [200], true));
 }
 
 function failure(error: unknown): { readonly ok: false; readonly error: string } {
@@ -183,7 +209,7 @@ function failure(error: unknown): { readonly ok: false; readonly error: string }
 
 /**
  * The calls of the Memory page to the gear's own routes for the person. The window asks for
- * nothing but "the facts" and "the version"; the port and the token stay here, and every failure
+ * "the facts", "the version" and "delete this fact"; the port and the token stay here, and every failure
  * is answered as a value with a fixed reason.
  */
 export function createMemoryHandlers(
@@ -228,6 +254,26 @@ export function createMemoryHandlers(
           seen.add(page.nextCursor);
           cursor = page.nextCursor;
         }
+      } catch (error) {
+        return failure(error);
+      }
+    },
+    remove: async (factId) => {
+      try {
+        if (typeof factId !== 'string' || !isDeletableFactId(factId)) {
+          throw notReady();
+        }
+        const connection = await readConnection(where);
+        // A 204 and a 404 both mean the fact is gone; the body is never read.
+        await send(
+          connection,
+          'DELETE',
+          `/construct/v1/subjects/${personId}/facts/${encodeURIComponent(factId)}`,
+          limits,
+          [204, 404],
+          false,
+        );
+        return { ok: true };
       } catch (error) {
         return failure(error);
       }
