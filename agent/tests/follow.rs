@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, SystemTime};
 
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
 use connectors::{
     Author, ClaudeCode, Codex, FileState, Listing, MAX_LINE_BYTES, Parsed, Record, Registry, Role,
     Tool, Turn,
@@ -194,6 +197,16 @@ fn tool_status(stats: &Stats) -> serde_json::Value {
     stats.to_json()["fake"].clone()
 }
 
+/// The status of a tool without its `last_turn`, which holds the time of the run.
+fn without_last_turn(mut status: serde_json::Value) -> serde_json::Value {
+    status.as_object_mut().unwrap().remove("last_turn");
+    status
+}
+
+fn parse_time(text: &str) -> SystemTime {
+    OffsetDateTime::parse(text, &Rfc3339).unwrap().into()
+}
+
 #[test]
 fn a_restart_in_the_middle_of_a_growing_file_gives_no_duplicate_and_no_gap() {
     let s = Setup::new("restart");
@@ -212,7 +225,7 @@ fn a_restart_in_the_middle_of_a_growing_file_gives_no_duplicate_and_no_gap() {
     assert_eq!(s.texts("a"), ["one", "two", "three", "four"]);
     // Only the new lines were read: the `bad` line at the top was not read a second time.
     assert_eq!(
-        tool_status(&restarted_stats),
+        without_last_turn(tool_status(&restarted_stats)),
         serde_json::json!({ "turns": 2, "skipped": 0, "scanning": false })
     );
     assert_eq!(fs::read(&log).unwrap(), before, "the log is never changed");
@@ -233,8 +246,10 @@ fn a_restart_after_a_crash_before_the_progress_was_saved_adds_nothing_twice() {
     let stats = Stats::default();
     s.follower(&stats).pass().unwrap();
     assert_eq!(s.texts("a"), ["one", "two", "three"]);
-    // The turns read again are replays, not new turns.
-    assert_eq!(tool_status(&stats)["turns"], 0);
+    // The turns read again are replays, not new turns, and they do not move `last_turn`.
+    let shown = tool_status(&stats);
+    assert_eq!(shown["turns"], 0);
+    assert!(shown.get("last_turn").is_none());
 }
 
 #[test]
@@ -309,8 +324,35 @@ fn turns_and_skipped_lines_are_counted() {
     let stats = Stats::default();
     s.follower(&stats).pass().unwrap();
     assert_eq!(
-        tool_status(&stats),
+        without_last_turn(tool_status(&stats)),
         serde_json::json!({ "turns": 2, "skipped": 2, "scanning": false })
+    );
+}
+
+#[test]
+fn a_stored_turn_tells_when_and_a_tool_with_none_tells_nothing() {
+    let s = Setup::new("last-turn");
+    let stats = Stats::default();
+    let started = SystemTime::now();
+    // A pass that reads only a skipped line and a mark stores no turn.
+    append(&s.log("a.log"), "bad\n# nothing\n");
+    s.follower(&stats).pass().unwrap();
+    let before = tool_status(&stats);
+    assert!(before.get("last_turn").is_none());
+    assert_eq!(before["turns"], 0);
+    assert_eq!(before["skipped"], 1);
+
+    append(&s.log("a.log"), "one\n");
+    s.follower(&stats).pass().unwrap();
+    let shown = tool_status(&stats);
+    let text = shown["last_turn"].as_str().unwrap();
+    assert!(text.ends_with('Z'), "UTC: {text}");
+    let at = parse_time(text);
+    assert!(at >= started, "{text} is before the start of the test");
+    assert!(at <= SystemTime::now());
+    assert_eq!(
+        without_last_turn(shown),
+        serde_json::json!({ "turns": 1, "skipped": 1, "scanning": false })
     );
 }
 
@@ -445,11 +487,11 @@ fn the_real_tools_count_what_they_skip() {
     s.follower_of(registry, &stats).pass().unwrap();
     let all = stats.to_json();
     assert_eq!(
-        all["claude-code"],
+        without_last_turn(all["claude-code"].clone()),
         serde_json::json!({ "turns": 2, "skipped": 2, "scanning": false })
     );
     assert_eq!(
-        all["codex"],
+        without_last_turn(all["codex"].clone()),
         serde_json::json!({ "turns": 1, "skipped": 1, "scanning": false })
     );
     // The marks were stored, and they are not turns.
@@ -695,7 +737,7 @@ fn a_sink_that_fails_stops_the_pass_and_nothing_is_lost_or_doubled() {
     assert_eq!(s.texts("a"), ["one", "two"]);
     assert_eq!(s.texts("b"), ["three"]);
     assert_eq!(
-        tool_status(&stats),
+        without_last_turn(tool_status(&stats)),
         serde_json::json!({ "turns": 3, "skipped": 0, "scanning": false })
     );
 }

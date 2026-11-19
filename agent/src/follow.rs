@@ -17,6 +17,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
 use connectors::{FileState, Line, Parsed, Record, Registry, Tool, Turn, for_each_line};
 
 use crate::erase::OwnStore;
@@ -36,6 +39,8 @@ const SAVE_EVERY: Duration = Duration::from_secs(2);
 pub struct ToolStatus {
     /// Turns stored since the agent started; a record the sink had stored already is no turn.
     pub turns: u64,
+    /// When the last of those turns was stored; none until one is.
+    pub last_turn: Option<SystemTime>,
     /// Lines that did not parse or were too long, since the agent started.
     pub skipped: u64,
     /// True from the start until the first pass has gone through this tool's files: listed
@@ -64,6 +69,9 @@ impl ToolStatus {
             if self.off {
                 fields.insert("off".into(), true.into());
             }
+            if let Some(at) = self.last_turn.and_then(rfc3339) {
+                fields.insert("last_turn".into(), at.into());
+            }
             if self.unreadable > 0 {
                 fields.insert("unreadable".into(), self.unreadable.into());
             }
@@ -73,6 +81,11 @@ impl ToolStatus {
         }
         value
     }
+}
+
+/// A time as UTC in RFC 3339, or none when it cannot be written.
+fn rfc3339(at: SystemTime) -> Option<String> {
+    OffsetDateTime::from(at).format(&Rfc3339).ok()
 }
 
 /// [`ToolStatus`] of every tool, shared between the follower and the status answer.
@@ -662,7 +675,11 @@ impl<S: Sink> Ctx<'_, S> {
                 match self.sink.append(&record) {
                     // A record the sink had stored already is a replay, not a turn read now.
                     Ok(true) if matches!(record, Record::Turn(_)) => {
-                        self.count(|s| s.turns += 1);
+                        let now = SystemTime::now();
+                        self.count(|s| {
+                            s.turns += 1;
+                            s.last_turn = Some(now);
+                        });
                     }
                     Ok(_) => {}
                     Err(e) => {
