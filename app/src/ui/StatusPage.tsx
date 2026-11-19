@@ -11,8 +11,9 @@ import {
   Text,
   VisuallyHidden,
 } from '@gears-frontx/ui-kit';
+import { format } from 'date-fns';
 import type { ReactNode } from 'react';
-import type { AgentStatus, Part } from '../agent-status';
+import type { AgentStatus, Connector, Part } from '../agent-status';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { useDelayedLoader } from './components/useDelayedLoader';
@@ -58,6 +59,83 @@ function PartCard({
           </Text>
         </CardContent>
       )}
+    </Card>
+  );
+}
+
+const connectorVariants = {
+  collecting: 'success',
+  scanning: 'secondary',
+  off: 'secondary',
+  failed: 'danger',
+} as const;
+const connectorTones = {
+  collecting: 'success',
+  scanning: 'neutral',
+  off: 'neutral',
+  failed: 'danger',
+} as const;
+
+function connectorName(name: string): string {
+  return name === 'claude-code'
+    ? t('StatusPage.Connector.claude-code')
+    : name === 'codex'
+      ? t('StatusPage.Connector.codex')
+      : name;
+}
+
+/** When the last turn was stored, in words; an older agent that sends no time has none to show. */
+function lastTurnText(lastTurnAt: number | undefined, now: number): string {
+  if (lastTurnAt === undefined) {
+    return t('StatusPage.Connector.NoTurn');
+  }
+  const minutes = Math.floor((now - lastTurnAt) / 60_000);
+  const when =
+    minutes < 1
+      ? t('StatusPage.Connector.JustNow')
+      : minutes < 60
+        ? t('StatusPage.Connector.MinutesAgo', { minutes })
+        : format(lastTurnAt, 'd MMM yyyy, HH:mm');
+  return t('StatusPage.Connector.LastTurn', { when });
+}
+
+/** One tool the agent collects from: its state in words, why when it failed, its count and last turn. */
+function ConnectorCard({
+  connector,
+  now,
+}: {
+  readonly connector: Connector;
+  readonly now: number;
+}): ReactNode {
+  const id = `connector-${connector.name}`;
+  return (
+    <Card className={styles.card} id={id}>
+      <CardHeader>
+        <CardTitle render={<h3 />}>{connectorName(connector.name)}</CardTitle>
+        <CardAction className={styles.state}>
+          <StatusDot tone={connectorTones[connector.state]} />
+          <Badge
+            id={`${id}-state`}
+            variant={connectorVariants[connector.state]}
+            data-state={connector.state}
+          >
+            {t(`StatusPage.Connector.${connector.state}`)}
+          </Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        {connector.reason !== undefined && (
+          <Text id={`${id}-reason`} tone="muted" className={styles.detail}>
+            {connector.reason}
+          </Text>
+        )}
+        <Text id={`${id}-turns`} tone="muted" className={styles.detail}>
+          {t('StatusPage.Connector.Turns', { count: connector.turns })}
+        </Text>
+        <Text id={`${id}-last-turn`} tone="muted" className={styles.detail}>
+          {lastTurnText(connector.lastTurnAt, now)}
+        </Text>
+      </CardContent>
     </Card>
   );
 }
@@ -122,6 +200,18 @@ export function StatusPage({ status: answer }: { readonly status: AgentStatus | 
       {status?.state === 'running' && status.construct !== undefined && (
         <PartCard id="construct" title={t('StatusPage.Construct')} part={status.construct} />
       )}
+      {status?.state === 'running' &&
+        status.connectors !== undefined &&
+        status.connectors.length > 0 && (
+          <>
+            <Heading typography="heading-1" className={styles.section} render={<h2 />}>
+              {t('StatusPage.Connectors')}
+            </Heading>
+            {status.connectors.map((connector) => (
+              <ConnectorCard key={connector.name} connector={connector} now={Date.now()} />
+            ))}
+          </>
+        )}
       {status !== null && (
         <Card className={styles.card}>
           <CardHeader>

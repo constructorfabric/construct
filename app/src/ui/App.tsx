@@ -13,6 +13,7 @@ import { Activity, Brain, ChartColumn, MessageSquare, Settings } from 'lucide-re
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { summarizeCollection } from '../agent-status';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { ChatPage } from './ChatPage';
@@ -89,7 +90,14 @@ export function App(): ReactNode {
           {page === 'chat' ? <ConversationList chat={chat} /> : null}
         </SidebarContent>
         <SidebarFooter>
-          <AgentStatusLine state={state} />
+          <AgentStatusLine
+            state={state}
+            collection={
+              status?.state === 'running'
+                ? summarizeCollection(status.connectors, Date.now())
+                : undefined
+            }
+          />
         </SidebarFooter>
       </Sidebar>
       <SidebarInset
