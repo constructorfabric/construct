@@ -6,7 +6,7 @@
 //! files stay the single source, and [`Store::rebuild`] makes the whole store from them. No
 //! message text is stored, only counts, times, a hash that tells a replayed turn from a new one,
 //! and the ticket ids the user names with how often (the text rule for a ticket). Applying a record is idempotent and the result does not depend on the order records
-//! arrive in, so a step-by-step store equals a rebuilt one.
+//! arrive in, so a step-by-step store equals a rebuilt one (for the time on screen see below).
 //!
 //! The time on screen is kept beside it, as blocks of one application in front with the site, the
 //! project and the ticket the rules in [`screen_time`] give: never a title or an address. A run
@@ -15,7 +15,8 @@
 //! know when it is stored, and the title it was read from is not kept, so a block cannot be
 //! named again later. When a record changes the projects the store knows, [`Store::apply`] says
 //! so, and the caller builds the store again from the files (the feed does): a rebuild reads
-//! the sessions first, so every block is named by all of them.
+//! the sessions first, so every block is named by all of them. The project of a session is its
+//! folder alone, so the setup findings never change it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -217,10 +218,15 @@ impl Store {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
         lock_store(&mut tx).await?;
         let findings = self.findings();
-        let before = project_folders(&mut tx).await?;
-        apply_in(&mut tx, record, &findings).await?;
         // Only blocks that were named can be named wrong: a store with none needs no build.
-        let changed = project_folders(&mut tx).await? != before && has_blocks(&mut tx).await?;
+        let watching = has_blocks(&mut tx).await?;
+        let before = if watching {
+            project_folders(&mut tx).await?
+        } else {
+            Vec::new()
+        };
+        apply_in(&mut tx, record, &findings).await?;
+        let changed = watching && project_folders(&mut tx).await? != before;
         tx.commit().await.map_err(|e| err("commit", e))?;
         Ok(changed)
     }
@@ -694,6 +700,7 @@ async fn apply_screen_in(conn: &mut PgConnection, line: &Line) -> Result<(), Err
     let mut names: Vec<String> = folders
         .iter()
         .map(|f| screen_time::project_name(f).to_owned())
+        .filter(|name| !name.is_empty())
         .collect();
     names.sort();
     names.dedup();

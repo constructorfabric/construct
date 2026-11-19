@@ -357,6 +357,13 @@ fn a_project_inside_a_longer_word_is_not_found() {
 }
 
 #[test]
+fn an_empty_project_name_is_never_matched_and_does_not_hide_a_real_one() {
+    let reading = || titled("construct", "", "https://example.com/");
+    assert_eq!(project(reading(), &[""]), "");
+    assert_eq!(project(reading(), &["", "construct"]), "construct");
+}
+
+#[test]
 fn a_short_project_name_is_matched_like_any_other() {
     assert_eq!(
         project(titled("go to ui", "t", "https://example.com/"), &["ui"]),

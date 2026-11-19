@@ -129,7 +129,7 @@ fn names(text: &str, name: &str) -> bool {
 fn project_in(places: &[&str], projects: &[String]) -> Option<String> {
     let mut found: Vec<&String> = projects
         .iter()
-        .filter(|p| places.iter().any(|text| names(text, p)))
+        .filter(|p| !p.is_empty() && places.iter().any(|text| names(text, p)))
         .collect();
     found.sort();
     found.dedup();

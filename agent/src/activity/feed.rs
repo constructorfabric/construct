@@ -242,10 +242,6 @@ impl Feed {
                     changed.len()
                 ));
                 watch.seen = Some(text);
-                // The projects may have changed, and the time on screen is named by them.
-                if !changed.is_empty() {
-                    self.mark_stale();
-                }
             }
             // The next look tries again.
             Err(e) => Self::log(&format!("setup findings not applied: {e}")),
