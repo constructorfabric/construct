@@ -1040,6 +1040,7 @@ fn memory_erase_reaches_the_job_through_the_list_of_the_agents_own_stores() {
         &manager,
         &feed,
         Some(&stand.rig.job),
+        None,
         stand.runtime.handle(),
     );
     let failed = stores.erase();

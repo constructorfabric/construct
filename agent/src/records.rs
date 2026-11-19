@@ -23,6 +23,8 @@ pub type Recorder = std::sync::Arc<dyn Fn(&Record) + Send + Sync>;
 const PROGRESS_FILE: &str = "connectors-progress.json";
 const MAX_PLAIN_NAME: usize = 64;
 const HASH_PREFIX: &str = "h-";
+/// The folder of the screen samples, which are not session records.
+pub(crate) const SCREEN_SOURCE: &str = "screen";
 
 /// `$XDG_DATA_HOME/construct` (default `~/.local/share/construct`), the same root as the
 /// agent's database.
@@ -227,13 +229,7 @@ impl FileSink {
         OpenOptions::new().append(true).open(path)?.sync_data()?;
         // A first write also created `records/<tool>` and maybe `records/` in the data
         // directory: make the whole chain of new entries durable, the data directory last.
-        for dir in path.ancestors().skip(1) {
-            sync_dir(dir)?;
-            if dir == self.dir {
-                break;
-            }
-        }
-        Ok(())
+        sync_chain(path, &self.dir)
     }
 
     /// The sessions of a source, newest last record first. The id comes from the first line
@@ -310,7 +306,8 @@ impl FileSink {
         let mut files = Vec::new();
         for source in sources {
             let source = source?.path();
-            if source.is_dir() {
+            // The screen samples are not session records.
+            if source.is_dir() && source.file_name().is_none_or(|n| n != SCREEN_SOURCE) {
                 files.extend(jsonl_files(&source)?);
             }
         }
@@ -453,20 +450,24 @@ fn jsonl_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// The records of a file; a line that does not parse (a torn last line) is skipped.
 pub(crate) fn read_records(path: &Path) -> io::Result<Vec<Record>> {
-    let mut text = String::new();
+    Ok(merge_marks(read_lines::<Record>(path)?.into_iter()))
+}
+
+/// The lines of a file that read as `T`, in order. A line that does not (a torn one) is skipped
+/// and so is a byte that is no text, without hiding the other lines; a missing file has none.
+pub(crate) fn read_lines<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<Vec<T>> {
+    let mut bytes = Vec::new();
     match File::open(path) {
         Ok(mut f) => {
-            let mut bytes = Vec::new();
             f.read_to_end(&mut bytes)?;
-            text.push_str(&String::from_utf8_lossy(&bytes));
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
-    Ok(merge_marks(
-        text.lines()
-            .filter_map(|l| serde_json::from_str::<Record>(l).ok()),
-    ))
+    Ok(String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<T>(l).ok())
+        .collect())
 }
 
 /// The records with the marks of one minute as one mark: the first, with the tool names of
@@ -493,8 +494,19 @@ fn merge_marks(records: impl Iterator<Item = Record>) -> Vec<Record> {
     merged
 }
 
+/// Makes the entries above `path` durable, up to `data_dir`, the data directory last.
+pub(crate) fn sync_chain(path: &Path, data_dir: &Path) -> io::Result<()> {
+    for dir in path.ancestors().skip(1) {
+        sync_dir(dir)?;
+        if dir == data_dir {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Whether a file is empty or ends with a newline.
-fn ends_cleanly(file: &mut File) -> io::Result<bool> {
+pub(crate) fn ends_cleanly(file: &mut File) -> io::Result<bool> {
     let len = file.metadata()?.len();
     if len == 0 {
         return Ok(true);
@@ -507,7 +519,7 @@ fn ends_cleanly(file: &mut File) -> io::Result<bool> {
 
 /// Options for a file only the user can read: what the tools said is copied here. The mode
 /// only counts for a file that is created.
-fn private_options() -> OpenOptions {
+pub(crate) fn private_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
@@ -515,7 +527,7 @@ fn private_options() -> OpenOptions {
 }
 
 /// Creates `dir` and every directory from `data_dir` down to it as user-only.
-fn private_dirs(data_dir: &Path, dir: &Path) -> io::Result<()> {
+pub(crate) fn private_dirs(data_dir: &Path, dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         let mut chain: Vec<&Path> = dir
@@ -537,7 +549,7 @@ fn private_dirs(data_dir: &Path, dir: &Path) -> io::Result<()> {
 
 /// Makes a created or renamed entry of a directory durable. Windows cannot open a directory
 /// for this and keeps such entries durable on its own.
-fn sync_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
     if cfg!(unix) {
         File::open(dir)?.sync_all()
     } else {

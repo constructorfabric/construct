@@ -36,6 +36,8 @@ pub mod model_test;
 pub mod pgvector;
 pub mod records;
 #[cfg(unix)]
+pub mod screen;
+#[cfg(unix)]
 pub mod session_files;
 #[cfg(unix)]
 pub mod settings;

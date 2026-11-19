@@ -141,6 +141,22 @@ fn run() -> std::io::Result<()> {
         &activity,
         render_tool,
     );
+    // The screen samples: the sampler runs on a thread of its own and takes none until the person
+    // switches them on. No platform gives the signals yet, so the computer reads as unsupported.
+    let screen = settings.as_ref().and_then(|settings| {
+        construct_agent::records::data_dir().ok().map(|dir| {
+            construct_agent::screen::Screen::new(
+                settings.clone(),
+                &dir,
+                std::sync::Arc::new(construct_agent::screen::NoSignals),
+            )
+        })
+    });
+    let server = match &screen {
+        Some(screen) => server.with_screen(screen.clone()),
+        None => server,
+    };
+    let screen_alive = screen.as_ref().map(construct_agent::screen::Screen::spawn);
     // What `memory-erase` clears besides the host's copy; the follower is given the handle below.
     let follow_erase = construct_agent::records::data_dir().ok().map(|dir| {
         let tools = connectors::Registry::builtin();
@@ -154,6 +170,7 @@ fn run() -> std::io::Result<()> {
             manage,
             &activity,
             setup.as_ref(),
+            screen.as_ref(),
             rt.handle(),
         ));
     }
@@ -272,6 +289,7 @@ fn run() -> std::io::Result<()> {
     });
     // Only now may the follower stop: it is the last thing running besides the exit.
     drop(follow_alive);
+    drop(screen_alive);
     result
 }
 
