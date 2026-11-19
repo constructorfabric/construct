@@ -7,7 +7,7 @@
 //! overflowed, are made good by building the store again from the files, which stay the single
 //! source.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -18,6 +18,7 @@ use tokio::sync::Notify;
 use super::Store;
 use super::findings::Findings;
 use crate::records::{FileSink, Recorder};
+use crate::screen::{self, Line};
 use crate::sync::lock;
 use crate::workspace::Workspace;
 
@@ -25,6 +26,9 @@ use crate::workspace::Workspace;
 /// store keys it by a hash of its text). A push past either limit is dropped, and the next turn
 /// of the task builds the store again from the files, which hold what the queue lost.
 const MAX_QUEUED: usize = 100_000;
+/// The runs of screen samples the queue holds. A run that grows replaces its own entry, so the
+/// queue is bounded by the runs that were not applied yet.
+const MAX_QUEUED_RUNS: usize = 10_000;
 /// The most turn text the queue holds.
 const MAX_QUEUED_BYTES: usize = 64 * 1024 * 1024;
 /// The file of the setup findings in the workspace.
@@ -104,6 +108,8 @@ fn weight(record: &Record) -> usize {
 
 struct Queue {
     records: VecDeque<Record>,
+    /// The latest state of each run of screen samples not applied yet, by its first sample.
+    runs: BTreeMap<String, Line>,
     /// Bytes the queued records weigh, as [`weight`] counts them.
     bytes: usize,
     /// The store may miss records: the queue overflowed or a record could not be applied.
@@ -149,6 +155,7 @@ impl Feed {
         Self(Arc::new(Shared {
             queue: Mutex::new(Queue {
                 records: VecDeque::new(),
+                runs: BTreeMap::new(),
                 bytes: 0,
                 stale: true,
             }),
@@ -289,6 +296,34 @@ impl Feed {
         self.0.wake.notify_one();
     }
 
+    /// What the screen sampler calls with the open run each time it stores a sample. Like
+    /// [`Feed::push`] it never waits for the store.
+    #[must_use]
+    pub fn screen_observer(&self) -> screen::Observer {
+        let feed = self.clone();
+        Arc::new(move |line| feed.push_run(line))
+    }
+
+    /// Queues a run of screen samples that is on the disk; a later state of the same run
+    /// replaces it.
+    pub fn push_run(&self, line: &Line) {
+        if matches!(
+            lock(&self.0.state).0,
+            Phase::Waiting | Phase::Behind | Phase::Off
+        ) {
+            return;
+        }
+        {
+            let mut queue = lock(&self.0.queue);
+            if queue.runs.len() >= MAX_QUEUED_RUNS && !queue.runs.contains_key(&line.time) {
+                queue.stale = true;
+            } else {
+                queue.runs.insert(line.time.clone(), line.clone());
+            }
+        }
+        self.0.wake.notify_one();
+    }
+
     /// The store to read from, once a build of it has finished. While the store is behind it still
     /// holds the last good state, which the answer is then of.
     ///
@@ -362,14 +397,16 @@ impl Feed {
         if queue.stale {
             queue.stale = false;
             queue.records.clear();
+            queue.runs.clear();
             queue.bytes = 0;
             return Next::Rebuild;
         }
-        match queue.records.pop_front() {
-            Some(record) => {
-                queue.bytes -= weight(&record);
-                Next::Record(record)
-            }
+        if let Some(record) = queue.records.pop_front() {
+            queue.bytes -= weight(&record);
+            return Next::Record(record);
+        }
+        match queue.runs.pop_first() {
+            Some((_, line)) => Next::Run(line),
             None => Next::Empty,
         }
     }
@@ -389,6 +426,7 @@ impl Feed {
         {
             let mut queue = lock(&self.0.queue);
             queue.records.clear();
+            queue.runs.clear();
             queue.bytes = 0;
             queue.stale = true;
         }
@@ -425,14 +463,17 @@ impl Feed {
         }
     }
 
-    /// Applies one record, trying again after a pause; false when it keeps failing.
-    async fn apply(&self, store: &Store, record: &Record) -> bool {
+    /// Runs a write on the store, trying again after a pause; `None` when it keeps failing.
+    async fn retry<T, Fut>(&self, what: &str, mut write: impl FnMut() -> Fut) -> Option<T>
+    where
+        Fut: std::future::Future<Output = Result<T, crate::database::Error>>,
+    {
         let mut pause = FIRST_RETRY;
         for attempt in 1..=MAX_ATTEMPTS {
-            match store.apply(record).await {
-                Ok(()) => {
+            match write().await {
+                Ok(done) => {
                     self.set_error(None);
-                    return true;
+                    return Some(done);
                 }
                 Err(e) => {
                     self.0.failed_writes.fetch_add(1, Ordering::Relaxed);
@@ -444,12 +485,30 @@ impl Feed {
                         tokio::time::sleep(pause).await;
                         pause *= 2;
                     } else {
-                        Self::log("giving up on a record, building again from the files");
+                        Self::log(&format!(
+                            "giving up on {what}, building again from the files"
+                        ));
                     }
                 }
             }
         }
-        false
+        None
+    }
+
+    /// Applies one record; false when the store needs a build instead: the record keeps failing,
+    /// or it changed the projects the store knows, which the time on screen is named by.
+    async fn apply(&self, store: &Store, record: &Record) -> bool {
+        matches!(
+            self.retry("a record", || store.apply(record)).await,
+            Some(false)
+        )
+    }
+
+    /// Applies one run of screen samples; false when it keeps failing.
+    async fn apply_run(&self, store: &Store, line: &Line) -> bool {
+        self.retry("a run of screen samples", || store.apply_screen(line))
+            .await
+            .is_some()
     }
 
     /// Builds `store` from `files`, then applies every record pushed to the feed, for as long as
@@ -472,6 +531,11 @@ impl Feed {
                 }
                 Next::Record(record) => {
                     if !self.apply(store, &record).await {
+                        self.mark_stale();
+                    }
+                }
+                Next::Run(line) => {
+                    if !self.apply_run(store, &line).await {
                         self.mark_stale();
                     }
                 }
@@ -530,6 +594,7 @@ impl crate::erase::OwnStore for ActivityStore {
 enum Next {
     Rebuild,
     Record(Record),
+    Run(Line),
     Empty,
 }
 
@@ -569,6 +634,67 @@ mod tests {
         assert_eq!(feed.readiness(), Readiness::Unavailable);
         feed.off("no database");
         assert_eq!(feed.readiness(), Readiness::Unavailable);
+    }
+
+    #[test]
+    fn a_growing_run_is_queued_once_and_only_while_the_feed_drains() {
+        let run = |until: &str, samples| Line {
+            time: "2026-11-11T10:00:00Z".into(),
+            until: until.into(),
+            samples,
+            reading: crate::screen::Reading::default(),
+        };
+        let feed = Feed::new();
+        let observer = feed.screen_observer();
+        // Nothing drains the queue yet: the build reads the files.
+        observer(&run("2026-11-11T10:00:05Z", 2));
+        feed.set(Phase::Ready, None);
+        assert!(matches!(feed.next(), Next::Rebuild));
+        observer(&run("2026-11-11T10:00:05Z", 2));
+        observer(&run("2026-11-11T10:00:10Z", 3));
+        assert!(matches!(feed.next(), Next::Run(line) if line.samples == 3));
+        assert!(matches!(feed.next(), Next::Empty));
+    }
+
+    #[test]
+    fn records_come_before_runs_and_too_many_runs_ask_for_a_build() {
+        let run = |n: usize| Line {
+            time: format!(
+                "2026-11-11T{:02}:{:02}:{:02}Z",
+                n / 3600,
+                n / 60 % 60,
+                n % 60
+            ),
+            until: String::new(),
+            samples: 1,
+            reading: crate::screen::Reading::default(),
+        };
+        let feed = Feed::new();
+        feed.set(Phase::Ready, None);
+        let _ = feed.next();
+        feed.push_run(&run(0));
+        feed.push(&Record::Mark(connectors::Mark {
+            tool: "t".into(),
+            session: "s".into(),
+            time: "2026-11-11T10:00:00Z".into(),
+            folder: String::new(),
+            branch: String::new(),
+            tools: Vec::new(),
+        }));
+        assert!(matches!(feed.next(), Next::Record(_)));
+        assert!(matches!(feed.next(), Next::Run(_)));
+        // A run that is queued already is replaced, so it does not count against the limit.
+        for n in 0..MAX_QUEUED_RUNS {
+            feed.push_run(&run(n));
+        }
+        feed.push_run(&run(0));
+        assert!(matches!(feed.next(), Next::Run(_)));
+        // Past the limit the store may miss runs: the next step is a build.
+        for n in 0..=MAX_QUEUED_RUNS {
+            feed.push_run(&run(n));
+        }
+        assert!(matches!(feed.next(), Next::Rebuild));
+        assert!(matches!(feed.next(), Next::Empty));
     }
 
     #[test]

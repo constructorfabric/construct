@@ -327,6 +327,30 @@ fn with_it_on_a_sample_is_stored_for_each_five_seconds_of_the_clock() {
 }
 
 #[test]
+fn the_observer_is_told_of_the_open_run_once_for_each_sample() {
+    let rig = rig(Ok(reading(0)));
+    set(&rig.settings, r#"{"collection":{"screen":true}}"#);
+    let told: Arc<Mutex<Vec<(String, u64)>>> = Arc::default();
+    let seen = told.clone();
+    rig.screen.set_observer(Arc::new(move |line| {
+        seen.lock().unwrap().push((line.time.clone(), line.samples));
+    }));
+    // Three equal samples are one run that grows; the idle time grows with the clock.
+    for n in 0..3 {
+        rig.signals.answer(Ok(reading(n * 5)));
+        rig.screen.tick();
+        rig.clock.advance(Duration::from_secs(5));
+    }
+    let told = told.lock().unwrap().clone();
+    assert_eq!(told.len(), 3);
+    assert!(told.iter().all(|(time, _)| *time == told[0].0));
+    assert_eq!(
+        told.iter().map(|(_, samples)| *samples).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+}
+
+#[test]
 fn the_files_are_readable_by_the_person_only() {
     use std::os::unix::fs::PermissionsExt;
     let rig = rig(Ok(reading(0)));

@@ -217,15 +217,26 @@ struct Shown {
 }
 
 /// One line of a day's file: a run of samples that show the same thing.
-#[derive(Clone, Serialize, Deserialize)]
-struct Line {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Line {
     /// The first sample of the run.
-    time: String,
+    pub time: String,
     /// The last sample of the run.
-    until: String,
-    samples: u64,
+    pub until: String,
+    pub samples: u64,
     #[serde(flatten)]
-    reading: Reading,
+    pub reading: Reading,
+}
+
+/// Told of the open run each time a sample is stored: the line as the file holds it now.
+pub type Observer = Arc<dyn Fn(&Line) + Send + Sync>;
+
+/// The lines of a day's file, in order; a torn line is skipped and a missing file has none.
+///
+/// # Errors
+/// Fails when the file cannot be read.
+pub fn read_file(path: &Path) -> io::Result<Vec<Line>> {
+    read_lines::<Line>(path)
 }
 
 /// The run that is the last line of the open file.
@@ -405,6 +416,7 @@ struct Inner {
     steps: Mutex<u32>,
     store: Mutex<Store>,
     shown: Mutex<Shown>,
+    observer: Mutex<Option<Observer>>,
 }
 
 /// The sampler and the store of the screen samples. Clones are the same sampler.
@@ -460,7 +472,13 @@ impl Screen {
                 samples_today: 0,
                 last_sample: None,
             }),
+            observer: Mutex::new(None),
         }))
+    }
+
+    /// Tells `observer` of the open run each time a sample is stored, after it is written.
+    pub fn set_observer(&self, observer: Observer) {
+        *lock(&self.0.observer) = Some(observer);
     }
 
     /// Why nothing is sampled now, or `None` when the person's switches are on and the computer
@@ -566,9 +584,17 @@ impl Screen {
         // The row shows this day, with what its file holds, before the sample is added to it.
         self.show_day(&store, &day);
         store.write(&day, sample)?;
-        let mut shown = lock(&self.0.shown);
-        shown.samples_today += 1;
-        shown.last_sample = rfc3339(sample.time);
+        let open = store.run.as_ref().map(|run| run.line.clone());
+        drop(store);
+        {
+            let mut shown = lock(&self.0.shown);
+            shown.samples_today += 1;
+            shown.last_sample = rfc3339(sample.time);
+        }
+        let observer = lock(&self.0.observer).clone();
+        if let (Some(observer), Some(line)) = (observer, open) {
+            observer(&line);
+        }
         Ok(())
     }
 

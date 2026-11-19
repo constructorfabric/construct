@@ -314,6 +314,16 @@ impl FileSink {
         Ok(files)
     }
 
+    /// The files of the screen samples, oldest day first; none when there are none.
+    ///
+    /// # Errors
+    /// Fails when the directory cannot be read.
+    pub fn screen_files(&self) -> io::Result<Vec<PathBuf>> {
+        let mut files = jsonl_files(&self.dir.join("records").join(SCREEN_SOURCE))?;
+        files.sort();
+        Ok(files)
+    }
+
     /// Removes a session, and what this sink remembers of it, so a conversation that reuses
     /// the id starts clean. A session that is not there is not an error.
     ///
