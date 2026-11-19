@@ -86,8 +86,11 @@ export interface OpenedApp {
   readonly output: () => string;
 }
 
-export async function openApp(session: Session): Promise<OpenedApp> {
-  const app = await electron.launch({ args: [...session.appArgs], env: session.env });
+/** What a test may add to the launch of the window: a video of it, say. */
+export type LaunchOptions = Pick<Parameters<typeof electron.launch>[0] & object, 'recordVideo'>;
+
+export async function openApp(session: Session, options: LaunchOptions = {}): Promise<OpenedApp> {
+  const app = await electron.launch({ args: [...session.appArgs], env: session.env, ...options });
   return { app, ...(await prepareWindow(app)) };
 }
 
@@ -195,6 +198,7 @@ export async function withStandIn(
   session: Session,
   answer: string | ((line: string) => string | Promise<string>),
   check: (page: Page, app: ElectronApplication) => Promise<void>,
+  options: LaunchOptions = {},
 ): Promise<void> {
   const socketPath = agentSocketPath(session.env, process.platform);
   session.agent.kill('SIGTERM');
@@ -217,7 +221,7 @@ export async function withStandIn(
     });
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
-  const { app, page } = await openApp(session);
+  const { app, page } = await openApp(session, options);
   try {
     await check(page, app);
     await expectNoPolicyViolations(page);
