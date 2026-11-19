@@ -157,3 +157,87 @@ describe('the dashboard handlers', () => {
     });
   });
 });
+
+describe('the drill-down handlers', () => {
+  it('ask dashboard-sessions for a page of a group and give its rows', async () => {
+    const reply =
+      '{"group":"billing","total":1,"offset":0,"limit":20,"next_offset":null,"sessions":[{"start":"2026-11-16T10:00:00+00:00","end":"2026-11-16T10:20:00+00:00","minutes":20,"tool":"claude-code","project":"billing","ticket":"No ticket","session":"abcd1234"}]}';
+    await withFakeAgent(reply, async (handlers, lines) => {
+      const result = await handlers.sessions({
+        days: [day],
+        widget: 'by-project',
+        group: 'billing',
+        offset: 0,
+        limit: 20,
+      });
+      expect(result).toMatchObject({ ok: true, total: 1, nextOffset: null });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/^dashboard-sessions \{.*"group":"billing".*"widget":"by-project"/);
+    });
+  });
+
+  it('ask dashboard-summary for the day and give its lines', async () => {
+    const reply = '{"day":"2026-11-16","total_minutes":20,"lines":["No ticket (billing): 20 min"]}';
+    await withFakeAgent(reply, async (handlers, lines) => {
+      const result = await handlers.summary({ day, widget: 'end-of-day' });
+      expect(result).toEqual({
+        ok: true,
+        lines: ['No ticket (billing): 20 min'],
+      });
+      expect(lines).toEqual([`dashboard-summary ${JSON.stringify({ day, widget: 'end-of-day' })}`]);
+    });
+  });
+
+  it('refuse what the app does not accept, without calling the agent', async () => {
+    await withFakeAgent('{}', async (handlers, lines) => {
+      const refused = {
+        ok: false,
+        error: 'the window sent a dashboard request in a form the app does not accept',
+      };
+      expect(await handlers.sessions({ days: [day], widget: 'by-project' })).toEqual(refused);
+      expect(await handlers.summary({ widget: 'end-of-day' })).toEqual(refused);
+      expect(lines).toEqual([]);
+    });
+  });
+
+  it('say so when the agent is not there', async () => {
+    const handlers = createDashboardHandlers({
+      env: { XDG_RUNTIME_DIR: path.join(tmpdir(), 'cb-no-such-runtime-dir') },
+      platform: 'linux',
+    });
+    const gone = { ok: false, error: 'the agent is not running' };
+    expect(
+      await handlers.sessions({
+        days: [day],
+        widget: 'by-project',
+        group: 'a',
+        offset: 0,
+        limit: 20,
+      }),
+    ).toEqual(gone);
+    expect(await handlers.summary({ day, widget: 'end-of-day' })).toEqual(gone);
+  });
+
+  it('turn a reply that is not a page of sessions into an error, not a crash', async () => {
+    await withFakeAgent('{"total":"many"}', async (handlers) => {
+      const result = await handlers.sessions({
+        days: [day],
+        widget: 'by-project',
+        group: 'a',
+        offset: 0,
+        limit: 20,
+      });
+      expect(result).toMatchObject({ ok: false });
+    });
+  });
+
+  it('say that the agent is still reading the history, for the summary too', async () => {
+    await withFakeAgent('{"error":"the activity time is being built"}', async (handlers) => {
+      expect(await handlers.summary({ day, widget: 'end-of-day' })).toEqual({
+        ok: false,
+        error: 'the activity time is being built',
+        reading: true,
+      });
+    });
+  });
+});

@@ -15,7 +15,7 @@ import {
   TableRow,
 } from '@gears-frontx/ui-kit';
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type {
   DashboardDocument,
@@ -28,7 +28,11 @@ import type {
 } from '../dashboard-protocol';
 import { t } from '../translation';
 import styles from './app.module.css';
-import { formatMinutes } from './dashboard-period';
+import { dayLabel, formatMinutes, periodDays } from './dashboard-period';
+import { DaySummary } from './DaySummary';
+import { SessionsDialog } from './SessionsDialog';
+import { drillSource } from './drill-source';
+import type { SessionsSource } from './useSessions';
 import type { Split, WidgetNumbers } from './useDashboard';
 import { takeRowsBack } from './focus-after-show';
 import { ProjectMenu } from './ProjectMenu';
@@ -86,11 +90,14 @@ function Bars({
   days,
   split,
   sessions,
+  onOpen,
 }: {
   readonly id: string;
   readonly days: readonly DayMinutes[];
   readonly split: readonly Split[] | null;
   readonly sessions: Whose;
+  /** Opens the sessions of a day. */
+  readonly onOpen: (day: string) => void;
 }): ReactNode {
   const [ref, { width, height }] = useSize<HTMLDivElement>();
   const single: Series = sessions === 'unattended' ? 'unattended' : 'own';
@@ -141,6 +148,13 @@ function Bars({
                 stackId="time"
                 fill={seriesColour[name]}
                 isAnimationActive={false}
+                cursor="pointer"
+                onClick={(bar) => {
+                  const day = (bar as { payload?: { label?: unknown } }).payload?.label;
+                  if (typeof day === 'string') {
+                    onOpen(day);
+                  }
+                }}
               />
             ))}
           </BarChart>
@@ -162,7 +176,16 @@ function Bars({
           <tbody>
             {rows.map((row) => (
               <tr key={row.label}>
-                <th scope="row">{row.label}</th>
+                <th scope="row">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpen(row.label);
+                    }}
+                  >
+                    {t('DashboardPage.Drill.Open', { name: row.label })}
+                  </button>
+                </th>
                 {series.map((name) => (
                   <td key={name}>{formatMinutes(row[name])}</td>
                 ))}
@@ -194,10 +217,13 @@ function GroupTable({
   groupBy,
   groups,
   actions,
+  onOpen,
 }: {
   readonly id: string;
   readonly groupBy: GroupBy;
   readonly groups: readonly GroupMinutes[];
+  /** Opens the sessions of a row. */
+  readonly onOpen: (group: string) => void;
   /** What a row of projects can do; tables of other groupings have none. */
   readonly actions: ProjectActions | null;
 }): ReactNode {
@@ -255,11 +281,37 @@ function GroupTable({
         {byTime(groups).map((group) => {
           const percent = Math.round(group.share * 100);
           return (
-            <TableRow key={group.key}>
+            <TableRow
+              key={group.key}
+              className={styles.rowOpen}
+              onClick={() => {
+                onOpen(group.key);
+              }}
+            >
               <TableCell>
                 <span className={styles.groupName}>
-                  {group.key}
-                  {rowActions !== null && <ProjectMenu name={group.key} actions={rowActions} />}
+                  <button
+                    type="button"
+                    className={styles.openName}
+                    aria-label={t('DashboardPage.Drill.Open', { name: group.key })}
+                    onClick={(event) => {
+                      // The row opens it once.
+                      event.stopPropagation();
+                      onOpen(group.key);
+                    }}
+                  >
+                    {group.key}
+                  </button>
+                  {rowActions !== null && (
+                    // A click in the menu, or in a dialog it opens, is not a click on the row.
+                    <span
+                      onClick={(event) => {
+                        event.stopPropagation();
+                      }}
+                    >
+                      <ProjectMenu name={group.key} actions={rowActions} />
+                    </span>
+                  )}
                 </span>
               </TableCell>
               <TableCell>{formatMinutes(group.minutes)}</TableCell>
@@ -287,13 +339,17 @@ export function DashboardWidget({
   document,
   widget,
   numbers,
+  day,
   onChange,
 }: {
   readonly document: DashboardDocument;
   readonly widget: Widget;
   readonly numbers: WidgetNumbers | undefined;
+  /** The day the page stands on: the period of a widget is counted from it. */
+  readonly day: Date;
   readonly onChange: (changes: readonly ProjectChange[]) => void;
 }): ReactNode {
+  const [drill, setDrill] = useState<SessionsSource | null>(null);
   const period = t(`DashboardPage.Period.${widget.period ?? document.period}`);
   const sessions = widget.sessions ?? document.sessions;
   const groupBy = widget.groupBy ?? 'project';
@@ -302,7 +358,13 @@ export function DashboardWidget({
       ? t(`DashboardPage.Widget.Table.${groupBy}`)
       : widget.kind === 'bars_per_day'
         ? t('DashboardPage.Widget.Bars')
-        : t('DashboardPage.Widget.Total');
+        : widget.kind === 'day_summary'
+          ? t('DashboardPage.Widget.Summary')
+          : t('DashboardPage.Widget.Total');
+  const days = periodDays(widget.period ?? document.period, day);
+  const open = (group: string): void => {
+    setDrill(drillSource(widget, days, sessions, group));
+  };
   const actions: ProjectActions | null =
     groupBy === 'project'
       ? {
@@ -317,27 +379,53 @@ export function DashboardWidget({
             ),
         }
       : null;
-  return (
-    <WidgetCard title={title} period={period}>
-      {numbers === undefined ? null : !numbers.ok ? (
+  const body = ((): ReactNode => {
+    if (numbers === undefined) {
+      return null;
+    }
+    if (!numbers.ok) {
+      return (
         <Alert variant="destructive">
           {t('DashboardPage.Unavailable', { reason: numbers.error })}
         </Alert>
-      ) : widget.kind === 'total' ? (
-        <Total id={`value-${widget.id}`} numbers={numbers.numbers.totalMinutes} />
-      ) : widget.kind === 'bars_per_day' ? (
+      );
+    }
+    if ('summary' in numbers) {
+      return <DaySummary id={`summary-${widget.id}`} lines={numbers.summary.lines} />;
+    }
+    if (widget.kind === 'total') {
+      return <Total id={`value-${widget.id}`} numbers={numbers.numbers.totalMinutes} />;
+    }
+    if (widget.kind === 'bars_per_day') {
+      return (
         <Bars
           id={`chart-${widget.id}`}
           days={numbers.numbers.days}
           split={numbers.split}
           sessions={sessions}
+          onOpen={open}
         />
-      ) : (
-        <GroupTable
-          id={`table-${widget.id}`}
-          groupBy={groupBy}
-          groups={numbers.numbers.groups}
-          actions={actions}
+      );
+    }
+    return (
+      <GroupTable
+        id={`table-${widget.id}`}
+        groupBy={groupBy}
+        groups={numbers.numbers.groups}
+        actions={actions}
+        onOpen={open}
+      />
+    );
+  })();
+  return (
+    <WidgetCard title={title} period={widget.kind === 'day_summary' ? dayLabel(day) : period}>
+      {body}
+      {drill !== null && (
+        <SessionsDialog
+          source={drill}
+          onClose={() => {
+            setDrill(null);
+          }}
         />
       )}
     </WidgetCard>

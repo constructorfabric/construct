@@ -404,3 +404,43 @@
   margin-top: var(--space-4);
   overflow-wrap: anywhere;
 }
+
+.drillContent.drillContent {
+  max-width: min(64rem, calc(100% - 2rem));
+}
+
+.drillScroll {
+  max-height: 24rem;
+}
+
+.rowOpen {
+  cursor: pointer;
+}
+
+.openName {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline dotted;
+}
+
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.summaryLines {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.summaryActions {
+  align-items: center;
+  display: flex;
+  gap: var(--space-3);
+}

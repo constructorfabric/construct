@@ -2,11 +2,17 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   dashboardNumbersLine,
+  dashboardSessionsLine,
+  dashboardSummaryLine,
   maxDays,
   parseDashboardInput,
   parseDashboardReply,
   parseDocumentReply,
   parseProjectChange,
+  parseSessionsInput,
+  parseSessionsReply,
+  parseSummaryInput,
+  parseSummaryReply,
   projectChangeLine,
   readingHistoryError,
 } from '../src/dashboard-protocol';
@@ -386,5 +392,133 @@ describe('parseProjectChange', () => {
     expect(projectChangeLine({ action: 'rename', project: 'a', name: 'B' })).toBe(
       'dashboard-rename {"project":"a","name":"B"}',
     );
+  });
+});
+
+const page = { group: 'billing', offset: 0, limit: 20 };
+
+describe('parseSessionsInput', () => {
+  it('takes a widget with a group and a page, and nothing else', () => {
+    expect(parseSessionsInput({ days: [day], widget: 'by-project', ...page, extra: 1 })).toEqual({
+      days: [day],
+      widget: 'by-project',
+      ...page,
+    });
+  });
+
+  it('takes the sessions and the grouping of a chart', () => {
+    const input = { days: [day], sessions: 'all', groupBy: 'day', filter: { tools: ['codex'] } };
+    expect(parseSessionsInput({ ...input, ...page, group: '2026-11-16' })).toEqual({
+      ...input,
+      ...page,
+      group: '2026-11-16',
+    });
+  });
+
+  it('refuses a widget named with the counting, and a page out of bounds', () => {
+    const widget = { days: [day], widget: 'by-project', ...page };
+    expect(parseSessionsInput({ ...widget, sessions: 'own' })).toBeNull();
+    expect(parseSessionsInput({ ...widget, groupBy: 'day' })).toBeNull();
+    expect(parseSessionsInput({ ...widget, limit: 0 })).toBeNull();
+    expect(parseSessionsInput({ ...widget, limit: 201 })).toBeNull();
+    expect(parseSessionsInput({ ...widget, offset: -1 })).toBeNull();
+    expect(parseSessionsInput({ ...widget, group: '' })).toBeNull();
+    expect(parseSessionsInput({ days: [day], sessions: 'own', ...page })).toBeNull();
+    expect(parseSessionsInput('billing')).toBeNull();
+  });
+});
+
+describe('dashboardSessionsLine', () => {
+  it('names the fields as the agent does', () => {
+    expect(dashboardSessionsLine({ days: [day], widget: 'by-project', ...page })).toBe(
+      `dashboard-sessions ${JSON.stringify({
+        days: [day],
+        group: 'billing',
+        offset: 0,
+        limit: 20,
+        widget: 'by-project',
+      })}`,
+    );
+    expect(
+      JSON.parse(
+        dashboardSessionsLine({ days: [day], sessions: 'own', groupBy: 'day', ...page }).slice(
+          'dashboard-sessions '.length,
+        ),
+      ),
+    ).toMatchObject({ sessions: 'own', group_by: 'day' });
+  });
+});
+
+describe('parseSessionsReply', () => {
+  const row = {
+    start: '2026-11-17T10:00:00+01:00',
+    end: '2026-11-17T10:20:00+01:00',
+    minutes: 20,
+    tool: 'claude-code',
+    project: 'billing',
+    ticket: 'No ticket',
+    session: 'abcd1234',
+  };
+
+  it('turns a page into rows with the place of the next one', () => {
+    const reply = JSON.stringify({
+      group: 'billing',
+      total: 3,
+      offset: 0,
+      limit: 2,
+      next_offset: 2,
+      sessions: [row, row],
+    });
+    expect(parseSessionsReply(reply)).toEqual({
+      ok: true,
+      total: 3,
+      nextOffset: 2,
+      sessions: [row, row],
+    });
+  });
+
+  it('has no next page after the last one', () => {
+    const reply = JSON.stringify({ total: 1, offset: 0, next_offset: null, sessions: [row] });
+    expect(parseSessionsReply(reply)).toMatchObject({ ok: true, nextOffset: null });
+  });
+
+  it('gives the error of the agent, and says when it is still reading', () => {
+    expect(parseSessionsReply('{"error":"no"}')).toEqual({ ok: false, error: 'no' });
+    expect(parseSessionsReply(`{"error":"${readingHistoryError}"}`)).toEqual({
+      ok: false,
+      error: readingHistoryError,
+      reading: true,
+    });
+  });
+
+  it('refuses a session that is not times with a tool', () => {
+    const reply = JSON.stringify({ total: 1, offset: 0, next_offset: null, sessions: [{}] });
+    expect(() => parseSessionsReply(reply)).toThrow('not times with a tool');
+  });
+});
+
+describe('the summary of a day', () => {
+  it('takes a day and a widget, and nothing else', () => {
+    expect(parseSummaryInput({ day, widget: 'end-of-day' })).toEqual({ day, widget: 'end-of-day' });
+    expect(parseSummaryInput({ day, widget: 'end-of-day', sessions: 'own' })).toBeNull();
+    expect(parseSummaryInput({ day: [day], widget: 'end-of-day' })).toBeNull();
+    expect(parseSummaryInput({ day, widget: 'End Of Day' })).toBeNull();
+  });
+
+  it('asks for the one day', () => {
+    expect(dashboardSummaryLine({ day, widget: 'end-of-day' })).toBe(
+      `dashboard-summary ${JSON.stringify({ day, widget: 'end-of-day' })}`,
+    );
+  });
+
+  it('turns the reply into lines', () => {
+    const reply =
+      '{"day":"2026-11-16","total_minutes":80,"lines":["A-1: 1 h","No ticket (b): 20 min"]}';
+    expect(parseSummaryReply(reply)).toEqual({
+      ok: true,
+      lines: ['A-1: 1 h', 'No ticket (b): 20 min'],
+    });
+    expect(parseSummaryReply('{"error":"no"}')).toEqual({ ok: false, error: 'no' });
+    expect(() => parseSummaryReply('{"day":"d","total_minutes":1,"lines":[1]}')).toThrow();
   });
 });

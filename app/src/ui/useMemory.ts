@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { MemoryFact } from '../memory-protocol';
+import { lostAgent as message } from './lost-agent';
 
 /** How often the open page asks for the profile's version. */
 const versionPollMs = 3000;
@@ -14,12 +15,6 @@ export type MemoryState =
       /** Whether the agent collects the user's work; `null` when the settings could not say. */
       readonly collecting: boolean | null;
     };
-
-const lostAgent = 'the window lost the agent';
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : lostAgent;
-}
 
 /**
  * The facts of the person. While the page is open it asks for the profile's version now and then

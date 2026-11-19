@@ -131,8 +131,65 @@ export type ProjectChange =
   | { readonly action: 'hide' | 'show'; readonly project: string }
   | { readonly action: 'rename'; readonly project: string; readonly name: string };
 
+/** One session behind a group: its times are in the user's time, as the window asked. */
+export interface SessionRow {
+  readonly start: string;
+  readonly end: string;
+  readonly minutes: number;
+  readonly tool: string;
+  readonly project: string;
+  readonly ticket: string;
+  /** The first characters of the id of the session. */
+  readonly session: string;
+}
+
+/**
+ * The sessions of one group: a widget's own counting, or the sessions and filter and the grouping
+ * the call names, with the group to open and the page. The times of the answer are UTC instants.
+ */
+export type SessionsInput = {
+  readonly days: readonly DayBounds[];
+  readonly group: string;
+  readonly offset: number;
+  readonly limit: number;
+} & (
+  | { readonly widget: string }
+  | {
+      readonly sessions: Whose;
+      readonly filter?: Filter;
+      readonly groupBy: GroupBy;
+    }
+);
+
+/** One page of the sessions of a group; the pages together add up to `total`. */
+export type SessionsResult =
+  | {
+      readonly ok: true;
+      readonly total: number;
+      /** Where the next page starts; none after the last one. */
+      readonly nextOffset: number | null;
+      readonly sessions: readonly SessionRow[];
+    }
+  | { readonly ok: false; readonly error: string; readonly reading?: true };
+
+/** The summary of one day, by a widget's own counting. */
+export interface SummaryInput {
+  readonly day: DayBounds;
+  readonly widget: string;
+}
+
+/** One line of text for each ticket of the day, and the minutes of the day. */
+export type SummaryResult =
+  | {
+      readonly ok: true;
+      readonly lines: readonly string[];
+    }
+  | { readonly ok: false; readonly error: string; readonly reading?: true };
+
 export interface DashboardApi {
   readonly getDashboardNumbers: (input: DashboardInput) => Promise<DashboardResult>;
+  readonly getDashboardSessions: (input: SessionsInput) => Promise<SessionsResult>;
+  readonly getDashboardSummary: (input: SummaryInput) => Promise<SummaryResult>;
   readonly getDashboardDocument: () => Promise<DocumentResult>;
   /** Writes the change into the dashboard document; the answer is the document as it is then. */
   readonly changeDashboardProject: (change: ProjectChange) => Promise<DocumentResult>;
@@ -144,6 +201,11 @@ export const readingHistoryError = 'the activity time is being built';
 export const DASHBOARD_NUMBERS_CHANNEL = 'dashboard:numbers';
 export const DASHBOARD_DOCUMENT_CHANNEL = 'dashboard:document';
 export const DASHBOARD_PROJECT_CHANNEL = 'dashboard:project';
+export const DASHBOARD_SESSIONS_CHANNEL = 'dashboard:sessions';
+export const DASHBOARD_SUMMARY_CHANNEL = 'dashboard:summary';
+
+/** The most sessions one page of a drill-down may hold: the agent's own limit. */
+export const maxPage = 200;
 
 /** The most days one call may ask for: the agent's own limit. */
 export const maxDays = 62;
@@ -254,6 +316,84 @@ export function dashboardNumbersLine(input: DashboardInput): string {
       ? { days: input.days, widget: input.widget }
       : { days: input.days, sessions: input.sessions, filter: input.filter };
   return `dashboard-numbers ${JSON.stringify(request)}`;
+}
+
+function isOffset(value: unknown, most: number): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= most;
+}
+
+/** The input of a drill-down call, which comes from the window and so is checked. */
+export function parseSessionsInput(value: unknown): SessionsInput | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const days = parseDays(value.days);
+  const { group, offset, limit } = value;
+  if (
+    days === null ||
+    typeof group !== 'string' ||
+    group === '' ||
+    group.length > maxNameChars ||
+    !isOffset(offset, 1_000_000) ||
+    typeof limit !== 'number' ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > maxPage
+  ) {
+    return null;
+  }
+  const page = { days, group, offset, limit };
+  if (value.widget !== undefined) {
+    return typeof value.widget === 'string' &&
+      widgetId.test(value.widget) &&
+      value.sessions === undefined &&
+      value.filter === undefined &&
+      value.groupBy === undefined
+      ? { ...page, widget: value.widget }
+      : null;
+  }
+  const groupBy = groupings.find((candidate) => candidate === value.groupBy);
+  if (!isWhose(value.sessions) || groupBy === undefined) {
+    return null;
+  }
+  if (value.filter === undefined) {
+    return { ...page, sessions: value.sessions, groupBy };
+  }
+  const filter = parseFilter(value.filter);
+  return filter === null ? null : { ...page, sessions: value.sessions, groupBy, filter };
+}
+
+/** `dashboard-sessions {...}`: the counting, the group and the page, in the agent's names. */
+export function dashboardSessionsLine(input: SessionsInput): string {
+  const request = {
+    days: input.days,
+    group: input.group,
+    offset: input.offset,
+    limit: input.limit,
+    ...('widget' in input
+      ? { widget: input.widget }
+      : { sessions: input.sessions, filter: input.filter, group_by: input.groupBy }),
+  };
+  return `dashboard-sessions ${JSON.stringify(request)}`;
+}
+
+/** The input of a summary call, which comes from the window and so is checked. */
+export function parseSummaryInput(value: unknown): SummaryInput | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const day = parseDay(value.day);
+  return day !== null &&
+    typeof value.widget === 'string' &&
+    widgetId.test(value.widget) &&
+    Object.keys(value).length === 2
+    ? { day, widget: value.widget }
+    : null;
+}
+
+/** `dashboard-summary {...}`: the day and the widget whose counting it follows. */
+export function dashboardSummaryLine(input: SummaryInput): string {
+  return `dashboard-summary ${JSON.stringify({ day: input.day, widget: input.widget })}`;
 }
 
 export const dashboardGetLine = 'dashboard-get';
@@ -460,5 +600,80 @@ export function parseDocumentReply(line: string): DocumentResult {
     ok: true,
     document: reply.document === null ? null : parseDocument(reply.document),
     problem: reply.error === undefined ? null : parseProblem(reply.error),
+  };
+}
+
+function parseSessionRow(value: unknown): SessionRow {
+  if (
+    !isRecord(value) ||
+    typeof value.start !== 'string' ||
+    typeof value.end !== 'string' ||
+    !isNumber(value.minutes) ||
+    typeof value.tool !== 'string' ||
+    typeof value.project !== 'string' ||
+    typeof value.ticket !== 'string' ||
+    typeof value.session !== 'string'
+  ) {
+    throw new Error('the agent reply has a session that is not times with a tool and a project');
+  }
+  return {
+    start: value.start,
+    end: value.end,
+    minutes: value.minutes,
+    tool: value.tool,
+    project: value.project,
+    ticket: value.ticket,
+    session: value.session,
+  };
+}
+
+function failure(
+  line: string,
+): { error: string; reading?: true } | { reply: Record<string, unknown> } {
+  const reply = parseLine(line);
+  const error = replyError(reply);
+  if (error === null) {
+    return { reply };
+  }
+  return error === readingHistoryError ? { error, reading: true } : { error };
+}
+
+/** Turns a `dashboard-sessions` reply into a result. */
+export function parseSessionsReply(line: string): SessionsResult {
+  const read = failure(line);
+  if ('error' in read) {
+    return { ok: false, ...read };
+  }
+  const { reply } = read;
+  if (
+    !isNumber(reply.total) ||
+    !Array.isArray(reply.sessions) ||
+    (reply.next_offset !== null && !isNumber(reply.next_offset))
+  ) {
+    throw new Error('the agent reply has no page of sessions');
+  }
+  const sessions: unknown[] = reply.sessions;
+  return {
+    ok: true,
+    total: reply.total,
+    nextOffset: reply.next_offset,
+    sessions: sessions.map(parseSessionRow),
+  };
+}
+
+/** Turns a `dashboard-summary` reply into a result. */
+export function parseSummaryReply(line: string): SummaryResult {
+  const read = failure(line);
+  if ('error' in read) {
+    return { ok: false, ...read };
+  }
+  const { reply } = read;
+  const lines: unknown = reply.lines;
+  if (!Array.isArray(lines) || !lines.every((text) => typeof text === 'string')) {
+    throw new Error('the agent reply has no summary of a day');
+  }
+  return {
+    ok: true,
+    lines: lines as string[],
   };
 }
