@@ -152,6 +152,9 @@ fn run() -> std::io::Result<()> {
             )
         })
     });
+    if let Some(screen) = &screen {
+        screen.set_observer(activity.screen_observer());
+    }
     let server = match &screen {
         Some(screen) => server.with_screen(screen.clone()),
         None => server,

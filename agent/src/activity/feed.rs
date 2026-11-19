@@ -7,7 +7,7 @@
 //! overflowed, are made good by building the store again from the files, which stay the single
 //! source.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -18,6 +18,7 @@ use tokio::sync::Notify;
 use super::Store;
 use super::findings::Findings;
 use crate::records::{FileSink, Recorder};
+use crate::screen::{self, Line};
 use crate::sync::lock;
 use crate::workspace::Workspace;
 
@@ -25,6 +26,9 @@ use crate::workspace::Workspace;
 /// store keys it by a hash of its text). A push past either limit is dropped, and the next turn
 /// of the task builds the store again from the files, which hold what the queue lost.
 const MAX_QUEUED: usize = 100_000;
+/// The runs of screen samples the queue holds. A run that grows replaces its own entry, so the
+/// queue is bounded by the runs that were not applied yet.
+const MAX_QUEUED_RUNS: usize = 10_000;
 /// The most turn text the queue holds.
 const MAX_QUEUED_BYTES: usize = 64 * 1024 * 1024;
 /// The file of the setup findings in the workspace.
@@ -104,6 +108,8 @@ fn weight(record: &Record) -> usize {
 
 struct Queue {
     records: VecDeque<Record>,
+    /// The latest state of each run of screen samples not applied yet, by its first sample.
+    runs: BTreeMap<String, Line>,
     /// Bytes the queued records weigh, as [`weight`] counts them.
     bytes: usize,
     /// The store may miss records: the queue overflowed or a record could not be applied.
@@ -149,6 +155,7 @@ impl Feed {
         Self(Arc::new(Shared {
             queue: Mutex::new(Queue {
                 records: VecDeque::new(),
+                runs: BTreeMap::new(),
                 bytes: 0,
                 stale: true,
             }),
@@ -289,6 +296,34 @@ impl Feed {
         self.0.wake.notify_one();
     }
 
+    /// What the screen sampler calls with the open run each time it stores a sample. Like
+    /// [`Feed::push`] it never waits for the store.
+    #[must_use]
+    pub fn screen_observer(&self) -> screen::Observer {
+        let feed = self.clone();
+        Arc::new(move |line| feed.push_run(line))
+    }
+
+    /// Queues a run of screen samples that is on the disk; a later state of the same run
+    /// replaces it.
+    pub fn push_run(&self, line: &Line) {
+        if matches!(
+            lock(&self.0.state).0,
+            Phase::Waiting | Phase::Behind | Phase::Off
+        ) {
+            return;
+        }
+        {
+            let mut queue = lock(&self.0.queue);
+            if queue.runs.len() >= MAX_QUEUED_RUNS && !queue.runs.contains_key(&line.time) {
+                queue.stale = true;
+            } else {
+                queue.runs.insert(line.time.clone(), line.clone());
+            }
+        }
+        self.0.wake.notify_one();
+    }
+
     /// The store to read from, once a build of it has finished. While the store is behind it still
     /// holds the last good state, which the answer is then of.
     ///
@@ -362,14 +397,16 @@ impl Feed {
         if queue.stale {
             queue.stale = false;
             queue.records.clear();
+            queue.runs.clear();
             queue.bytes = 0;
             return Next::Rebuild;
         }
-        match queue.records.pop_front() {
-            Some(record) => {
-                queue.bytes -= weight(&record);
-                Next::Record(record)
-            }
+        if let Some(record) = queue.records.pop_front() {
+            queue.bytes -= weight(&record);
+            return Next::Record(record);
+        }
+        match queue.runs.pop_first() {
+            Some((_, line)) => Next::Run(line),
             None => Next::Empty,
         }
     }
@@ -389,6 +426,7 @@ impl Feed {
         {
             let mut queue = lock(&self.0.queue);
             queue.records.clear();
+            queue.runs.clear();
             queue.bytes = 0;
             queue.stale = true;
         }
@@ -452,6 +490,31 @@ impl Feed {
         false
     }
 
+    /// Applies one run of screen samples, trying again after a pause; false when it keeps failing.
+    async fn apply_run(&self, store: &Store, line: &Line) -> bool {
+        let mut pause = FIRST_RETRY;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match store.apply_screen(line).await {
+                Ok(()) => {
+                    self.set_error(None);
+                    return true;
+                }
+                Err(e) => {
+                    self.0.failed_writes.fetch_add(1, Ordering::Relaxed);
+                    self.set_error(Some(e.to_string()));
+                    Self::log(&format!(
+                        "screen write failed (try {attempt} of {MAX_ATTEMPTS}): {e}"
+                    ));
+                    if attempt < MAX_ATTEMPTS {
+                        tokio::time::sleep(pause).await;
+                        pause *= 2;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Builds `store` from `files`, then applies every record pushed to the feed, for as long as
     /// the task runs. Nothing here ends the agent: a failure shows in `status`.
     pub async fn run(&self, store: &Store, files: &FileSink) {
@@ -472,6 +535,11 @@ impl Feed {
                 }
                 Next::Record(record) => {
                     if !self.apply(store, &record).await {
+                        self.mark_stale();
+                    }
+                }
+                Next::Run(line) => {
+                    if !self.apply_run(store, &line).await {
                         self.mark_stale();
                     }
                 }
@@ -530,6 +598,7 @@ impl crate::erase::OwnStore for ActivityStore {
 enum Next {
     Rebuild,
     Record(Record),
+    Run(Line),
     Empty,
 }
 
@@ -569,6 +638,26 @@ mod tests {
         assert_eq!(feed.readiness(), Readiness::Unavailable);
         feed.off("no database");
         assert_eq!(feed.readiness(), Readiness::Unavailable);
+    }
+
+    #[test]
+    fn a_growing_run_is_queued_once_and_only_while_the_feed_drains() {
+        let run = |until: &str, samples| Line {
+            time: "2026-11-11T10:00:00Z".into(),
+            until: until.into(),
+            samples,
+            reading: crate::screen::Reading::default(),
+        };
+        let feed = Feed::new();
+        let observer = feed.screen_observer();
+        // Nothing drains the queue yet: the build reads the files.
+        observer(&run("2026-11-11T10:00:05Z", 2));
+        feed.set(Phase::Ready, None);
+        assert!(matches!(feed.next(), Next::Rebuild));
+        observer(&run("2026-11-11T10:00:05Z", 2));
+        observer(&run("2026-11-11T10:00:10Z", 3));
+        assert!(matches!(feed.next(), Next::Run(line) if line.samples == 3));
+        assert!(matches!(feed.next(), Next::Empty));
     }
 
     #[test]
