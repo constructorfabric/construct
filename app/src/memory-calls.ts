@@ -2,15 +2,25 @@ import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { isRecord } from './agent-json';
-import { agentSocketPath } from './agent-socket';
-import type { Where } from './agent-socket';
+import { agentSocketPath, callAgent, failureText } from './agent-socket';
+import type { CallLimits, Where } from './agent-socket';
 import {
+  eraseLine,
   isDeletableFactId,
+  parseEraseReply,
+  parseErasing,
   parseFactsPage,
   reasonAgentNotRunning,
   reasonNotReady,
 } from './memory-protocol';
-import type { FactDeleteResult, FactsResult, MemoryFact, VersionResult } from './memory-protocol';
+import type {
+  EraseResult,
+  ErasingResult,
+  FactDeleteResult,
+  FactsResult,
+  MemoryFact,
+  VersionResult,
+} from './memory-protocol';
 
 /** The person the agent's host serves: the one identity of a desktop. */
 const personId = '11111111-6a88-4768-9dfc-6bcd5187d9ed';
@@ -36,11 +46,23 @@ export const memoryLimits: MemoryLimits = {
   maxPages: 50,
 };
 
+/**
+ * `memory-erase` waits for what the agent holds (a running answer up to 30 s, the setup run up to
+ * 60 s) and makes two calls of up to 15 s to the host, so it takes about 120 s when nothing else
+ * holds the agent. The app waits 3 minutes; an answer later than that is shown as a failure
+ * with the app's own reason, and the page then looks at the gear.
+ */
+export const eraseLimits: CallLimits = { deadlineMs: 180_000, maxReplyChars: 4096 };
+
 export interface MemoryHandlers {
   readonly facts: () => Promise<FactsResult>;
   readonly version: () => Promise<VersionResult>;
   /** The id comes from the window, so it is checked here before it is put in a route. */
   readonly remove: (factId: unknown) => Promise<FactDeleteResult>;
+  /** Has the agent erase everything about the person; the end is read with `erasing`. */
+  readonly erase: () => Promise<EraseResult>;
+  /** Whether the gear still reports an erasure that runs. */
+  readonly erasing: () => Promise<ErasingResult>;
 }
 
 /** A failure whose text is one of the app's fixed reasons: it never holds a token or an answer. */
@@ -189,8 +211,12 @@ function send(
   });
 }
 
+function subjectRoute(tail: string): string {
+  return `/construct/v1/subjects/${personId}/${tail}`;
+}
+
 function factsRoute(query: string): string {
-  return `/construct/v1/subjects/${personId}/facts?${query}`;
+  return subjectRoute(`facts?${query}`);
 }
 
 async function readPage(
@@ -268,12 +294,33 @@ export function createMemoryHandlers(
         await send(
           connection,
           'DELETE',
-          `/construct/v1/subjects/${personId}/facts/${encodeURIComponent(factId)}`,
+          subjectRoute(`facts/${encodeURIComponent(factId)}`),
           limits,
           [204, 404],
           false,
         );
         return { ok: true };
+      } catch (error) {
+        return failure(error);
+      }
+    },
+    erase: async () => {
+      try {
+        return parseEraseReply(await callAgent(where.env, where.platform, eraseLine, eraseLimits));
+      } catch (error) {
+        return { ok: false, error: failureText(error) };
+      }
+    },
+    erasing: async () => {
+      try {
+        const connection = await readConnection(where);
+        const erasing = parseErasing(
+          await send(connection, 'GET', subjectRoute('settings'), limits, [200], true),
+        );
+        if (erasing === null) {
+          throw notReady();
+        }
+        return { ok: true, erasing };
       } catch (error) {
         return failure(error);
       }

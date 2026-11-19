@@ -1,4 +1,4 @@
-import { isRecord } from './agent-json';
+import { isRecord, parseLine, replyError } from './agent-json';
 
 /** A JSON value, as a fact's value may hold it. */
 export type JsonValue =
@@ -41,6 +41,32 @@ export type VersionResult =
   | { readonly ok: true; readonly version: number | null }
   | { readonly ok: false; readonly error: string };
 
+/** The line that has the agent erase the person; it takes no argument. */
+export const eraseLine = 'memory-erase';
+
+/**
+ * Turns a `memory-erase` reply into a result. `started` and `running` are both an erasure that
+ * the gear carries on; an error holds the agent's own fixed reason.
+ */
+export function parseEraseReply(line: string): EraseResult {
+  const reply = parseLine(line);
+  const error = replyError(reply);
+  if (error !== null) {
+    return { ok: false, error };
+  }
+  if (reply.erasure !== 'started' && reply.erasure !== 'running') {
+    throw new Error('the agent reply says nothing of an erasure');
+  }
+  return { ok: true, running: reply.erasure === 'running' };
+}
+
+/** The gear's settings of the person, as far as the page needs them. */
+export function parseErasing(body: unknown): boolean | null {
+  return isRecord(body) && typeof body.erasure_in_progress === 'boolean'
+    ? body.erasure_in_progress
+    : null;
+}
+
 const factIdShape = /^[\w.~:-]{1,128}$/;
 
 /**
@@ -56,6 +82,19 @@ export type FactDeleteResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: string };
 
+/**
+ * The answer to "delete everything": the agent switched collection off and the gear has started
+ * to erase, or was already erasing. Either way the page then waits for the gear to finish.
+ */
+export type EraseResult =
+  /** `running`: an erasure was already on, and this request changed nothing. */
+  { readonly ok: true; readonly running: boolean } | { readonly ok: false; readonly error: string };
+
+/** Whether the gear is still erasing the person, read from its settings route. */
+export type ErasingResult =
+  | { readonly ok: true; readonly erasing: boolean }
+  | { readonly ok: false; readonly error: string };
+
 export interface MemoryApi {
   /** Every fact of the person, over all pages, with the profile's version at the first page. */
   readonly getMemoryFacts: () => Promise<FactsResult>;
@@ -63,11 +102,17 @@ export interface MemoryApi {
   readonly getMemoryVersion: () => Promise<VersionResult>;
   /** Deletes one fact by its id. Sending it again after a failure is safe. */
   readonly deleteMemoryFact: (factId: string) => Promise<FactDeleteResult>;
+  /** Asks the agent to erase everything about the person; it does not wait for the end. */
+  readonly eraseEverything: () => Promise<EraseResult>;
+  /** Whether the gear still reports an erasure that runs. */
+  readonly getErasing: () => Promise<ErasingResult>;
 }
 
 export const MEMORY_FACTS_CHANNEL = 'memory:facts';
 export const MEMORY_VERSION_CHANNEL = 'memory:version';
 export const MEMORY_DELETE_CHANNEL = 'memory:delete';
+export const MEMORY_ERASE_CHANNEL = 'memory:erase';
+export const MEMORY_ERASING_CHANNEL = 'memory:erasing';
 
 /** What the app says when it cannot reach the gear; fixed texts that never hold an answer. */
 export const reasonAgentNotRunning = 'the agent is not running';

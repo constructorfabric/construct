@@ -20,6 +20,7 @@ const known = new Map<string, ReasonText>(
     'empty message': { key: 'ChatReason.Empty', settings: false },
     'unknown conversation': { key: 'ChatReason.UnknownConversation', settings: false },
     'request too large': { key: 'ChatReason.RequestTooLarge', settings: false },
+    'cannot delete': { key: 'ChatReason.CannotDelete', settings: false },
     'agent not running': { key: 'ChatReason.AgentAbsent', settings: false },
   }),
 );

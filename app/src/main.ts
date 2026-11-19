@@ -47,6 +47,8 @@ import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL } from './external';
 import { createMemoryHandlers } from './memory-calls';
 import {
   MEMORY_DELETE_CHANNEL,
+  MEMORY_ERASE_CHANNEL,
+  MEMORY_ERASING_CHANNEL,
   MEMORY_FACTS_CHANNEL,
   MEMORY_VERSION_CHANNEL,
 } from './memory-protocol';
@@ -209,6 +211,8 @@ function startApp(): void {
     ipcMain.handle(MEMORY_FACTS_CHANNEL, () => memory.facts());
     ipcMain.handle(MEMORY_VERSION_CHANNEL, () => memory.version());
     ipcMain.handle(MEMORY_DELETE_CHANNEL, (_event, factId: unknown) => memory.remove(factId));
+    ipcMain.handle(MEMORY_ERASE_CHANNEL, () => memory.erase());
+    ipcMain.handle(MEMORY_ERASING_CHANNEL, () => memory.erasing());
     const setup = createDashboardSetupHandlers({ env: process.env, platform: process.platform });
     ipcMain.handle(SETUP_START_CHANNEL, () => setup.start());
     ipcMain.handle(SETUP_STATUS_CHANNEL, () => setup.status());

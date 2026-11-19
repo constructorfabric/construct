@@ -8,7 +8,7 @@ import {
   openApp,
   windowText,
 } from './fixtures';
-import { ask, assistant, configure, input, test, toolLines } from './chat-helpers';
+import { ask, assistant, configure, input, rows, test, toolLines } from './chat-helpers';
 import { closedPort, goodKey, goodModel } from './provider';
 import { screenshotBothThemes } from './screenshots';
 
@@ -20,7 +20,6 @@ const turns = (page: Page) => page.locator('[data-role]');
 /** The role of each turn and tool line of the thread, in the order it is shown. */
 const roles = (page: Page) =>
   turns(page).evaluateAll((all) => all.map((element) => element.getAttribute('data-role')));
-const rows = (page: Page) => page.locator('#chat-conversations li');
 
 async function atBottom(page: Page): Promise<boolean> {
   return page.locator('#chat-thread').evaluate((element) => {
@@ -250,14 +249,20 @@ test('New chat, delete and Delete all work, and the newest conversation is on to
   // The conversation that was open is gone, so the page is a new chat.
   await expect(page.locator('#chat-empty')).toBeVisible();
 
+  // Delete all is not in the sidebar: it is in Settings, under "Your data".
+  await expect(page.locator('#chat-delete-all')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.locator('#chat-delete-all').click();
   await expect(page.getByRole('alertdialog', { name: 'Delete all conversations?' })).toBeVisible();
   await page.locator('#chat-delete-all-cancel').click();
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
   await expect(rows(page)).toHaveCount(2);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.locator('#chat-delete-all').click();
   await page.locator('#chat-delete-all-confirm').click();
+  await expect(page.locator('#chat-delete-all')).toBeDisabled();
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
   await expect(rows(page)).toHaveCount(0);
-  await expect(page.locator('#chat-delete-all')).toHaveCount(0);
 });
 
 test('a wrong key shows its reason within 15 seconds', async ({ page, provider }) => {
@@ -456,10 +461,7 @@ test('an example question is sent by a click', async ({ page, provider }) => {
   await expect(page.locator('#chat-empty')).toHaveCount(0);
 });
 
-test('New chat, open, delete and Delete all are off while an answer runs', async ({
-  page,
-  provider,
-}) => {
+test('New chat, open and delete are off while an answer runs', async ({ page, provider }) => {
   provider.script = { chunks: ['First answer.'], pauseMs: 0 };
   await configure(page, { address: provider.url });
   await ask(page, 'first');
@@ -471,7 +473,6 @@ test('New chat, open, delete and Delete all are off while an answer runs', async
   await expect(assistant(page).last()).toContainText('Part');
   const controls = [
     page.locator('#chat-new'),
-    page.locator('#chat-delete-all'),
     rows(page).first().getByRole('button').first(),
     rows(page).first().getByRole('button').last(),
   ];

@@ -1,24 +1,11 @@
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-  Button,
-  SidebarGroup,
-  SidebarGroupContent,
-  Text,
-} from '@gears-frontx/ui-kit';
+import { Button, SidebarGroup, SidebarGroupContent, Text } from '@gears-frontx/ui-kit';
 import { Plus, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { t } from '../translation';
 import styles from './app.module.css';
 import type { Chat } from './useChat';
 
-/** The sidebar part of the chat page: New chat, the conversations, and Delete all. */
+/** The sidebar part of the chat page: New chat and the conversations. */
 export function ConversationList({ chat }: { readonly chat: Chat }): ReactNode {
   const { conversations, active, running, notice } = chat.state;
 
@@ -67,35 +54,6 @@ export function ConversationList({ chat }: { readonly chat: Chat }): ReactNode {
           <Text id="chat-notice" tone="muted" role="alert" className={styles.notice}>
             {t('ConversationList.Notice', { reason: notice })}
           </Text>
-        )}
-        {conversations.length === 0 ? null : (
-          <AlertDialog>
-            <AlertDialogTrigger
-              render={
-                <Button id="chat-delete-all" variant="ghost" size="sm" disabled={running}>
-                  {t('ConversationList.DeleteAll')}
-                </Button>
-              }
-            />
-            <AlertDialogContent size="sm">
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t('ConversationList.ConfirmTitle')}</AlertDialogTitle>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel id="chat-delete-all-cancel">
-                  {t('ConversationList.ConfirmNo')}
-                </AlertDialogCancel>
-                <AlertDialogAction
-                  id="chat-delete-all-confirm"
-                  variant="destructive"
-                  disabled={running}
-                  onClick={chat.removeAll}
-                >
-                  {t('ConversationList.ConfirmYes')}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
         )}
       </SidebarGroupContent>
     </SidebarGroup>
