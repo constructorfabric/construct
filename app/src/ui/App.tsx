@@ -13,12 +13,12 @@ import { Activity, Brain, ChartColumn, MessageSquare, Settings } from 'lucide-re
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { summarizeCollection } from '../agent-status';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { ChatPage } from './ChatPage';
 import type { ThreadPosition } from './ChatPage';
 import { AgentStatusLine } from './components/AgentStatusLine';
+import { ConnectorIndicators } from './components/ConnectorIndicators';
 import { MenuItem } from './components/MenuItem';
 import { ConversationList } from './ConversationList';
 import { DashboardPage } from './DashboardPage';
@@ -61,6 +61,8 @@ export function App(): ReactNode {
     status?.state !== 'running' ||
     status.construct === undefined ||
     status.construct.state === 'ready';
+  // Kept here: a poll that fails drops the group, and it must come back as the person left it.
+  const [collectionOpen, setCollectionOpen] = useState(true);
   const [needsMove, setNeedsMove] = useState(false);
   useEffect(() => {
     void window.constructAgent.getNeedsMove().then(setNeedsMove);
@@ -90,14 +92,14 @@ export function App(): ReactNode {
           {page === 'chat' ? <ConversationList chat={chat} /> : null}
         </SidebarContent>
         <SidebarFooter>
-          <AgentStatusLine
-            state={state}
-            collection={
-              status?.state === 'running'
-                ? summarizeCollection(status.connectors, Date.now())
-                : undefined
-            }
-          />
+          <AgentStatusLine state={state} />
+          {status?.state === 'running' && status.connectors !== undefined ? (
+            <ConnectorIndicators
+              connectors={status.connectors}
+              open={collectionOpen}
+              onOpenChange={setCollectionOpen}
+            />
+          ) : null}
         </SidebarFooter>
       </Sidebar>
       <SidebarInset

@@ -398,7 +398,7 @@ function secondsAgo(seconds: number): string {
   return new Date(Date.now() - seconds * 1000).toISOString();
 }
 
-test('a turn stored a few seconds ago shows collecting in the sidebar and on the page', async ({
+test('a turn stored a few seconds ago shows collecting for the tool in the sidebar and on the page', async ({
   session,
 }) => {
   const reply = runningReply({
@@ -409,7 +409,13 @@ test('a turn stored a few seconds ago shows collecting in the sidebar and on the
   });
   await withStandIn(session, reply, async (page) => {
     await page.getByRole('button', { name: 'Status', exact: true }).click();
-    await expect(page.locator('#sidebar-collection')).toHaveText('collecting');
+    await expect(page.locator('#sidebar-connector-claude-code')).toHaveAttribute(
+      'data-state',
+      'collecting',
+    );
+    await expect(page.locator('#sidebar-connector-claude-code')).toContainText('Claude Code');
+    await expect(page.locator('#sidebar-connector-claude-code-word')).toHaveText('collecting');
+    await expect(page.locator('#sidebar-connector-codex')).toContainText('Codex');
     const claude = page.locator('#connector-claude-code');
     await expect(claude.getByRole('heading', { name: 'Claude Code' })).toBeVisible();
     await expect(page.locator('#connector-claude-code-state')).toHaveText('collecting');
@@ -434,7 +440,16 @@ test('a connector with an error shows failed with its reason, in the sidebar too
   });
   await withStandIn(session, reply, async (page) => {
     await page.getByRole('button', { name: 'Status', exact: true }).click();
-    await expect(page.locator('#sidebar-collection')).toHaveText('collection failed');
+    await expect(page.locator('#sidebar-connector-claude-code')).toHaveAttribute(
+      'data-state',
+      'failed',
+    );
+    await expect(page.locator('#sidebar-connector-claude-code-word')).toHaveText('failed');
+    // One tool failing does not mark the other: each has its own indicator.
+    await expect(page.locator('#sidebar-connector-codex')).toHaveAttribute(
+      'data-state',
+      'collecting',
+    );
     await expect(page.locator('#connector-claude-code-state')).toHaveText('failed');
     await expect(page.locator('#connector-claude-code-state')).toHaveAttribute(
       'data-state',
@@ -447,11 +462,11 @@ test('a connector with an error shows failed with its reason, in the sidebar too
 });
 
 const quietStates = [
-  { name: 'off', sidebar: 'collection off', extra: { off: true } },
-  { name: 'scanning', sidebar: 'scanning', extra: { scanning: true } },
+  { name: 'off', extra: { off: true } },
+  { name: 'scanning', extra: { scanning: true } },
 ] as const;
 
-for (const { name, sidebar, extra } of quietStates) {
+for (const { name, extra } of quietStates) {
   test(`collection that is ${name} shows ${name} in the sidebar and on the page`, async ({
     session,
   }) => {
@@ -463,7 +478,13 @@ for (const { name, sidebar, extra } of quietStates) {
     });
     await withStandIn(session, reply, async (page) => {
       await page.getByRole('button', { name: 'Status', exact: true }).click();
-      await expect(page.locator('#sidebar-collection')).toHaveText(sidebar);
+      for (const tool of ['claude-code', 'codex']) {
+        await expect(page.locator(`#sidebar-connector-${tool}`)).toHaveAttribute(
+          'data-state',
+          name,
+        );
+        await expect(page.locator(`#sidebar-connector-${tool}-word`)).toHaveText(name);
+      }
       await expect(page.locator('#connector-claude-code-state')).toHaveText(name);
       await expect(page.locator('#connector-codex-state')).toHaveText(name);
       await screenshotBothThemes(page, `status-connectors-${name}`);
@@ -492,12 +513,135 @@ test('the last turn reads in minutes, then as a date, and a tool the app has no 
     await expect(page.locator('#connector-another-tool').getByRole('heading')).toHaveText(
       'another-tool',
     );
-    // Nothing was stored within the last minute, so the sidebar says nothing about collection.
-    await expect(page.locator('#sidebar-collection')).toHaveCount(0);
+    await expect(page.locator('#sidebar-connector-another-tool')).toContainText('another-tool');
   });
 });
 
-test('an agent that sends no connectors shows no collection line and no connector cards', async ({
+test('the sidebar group of connector indicators closes and opens, and a closed group counts the broken tools', async ({
+  session,
+}) => {
+  const reply = runningReply({
+    connectors: {
+      codex: { turns: 1, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
+      'claude-code': { turns: 0, skipped: 0, scanning: false, error: 'the files cannot be listed' },
+    },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    const indicator = page.locator('#sidebar-connector-codex');
+    const trigger = page.getByRole('button', { name: /^Collection/ });
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(indicator).toBeVisible();
+    await expect(page.locator('#sidebar-collection-failed')).toHaveCount(0);
+    await trigger.click();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await expect(indicator).toBeHidden();
+    // The broken tool does not vanish with the group.
+    await expect(page.locator('#sidebar-collection-failed')).toHaveText('(1 failed)');
+    await screenshotBothThemes(page, 'status-connectors-group-closed');
+    await trigger.click();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(indicator).toBeVisible();
+    await expect(page.locator('#sidebar-collection-failed')).toHaveCount(0);
+  });
+});
+
+test('collecting and scanning are green, off is grey and failed is red, in the sidebar and on the page', async ({
+  session,
+}) => {
+  const reply = runningReply({
+    connectors: {
+      a: { turns: 1, skipped: 0, scanning: false },
+      b: { turns: 0, skipped: 0, scanning: true },
+      c: { turns: 0, skipped: 0, scanning: false, off: true },
+      d: { turns: 0, skipped: 0, scanning: false, error: 'broken' },
+    },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#sidebar-connector-d')).toBeVisible();
+    // A kit colour as the page computes it: a probe element takes the token as its colour.
+    const token = (property: 'color' | 'background-color', name: string) =>
+      page.evaluate(
+        ([prop, variable]) => {
+          const probe = document.createElement('span');
+          probe.style.setProperty(prop, `var(${variable})`);
+          document.body.append(probe);
+          const value = getComputedStyle(probe).getPropertyValue(prop);
+          probe.remove();
+          return value;
+        },
+        [property, name] as const,
+      );
+    const computed = (selector: string, property: 'color' | 'background-color') =>
+      page
+        .locator(selector)
+        .evaluate(
+          (element, prop) =>
+            getComputedStyle(element)[prop === 'color' ? 'color' : 'backgroundColor'],
+          property,
+        );
+    const word = {
+      green: await token('color', '--success-foreground'),
+      grey: await token('color', '--muted-foreground'),
+      red: await token('color', '--danger-foreground'),
+    };
+    const badge = {
+      green: await token('background-color', '--success-soft'),
+      grey: await token('background-color', '--secondary'),
+      red: await token('background-color', '--danger-soft'),
+    };
+    expect(new Set(Object.values(word)).size).toBe(3);
+    expect(new Set(Object.values(badge)).size).toBe(3);
+    const expected = { a: 'green', b: 'green', c: 'grey', d: 'red' } as const;
+    for (const [tool, colour] of Object.entries(expected)) {
+      expect(await computed(`#sidebar-connector-${tool}-word`, 'color')).toBe(word[colour]);
+      expect(await computed(`#connector-${tool}-state`, 'background-color')).toBe(badge[colour]);
+    }
+  });
+});
+
+test('a group the person closed stays closed after the agent stops answering and answers again', async ({
+  session,
+}) => {
+  const running = runningReply({
+    connectors: { codex: { turns: 1, skipped: 0, scanning: false } },
+  });
+  let answering = true;
+  await withStandIn(
+    session,
+    () => (answering ? running : '{"status":"confused"}'),
+    async (page) => {
+      await page.getByRole('button', { name: 'Status', exact: true }).click();
+      const trigger = page.getByRole('button', { name: /^Collection/ });
+      await trigger.click();
+      await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      answering = false;
+      // The wrong answer drops the group altogether.
+      await expect(page.locator('#agent-status')).toHaveText('unknown', {
+        timeout: refreshDeadlineMs,
+      });
+      await expect(page.locator('#sidebar-collection')).toHaveCount(0);
+      answering = true;
+      await expect(page.locator('#agent-status')).toHaveText('running', {
+        timeout: refreshDeadlineMs,
+      });
+      await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      await expect(page.locator('#sidebar-connector-codex')).toBeHidden();
+    },
+  );
+});
+
+test('an agent that sends an empty list of connectors shows no group', async ({ session }) => {
+  await withStandIn(session, runningReply({ connectors: {} }), async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#agent-status')).toHaveText('running');
+    await expect(page.locator('#sidebar-collection')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Collection/ })).toHaveCount(0);
+  });
+});
+
+test('an agent that sends no connectors shows no collection group and no connector cards', async ({
   session,
 }) => {
   await withStandIn(session, runningReply({}), async (page) => {
