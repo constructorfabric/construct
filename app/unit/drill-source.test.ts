@@ -35,4 +35,36 @@ describe('drillSource', () => {
     const chart: Widget = { id: 'per-day', kind: 'bars_per_day', position };
     expect(drillSource(chart, [day], 'own', '2026-11-16')).not.toHaveProperty('filter');
   });
+
+  it('asks for a bar of the time on screen as a day, with no sessions', () => {
+    const chart: Widget = {
+      id: 'screen-per-day',
+      kind: 'bars_per_day',
+      source: 'on_screen',
+      filter: { projects: ['billing'] },
+      position,
+    };
+    expect(drillSource(chart, [day], 'own', '2026-11-16', 'on_screen')).toEqual({
+      days: [day],
+      group: '2026-11-16',
+      source: 'on_screen',
+      groupBy: 'day',
+      filter: { projects: ['billing'] },
+    });
+  });
+
+  it('asks for a row of a table of the time on screen by the widget itself', () => {
+    const table: Widget = {
+      id: 'screen-by-app',
+      kind: 'table',
+      groupBy: 'app',
+      source: 'on_screen',
+      position,
+    };
+    expect(drillSource(table, [day], 'own', 'Safari', 'on_screen')).toEqual({
+      days: [day],
+      group: 'Safari',
+      widget: 'screen-by-app',
+    });
+  });
 });
