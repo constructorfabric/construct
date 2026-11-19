@@ -15,6 +15,7 @@ import type { ReactNode } from 'react';
 import type { AgentStatus, Part } from '../agent-status';
 import { t } from '../translation';
 import styles from './app.module.css';
+import { useDelayedLoader } from './components/useDelayedLoader';
 import { tones } from './state-tones';
 
 const loginVariants = {
@@ -61,7 +62,15 @@ function PartCard({
   );
 }
 
-export function StatusPage({ status }: { readonly status: AgentStatus | null }): ReactNode {
+export function StatusPage({ status: answer }: { readonly status: AgentStatus | null }): ReactNode {
+  // The page waits for the first answer: nothing for a quarter of a second, then two skeleton
+  // lines for at least half a second, then the status. Any answer but `running`, and a `running` one
+  // with a part that failed, is a failure and shows at once.
+  const skeletonShown = useDelayedLoader(answer === null);
+  const failedPart =
+    answer?.state === 'running' &&
+    (answer.database?.state === 'failed' || answer.construct?.state === 'failed');
+  const status = skeletonShown && answer?.state === 'running' && !failedPart ? null : answer;
   return (
     <>
       <Heading typography="display" render={<h1 />}>
@@ -81,10 +90,15 @@ export function StatusPage({ status }: { readonly status: AgentStatus | null }):
         </CardHeader>
         <CardContent>
           {status === null ? (
-            <div className={styles.skeleton}>
-              <VisuallyHidden>{t('StatusPage.Checking')}</VisuallyHidden>
-              <Skeleton className={styles.line} />
-              <Skeleton className={styles.line} />
+            // The card keeps the space of the skeleton while the skeleton waits to show.
+            <div className={styles.skeletonSpace}>
+              {skeletonShown && (
+                <div id="status-checking" className={styles.skeleton}>
+                  <VisuallyHidden>{t('StatusPage.Checking')}</VisuallyHidden>
+                  <Skeleton className={styles.line} />
+                  <Skeleton className={styles.line} />
+                </div>
+              )}
             </div>
           ) : (
             <>

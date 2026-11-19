@@ -16,6 +16,7 @@ import type { ReactNode } from 'react';
 import type { DashboardDocument, DocumentProblem, ProjectChange } from '../dashboard-protocol';
 import { t } from '../translation';
 import styles from './app.module.css';
+import { DelayedLoader } from './components/DelayedLoader';
 import { cancelRowsBack, expectRowsBack } from './focus-after-show';
 import { DashboardGrid } from './DashboardGrid';
 import { DashboardWidget } from './DashboardWidgets';
@@ -175,6 +176,11 @@ function Widgets({
   );
 }
 
+/**
+ * What the page shows under its toolbar: the failure, else the delayed loader of the first wait
+ * (it stays on show while the agent reads the history), else the page. A page that has been shown
+ * or has failed and is counted again gives way to the loader at once.
+ */
 function Body({
   state,
   day,
@@ -188,8 +194,12 @@ function Body({
   readonly onChange: (changes: readonly ProjectChange[]) => void;
   readonly onShow: ShowHidden;
 }): ReactNode {
-  if (state.kind === 'reading') {
-    return <Spinner id="dashboard-reading" label={t('DashboardPage.Reading')} />;
+  // Whether the page has answered once, with the page or with a failure. It is set while
+  // rendering, as React allows for state of the component's own, so that the render that sees
+  // the change already knows it.
+  const [answered, setAnswered] = useState(false);
+  if (state.kind !== 'reading' && !answered) {
+    setAnswered(true);
   }
   if (state.kind === 'failed') {
     return (
@@ -198,6 +208,38 @@ function Body({
       </Alert>
     );
   }
+  const reading = t('DashboardPage.Reading');
+  if (state.kind === 'reading' && answered) {
+    return <Spinner id="dashboard-reading" label={reading} />;
+  }
+  return (
+    <DelayedLoader waiting={state.kind === 'reading'} id="dashboard-reading" label={reading}>
+      {state.kind === 'ready' && (
+        <ReadyBody
+          state={state}
+          day={day}
+          onOpenSettings={onOpenSettings}
+          onChange={onChange}
+          onShow={onShow}
+        />
+      )}
+    </DelayedLoader>
+  );
+}
+
+function ReadyBody({
+  state,
+  day,
+  onOpenSettings,
+  onChange,
+  onShow,
+}: {
+  readonly state: Extract<DashboardState, { readonly kind: 'ready' }>;
+  readonly day: Date;
+  readonly onOpenSettings: () => void;
+  readonly onChange: (changes: readonly ProjectChange[]) => void;
+  readonly onShow: ShowHidden;
+}): ReactNode {
   const { document, problem, numbers, collecting } = state;
   if (document === null) {
     return problem === null ? (

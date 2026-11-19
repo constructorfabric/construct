@@ -31,6 +31,7 @@ import { t } from '../translation';
 import styles from './app.module.css';
 import { reasonText } from './chat-reasons';
 import type { Failure } from './chat-state';
+import { useDelayedLoader } from './components/useDelayedLoader';
 import { Markdown } from './markdown';
 import type { Chat } from './useChat';
 
@@ -58,6 +59,11 @@ export function ChatPage({
   readonly onOpenSettings: () => void;
 }): ReactNode {
   const { messages, running, streaming, failure, loading, loadError, active } = chat.state;
+  // A conversation that reads quickly shows no loader. Each conversation has its own wait, so
+  // opening the next one never takes over the loader of the last. The messages are never held
+  // back for the loader; a read that failed or an answer that is on its way ends it.
+  const delayed = useDelayedLoader(loading, active);
+  const showLoader = delayed && loadError === null && !running;
   const last = messages.at(-1);
   const noModelFailure = failure?.kind === 'reason' && failure.reason === 'no model';
   const empty = messages.length === 0 && !loading && loadError === null && failure === null;
@@ -70,8 +76,11 @@ export function ChatPage({
       node: <Spinner id="chat-waiting" aria-label={t('Thread.Waiting')} />,
     });
   }
-  if (loading) {
-    trailing.push({ id: 'loading', node: <Spinner aria-label={t('ChatPage.Loading')} /> });
+  if (showLoader) {
+    trailing.push({
+      id: 'loading',
+      node: <Spinner id="chat-loading" aria-label={t('ChatPage.Loading')} />,
+    });
   }
   if (loadError !== null) {
     trailing.push({

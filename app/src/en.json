@@ -239,7 +239,6 @@
   "Size.Kilobytes": "{{size}} KB",
   "Size.Megabytes": "{{size}} MB",
   "DashboardSetup.Title": "Dashboard",
-  "DashboardSetup.Loading": "Loading the state of the dashboard setup",
   "DashboardSetup.Unavailable": "The dashboard setup is not available: {{reason}}",
   "DashboardSetup.Intro": "Construct reads your recent coding sessions and builds your dashboard: your trackers, your projects and the time you spent on them.",
   "DashboardSetup.Hint": "The last {{days}} days hold {{sessions}} sessions with activity.",

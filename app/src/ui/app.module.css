@@ -34,6 +34,11 @@
   height: var(--space-4);
 }
 
+/* Two skeleton lines and the gap between them: what the card keeps while the skeleton waits. */
+.skeletonSpace {
+  min-height: calc(var(--space-4) * 2 + var(--space-2));
+}
+
 .detail {
   margin: 0;
   overflow-wrap: anywhere;
