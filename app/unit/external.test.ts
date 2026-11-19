@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { webAddress } from '../src/external';
+import { systemPaneAddress, webAddress } from '../src/external';
 
 describe('webAddress', () => {
   it('accepts https and http addresses', () => {
@@ -16,6 +16,7 @@ describe('webAddress', () => {
       'mailto:someone@example.com',
       'ftp://example.com/file',
       'custom-app://open',
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
     ]) {
       expect(webAddress(raw), raw).toBeNull();
     }
@@ -30,6 +31,40 @@ describe('webAddress', () => {
   it('refuses what is not text', () => {
     for (const raw of [undefined, null, 42, {}, ['https://example.com']]) {
       expect(webAddress(raw)).toBeNull();
+    }
+  });
+});
+
+describe('systemPaneAddress', () => {
+  it.each([
+    ['accessibility', 'Privacy_Accessibility'],
+    ['screen_recording', 'Privacy_ScreenCapture'],
+    ['automation', 'Privacy_Automation'],
+    ['input_monitoring', 'Privacy_ListenEvent'],
+  ])('gives the whole address of the %s pane', (name, pane) => {
+    expect(systemPaneAddress(name)).toBe(
+      `x-apple.systempreferences:com.apple.preference.security?${pane}`,
+    );
+  });
+
+  it('refuses every name that is not on the list, and every address', () => {
+    for (const raw of [
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+      'https://example.com',
+      'file:///etc/hosts',
+      '',
+      'Accessibility',
+      'toString',
+      '__proto__',
+      'constructor',
+    ]) {
+      expect(systemPaneAddress(raw), raw).toBeNull();
+    }
+  });
+
+  it('refuses what is not text', () => {
+    for (const raw of [undefined, null, 1, {}, ['accessibility']]) {
+      expect(systemPaneAddress(raw)).toBeNull();
     }
   });
 });

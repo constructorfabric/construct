@@ -114,6 +114,41 @@ describe('parseStatusReply', () => {
     },
   );
 
+  it('reads the grants of the screen row and skips what it does not know', () => {
+    const line = JSON.stringify({
+      status: 'running',
+      version: '0.1.0',
+      pid: 1,
+      screen: {
+        state: 'needs_permission',
+        grants: [
+          { name: 'accessibility', state: 'granted' },
+          { name: 'automation', state: 'browser_not_running' },
+          { name: 'screen_recording', state: 'not_asked' },
+          { name: 'something_new', state: 'granted' },
+          { name: 'input_monitoring', state: 'maybe' },
+          'junk',
+        ],
+      },
+    });
+    expect(parseStatusReply(line)).toMatchObject({
+      grants: [
+        { name: 'accessibility', state: 'granted' },
+        { name: 'automation', state: 'browser_not_running' },
+        { name: 'screen_recording', state: 'not_asked' },
+      ],
+    });
+  });
+
+  it.each([
+    ['no screen row', ''],
+    ['a screen row with no grants', ',"screen":{"state":"off"}'],
+    ['a screen row that is not an object', ',"screen":3'],
+  ])('has no grants with %s', (_name, extra) => {
+    const line = `{"status":"running","version":"0.1.0","pid":1${extra}}`;
+    expect(parseStatusReply(line)).not.toHaveProperty('grants');
+  });
+
   it.each([
     ['not JSON', 'running', /JSON/],
     ['not an object', '"running"', /not a JSON object/],
