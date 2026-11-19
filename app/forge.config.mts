@@ -5,6 +5,7 @@ import { MakerZIP } from '@electron-forge/maker-zip';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import type { ForgeConfig } from '@electron-forge/shared-types';
+import { macInfoPlist } from './mac-bundle.mjs';
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -12,6 +13,8 @@ const config: ForgeConfig = {
     appBundleId: 'cf.construct.browser',
     // The name of the program in the package: /usr/bin/construct-browser, not the product name with a space.
     executableName: 'construct-browser',
+    // Only macOS reads these keys; the other systems ignore them.
+    extendInfo: macInfoPlist,
     // The agent is its own program: it goes next to the app, outside the asar archive,
     // and the app finds it in `process.resourcesPath`.
     extraResource: ['../target/release/construct-agent'],
