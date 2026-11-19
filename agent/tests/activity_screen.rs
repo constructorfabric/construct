@@ -6,10 +6,12 @@
 #![allow(clippy::unwrap_used)]
 
 use std::fs;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use connectors::{Author, Mark, Record, Role, Turn};
-use construct_agent::activity::Store;
 use construct_agent::activity::screen_time::Block;
+use construct_agent::activity::{Feed, Readiness, Store};
 use construct_agent::records::{FileSink, Sink};
 use construct_agent::screen::{App, Line, Reading, Tab};
 
@@ -324,7 +326,8 @@ async fn the_store_holds_no_title_and_no_address() {
     // The tables of the store have no column for a title or an address.
     let columns: Vec<(String,)> = sqlx::query_as(
         "select column_name::text from information_schema.columns
-         where table_schema = 'activity' and table_name = 'screen'",
+         where table_schema = 'activity' and table_name = 'screen'
+         order by ordinal_position",
     )
     .fetch_all(&mut conn)
     .await
@@ -350,6 +353,132 @@ async fn a_rebuild_without_screen_files_clears_the_blocks() {
         .await
         .unwrap();
     assert!(blocks(&store).await.is_empty());
+    store.close().await;
+    stand.finish().await;
+}
+
+/// Starts `feed` on `store` over the files under `sink_dir`.
+fn run_feed(feed: &Feed, store: &Store, sink_dir: &std::path::Path) -> tokio::task::JoinHandle<()> {
+    let (feed, store, dir) = (feed.clone(), store.clone(), sink_dir.to_owned());
+    tokio::spawn(async move { feed.run(&store, &FileSink::new(&dir)).await })
+}
+
+async fn wait_for(what: &str, mut done: impl AsyncFnMut() -> bool) {
+    let start = Instant::now();
+    while !done().await {
+        assert!(start.elapsed() < Duration::from_secs(30), "{what}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn a_run_the_sampler_tells_the_feed_of_reaches_the_store() {
+    let stand = Stand::new("scr-observer").await;
+    let store = Arc::new(stand.store().await);
+    let feed = Feed::new();
+    let task = run_feed(&feed, &store, &stand.root.join("none"));
+    wait_for("the feed was not ready", async || {
+        feed.readiness() == Readiness::Ready
+    })
+    .await;
+    let observer = feed.screen_observer();
+    let first = line(
+        "2026-11-11T10:00:00Z",
+        "2026-11-11T10:00:05Z",
+        2,
+        terminal(),
+    );
+    observer(&first);
+    wait_for("the run did not reach the store", async || {
+        blocks(&store).await.iter().map(|b| b.seconds).eq([10])
+    })
+    .await;
+    // The same run, grown: one block with the new time.
+    observer(&line(
+        "2026-11-11T10:00:00Z",
+        "2026-11-11T10:00:25Z",
+        6,
+        terminal(),
+    ));
+    wait_for("the grown run did not reach the store", async || {
+        blocks(&store).await.iter().map(|b| b.seconds).eq([30])
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn a_run_stored_before_its_project_is_named_again_when_the_project_appears() {
+    let stand = Stand::new("scr-late-project").await;
+    let store = Arc::new(stand.store().await);
+    // The day file holds a run that names `construct`; no session of that project exists yet.
+    let dir = stand.root.join("late");
+    let run = line(
+        "2026-11-11T10:00:00Z",
+        "2026-11-11T10:00:55Z",
+        12,
+        browser(),
+    );
+    let screen_dir = dir.join("records/screen");
+    fs::create_dir_all(&screen_dir).unwrap();
+    fs::write(
+        screen_dir.join("2026-11-11.jsonl"),
+        format!("{}\n", serde_json::to_string(&run).unwrap()),
+    )
+    .unwrap();
+    let feed = Feed::new();
+    let task = run_feed(&feed, &store, &dir);
+    wait_for("the first build did not finish", async || {
+        blocks(&store).await.len() == 1
+    })
+    .await;
+    assert_eq!(blocks(&store).await[0].project, "");
+
+    // The session comes: the store says the projects changed, the feed builds again, and the block
+    // is named, as a rebuild of the same files names it.
+    let mut sink = FileSink::new(&dir);
+    let record = session_records().remove(0);
+    sink.append(&record).unwrap();
+    feed.push(&record);
+    wait_for("the block was not named again", async || {
+        blocks(&store).await[0].project == "construct"
+    })
+    .await;
+    let stepped = blocks(&store).await;
+    store.rebuild(&FileSink::new(&dir)).await.unwrap();
+    assert_eq!(blocks(&store).await, stepped);
+    task.abort();
+    let _ = task.await;
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn applying_a_record_says_whether_the_projects_changed() {
+    let stand = Stand::new("scr-changed").await;
+    let store = stand.store().await;
+    let records = session_records();
+    // Without blocks there is nothing to name again, so a new project says nothing.
+    assert!(!store.apply(&records[0]).await.unwrap());
+    store
+        .apply_screen(&line(
+            "2026-11-11T10:00:00Z",
+            "2026-11-11T10:00:55Z",
+            12,
+            terminal(),
+        ))
+        .await
+        .unwrap();
+    // With a block, a new project says so, and a record of a known project does not.
+    assert!(store.apply(&records[1]).await.unwrap());
+    assert!(!store.apply(&records[0]).await.unwrap());
+    assert!(!store.apply(&records[1]).await.unwrap());
     store.close().await;
     stand.finish().await;
 }

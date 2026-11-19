@@ -12,7 +12,10 @@
 //! project and the ticket the rules in [`screen_time`] give: never a title or an address. A run
 //! of screen samples is one block, keyed by its first sample, and the same run again, or a shorter
 //! earlier state of it, changes nothing. A block names the project the sessions of the store
-//! know when it is stored, and a rebuild reads the sessions first.
+//! know when it is stored, and the title it was read from is not kept, so a block cannot be
+//! named again later. When a record changes the projects the store knows, [`Store::apply`] says
+//! so, and the caller builds the store again from the files (the feed does): a rebuild reads
+//! the sessions first, so every block is named by all of them.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -204,15 +207,22 @@ impl Store {
 
     /// Applies one record. The same record twice changes nothing. Records that carry no
     /// activity (tool calls and results of a chat) and records without a usable time are ignored.
+    /// Returns true when the record changed the projects the store knows while it holds blocks of
+    /// the time on screen: they were named without it, and only [`Store::rebuild`] names them
+    /// again.
     ///
     /// # Errors
     /// Fails when a statement is refused.
-    pub async fn apply(&self, record: &Record) -> Result<(), Error> {
+    pub async fn apply(&self, record: &Record) -> Result<bool, Error> {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
         lock_store(&mut tx).await?;
         let findings = self.findings();
+        let before = project_folders(&mut tx).await?;
         apply_in(&mut tx, record, &findings).await?;
-        tx.commit().await.map_err(|e| err("commit", e))
+        // Only blocks that were named can be named wrong: a store with none needs no build.
+        let changed = project_folders(&mut tx).await? != before && has_blocks(&mut tx).await?;
+        tx.commit().await.map_err(|e| err("commit", e))?;
+        Ok(changed)
     }
 
     /// Applies one run of screen samples. The same run twice changes nothing.
@@ -662,13 +672,25 @@ async fn apply_in(
     Ok(true)
 }
 
+async fn has_blocks(conn: &mut PgConnection) -> Result<bool, Error> {
+    sqlx::query_scalar("select exists(select 1 from activity.screen)")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| err("look for screen blocks", e))
+}
+
+/// The project of every session, each once, in order.
+async fn project_folders(conn: &mut PgConnection) -> Result<Vec<String>, Error> {
+    sqlx::query_scalar("select distinct project from activity.sessions order by project")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| err("read the projects", e))
+}
+
 /// Stores the block of a run of screen samples. A run that counts nothing is not stored. A run
 /// seen again keeps the most time any state of it had, and the rest of the block is the same.
 async fn apply_screen_in(conn: &mut PgConnection, line: &Line) -> Result<(), Error> {
-    let folders: Vec<String> = sqlx::query_scalar("select distinct project from activity.sessions")
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| err("read the projects", e))?;
+    let folders = project_folders(conn).await?;
     let mut names: Vec<String> = folders
         .iter()
         .map(|f| screen_time::project_name(f).to_owned())

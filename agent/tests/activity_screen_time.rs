@@ -357,10 +357,10 @@ fn a_project_inside_a_longer_word_is_not_found() {
 }
 
 #[test]
-fn a_very_short_project_name_is_never_matched() {
+fn a_short_project_name_is_matched_like_any_other() {
     assert_eq!(
         project(titled("go to ui", "t", "https://example.com/"), &["ui"]),
-        ""
+        "ui"
     );
 }
 

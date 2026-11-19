@@ -31,8 +31,6 @@ use crate::screen::{Line, Tab};
 pub const SAMPLE_SECONDS: u64 = 5;
 /// The person is away when the last input is older than this many seconds.
 pub const AWAY_AFTER: u64 = 120;
-/// Projects with a shorter name are never matched: such a word is found everywhere.
-pub const MIN_PROJECT_NAME: usize = 3;
 
 /// The bundle ids of the call applications, in lower case. A call window of one of them in front
 /// is a call.
@@ -131,7 +129,6 @@ fn names(text: &str, name: &str) -> bool {
 fn project_in(places: &[&str], projects: &[String]) -> Option<String> {
     let mut found: Vec<&String> = projects
         .iter()
-        .filter(|p| p.chars().count() >= MIN_PROJECT_NAME)
         .filter(|p| places.iter().any(|text| names(text, p)))
         .collect();
     found.sort();
@@ -233,7 +230,8 @@ pub fn without_overlap(blocks: Vec<Block>) -> Vec<Block> {
         .collect()
 }
 
-/// The name a project goes by: the last part of its folder.
+/// The name a project goes by: the last part of its folder, literally. The label a report shows
+/// for two projects of one name has more parts of the path, which no title holds as one word.
 #[must_use]
 pub fn project_name(folder: &str) -> &str {
     folder

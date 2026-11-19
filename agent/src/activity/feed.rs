@@ -242,6 +242,10 @@ impl Feed {
                     changed.len()
                 ));
                 watch.seen = Some(text);
+                // The projects may have changed, and the time on screen is named by them.
+                if !changed.is_empty() {
+                    self.mark_stale();
+                }
             }
             // The next look tries again.
             Err(e) => Self::log(&format!("setup findings not applied: {e}")),
@@ -463,14 +467,17 @@ impl Feed {
         }
     }
 
-    /// Applies one record, trying again after a pause; false when it keeps failing.
-    async fn apply(&self, store: &Store, record: &Record) -> bool {
+    /// Runs a write on the store, trying again after a pause; `None` when it keeps failing.
+    async fn retry<T, Fut>(&self, what: &str, mut write: impl FnMut() -> Fut) -> Option<T>
+    where
+        Fut: std::future::Future<Output = Result<T, crate::database::Error>>,
+    {
         let mut pause = FIRST_RETRY;
         for attempt in 1..=MAX_ATTEMPTS {
-            match store.apply(record).await {
-                Ok(()) => {
+            match write().await {
+                Ok(done) => {
                     self.set_error(None);
-                    return true;
+                    return Some(done);
                 }
                 Err(e) => {
                     self.0.failed_writes.fetch_add(1, Ordering::Relaxed);
@@ -482,37 +489,30 @@ impl Feed {
                         tokio::time::sleep(pause).await;
                         pause *= 2;
                     } else {
-                        Self::log("giving up on a record, building again from the files");
+                        Self::log(&format!(
+                            "giving up on {what}, building again from the files"
+                        ));
                     }
                 }
             }
         }
-        false
+        None
     }
 
-    /// Applies one run of screen samples, trying again after a pause; false when it keeps failing.
+    /// Applies one record; false when the store needs a build instead: the record keeps failing,
+    /// or it changed the projects the store knows, which the time on screen is named by.
+    async fn apply(&self, store: &Store, record: &Record) -> bool {
+        matches!(
+            self.retry("a record", || store.apply(record)).await,
+            Some(false)
+        )
+    }
+
+    /// Applies one run of screen samples; false when it keeps failing.
     async fn apply_run(&self, store: &Store, line: &Line) -> bool {
-        let mut pause = FIRST_RETRY;
-        for attempt in 1..=MAX_ATTEMPTS {
-            match store.apply_screen(line).await {
-                Ok(()) => {
-                    self.set_error(None);
-                    return true;
-                }
-                Err(e) => {
-                    self.0.failed_writes.fetch_add(1, Ordering::Relaxed);
-                    self.set_error(Some(e.to_string()));
-                    Self::log(&format!(
-                        "screen write failed (try {attempt} of {MAX_ATTEMPTS}): {e}"
-                    ));
-                    if attempt < MAX_ATTEMPTS {
-                        tokio::time::sleep(pause).await;
-                        pause *= 2;
-                    }
-                }
-            }
-        }
-        false
+        self.retry("a run of screen samples", || store.apply_screen(line))
+            .await
+            .is_some()
     }
 
     /// Builds `store` from `files`, then applies every record pushed to the feed, for as long as
@@ -657,6 +657,47 @@ mod tests {
         observer(&run("2026-11-11T10:00:05Z", 2));
         observer(&run("2026-11-11T10:00:10Z", 3));
         assert!(matches!(feed.next(), Next::Run(line) if line.samples == 3));
+        assert!(matches!(feed.next(), Next::Empty));
+    }
+
+    #[test]
+    fn records_come_before_runs_and_too_many_runs_ask_for_a_build() {
+        let run = |n: usize| Line {
+            time: format!(
+                "2026-11-11T{:02}:{:02}:{:02}Z",
+                n / 3600,
+                n / 60 % 60,
+                n % 60
+            ),
+            until: String::new(),
+            samples: 1,
+            reading: crate::screen::Reading::default(),
+        };
+        let feed = Feed::new();
+        feed.set(Phase::Ready, None);
+        let _ = feed.next();
+        feed.push_run(&run(0));
+        feed.push(&Record::Mark(connectors::Mark {
+            tool: "t".into(),
+            session: "s".into(),
+            time: "2026-11-11T10:00:00Z".into(),
+            folder: String::new(),
+            branch: String::new(),
+            tools: Vec::new(),
+        }));
+        assert!(matches!(feed.next(), Next::Record(_)));
+        assert!(matches!(feed.next(), Next::Run(_)));
+        // A run that is queued already is replaced, so it does not count against the limit.
+        for n in 0..MAX_QUEUED_RUNS {
+            feed.push_run(&run(n));
+        }
+        feed.push_run(&run(0));
+        assert!(matches!(feed.next(), Next::Run(_)));
+        // Past the limit the store may miss runs: the next step is a build.
+        for n in 0..=MAX_QUEUED_RUNS {
+            feed.push_run(&run(n));
+        }
+        assert!(matches!(feed.next(), Next::Rebuild));
         assert!(matches!(feed.next(), Next::Empty));
     }
 
