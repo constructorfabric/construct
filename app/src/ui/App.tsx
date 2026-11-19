@@ -7,29 +7,36 @@ import {
   SidebarGroupContent,
   SidebarInset,
   SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
   SidebarProvider,
-  StatusDot,
 } from '@gears-frontx/ui-kit';
 import { Activity, Brain, ChartColumn, MessageSquare, Settings } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { ChatPage } from './ChatPage';
 import type { ThreadPosition } from './ChatPage';
+import { AgentStatusLine } from './components/AgentStatusLine';
+import { MenuItem } from './components/MenuItem';
 import { ConversationList } from './ConversationList';
 import { DashboardPage } from './DashboardPage';
 import { MemoryPage } from './MemoryPage';
 import { SettingsPage } from './SettingsPage';
-import { tones } from './state-tones';
 import { StatusPage } from './StatusPage';
 import { useAgentStatus } from './useAgentStatus';
 import { useChat } from './useChat';
 import { useErasing } from './useErasing';
 
 type Page = 'chat' | 'dashboard' | 'memory' | 'status' | 'settings';
+
+const pages = [
+  { page: 'chat', icon: MessageSquare, label: 'App.Chat' },
+  { page: 'dashboard', icon: ChartColumn, label: 'App.Dashboard' },
+  { page: 'memory', icon: Brain, label: 'App.Memory' },
+  { page: 'status', icon: Activity, label: 'App.Status' },
+  { page: 'settings', icon: Settings, label: 'App.Settings' },
+] as const satisfies readonly { page: Page; icon: LucideIcon; label: string }[];
 
 export function App(): ReactNode {
   // A page is a piece of state: the app has no addresses to navigate to.
@@ -67,98 +74,22 @@ export function App(): ReactNode {
           <SidebarGroup>
             <SidebarGroupContent>
               <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'chat'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'chat' ? 'page' : undefined}
-                        onClick={() => setPage('chat')}
-                      />
-                    }
-                  >
-                    <MessageSquare aria-hidden />
-                    <span>{t('App.Chat')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'dashboard'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'dashboard' ? 'page' : undefined}
-                        onClick={() => setPage('dashboard')}
-                      />
-                    }
-                  >
-                    <ChartColumn aria-hidden />
-                    <span>{t('App.Dashboard')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'memory'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'memory' ? 'page' : undefined}
-                        onClick={() => setPage('memory')}
-                      />
-                    }
-                  >
-                    <Brain aria-hidden />
-                    <span>{t('App.Memory')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'status'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'status' ? 'page' : undefined}
-                        onClick={() => setPage('status')}
-                      />
-                    }
-                  >
-                    <Activity aria-hidden />
-                    <span>{t('App.Status')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'settings'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'settings' ? 'page' : undefined}
-                        onClick={() => setPage('settings')}
-                      />
-                    }
-                  >
-                    <Settings aria-hidden />
-                    <span>{t('App.Settings')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
+                {pages.map(({ page: target, icon: Icon, label }) => (
+                  <MenuItem
+                    key={target}
+                    icon={<Icon aria-hidden />}
+                    label={t(label)}
+                    active={page === target}
+                    onSelect={() => setPage(target)}
+                  />
+                ))}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
           {page === 'chat' ? <ConversationList chat={chat} /> : null}
         </SidebarContent>
         <SidebarFooter>
-          <StatusDot
-            id="sidebar-agent-state"
-            data-state={state}
-            tone={tones[state]}
-            label={
-              <>
-                <span>{t('App.AgentState')}</span>{' '}
-                <span id="sidebar-agent-state-word">{state}</span>
-              </>
-            }
-          />
+          <AgentStatusLine state={state} />
         </SidebarFooter>
       </Sidebar>
       <SidebarInset

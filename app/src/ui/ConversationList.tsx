@@ -1,8 +1,10 @@
-import { Button, SidebarGroup, SidebarGroupContent, Text } from '@gears-frontx/ui-kit';
-import { Plus, Trash2 } from 'lucide-react';
+import { SidebarGroup, SidebarGroupContent, SidebarMenu, Text } from '@gears-frontx/ui-kit';
+import { MessageCircle, Plus, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { t } from '../translation';
 import styles from './app.module.css';
+import { ListRow } from './components/ListRow';
+import { MenuItem } from './components/MenuItem';
 import type { Chat } from './useChat';
 
 /** The sidebar part of the chat page: New chat and the conversations. */
@@ -12,44 +14,40 @@ export function ConversationList({ chat }: { readonly chat: Chat }): ReactNode {
   return (
     <SidebarGroup aria-label={t('ConversationList.Title')}>
       <SidebarGroupContent className={styles.conversations}>
-        <Button
-          id="chat-new"
-          variant="outline"
-          icon={<Plus />}
-          disabled={running}
-          onClick={chat.newChat}
-        >
-          {t('ConversationList.New')}
-        </Button>
-        <ul id="chat-conversations" className={styles.conversationItems}>
-          {conversations.map((conversation) => (
-            <li key={conversation.id} className={styles.conversationRow}>
-              <Button
-                className={styles.conversationItem}
-                variant="ghost"
-                aria-current={conversation.id === active ? 'true' : undefined}
+        <SidebarMenu>
+          <MenuItem
+            id="chat-new"
+            icon={<Plus aria-hidden />}
+            label={t('ConversationList.New')}
+            disabled={running}
+            onSelect={chat.newChat}
+          />
+        </SidebarMenu>
+        <SidebarMenu id="chat-conversations">
+          {conversations.map((conversation) => {
+            const title =
+              conversation.title === '' ? t('ConversationList.Untitled') : conversation.title;
+            return (
+              <ListRow
+                key={conversation.id}
+                icon={<MessageCircle aria-hidden />}
+                title={title}
+                active={conversation.id === active}
                 disabled={running}
-                onClick={() => {
+                action={{
+                  label: t('ConversationList.Delete', { title }),
+                  icon: <Trash2 aria-hidden />,
+                  onSelect: () => {
+                    chat.remove(conversation.id);
+                  },
+                }}
+                onSelect={() => {
                   chat.open(conversation.id);
                 }}
-              >
-                <span className={styles.conversationTitle}>
-                  {conversation.title === '' ? t('ConversationList.Untitled') : conversation.title}
-                </span>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                icon={<Trash2 />}
-                aria-label={t('ConversationList.Delete', { title: conversation.title })}
-                disabled={running}
-                onClick={() => {
-                  chat.remove(conversation.id);
-                }}
               />
-            </li>
-          ))}
-        </ul>
+            );
+          })}
+        </SidebarMenu>
         {notice === null ? null : (
           <Text id="chat-notice" tone="muted" role="alert" className={styles.notice}>
             {t('ConversationList.Notice', { reason: notice })}
