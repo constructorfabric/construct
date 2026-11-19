@@ -28,6 +28,8 @@ pub mod follow;
 #[cfg(unix)]
 pub mod host;
 pub mod ipc;
+#[cfg(target_os = "macos")]
+pub mod mac_signals;
 #[cfg(unix)]
 pub mod manage;
 #[cfg(unix)]

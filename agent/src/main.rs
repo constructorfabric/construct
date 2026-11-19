@@ -21,7 +21,7 @@ fn main() -> ExitCode {
         Some("uninstall-service") => uninstall(),
         Some("status") => return status(),
         Some("backfill") => return backfill(&std::env::args().skip(2).collect::<Vec<_>>()),
-        Some("run") => run(),
+        Some("run") => run_in_foreground(),
         Some("-h" | "--help" | "help") => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -38,6 +38,23 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Run the agent. On a Mac the agent runs on a thread of its own and the main thread keeps the
+/// system's run loop going, which is how the program is told what application is in front.
+#[cfg(target_os = "macos")]
+fn run_in_foreground() -> std::io::Result<()> {
+    // The main thread's stack size, which the agent was written for.
+    let worker = std::thread::Builder::new().stack_size(8 << 20).spawn(run)?;
+    construct_agent::mac_signals::run_main_loop_until(|| worker.is_finished());
+    worker
+        .join()
+        .unwrap_or_else(|_| Err(std::io::Error::other("the agent stopped unexpectedly")))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_in_foreground() -> std::io::Result<()> {
+    run()
 }
 
 /// The path of this binary, which the service file must be able to hold.
@@ -142,13 +159,13 @@ fn run() -> std::io::Result<()> {
         render_tool,
     );
     // The screen samples: the sampler runs on a thread of its own and takes none until the person
-    // switches them on. No platform gives the signals yet, so the computer reads as unsupported.
+    // switches them on. Only a Mac gives the signals yet; any other computer reads as unsupported.
     let screen = settings.as_ref().and_then(|settings| {
         construct_agent::records::data_dir().ok().map(|dir| {
             construct_agent::screen::Screen::new(
                 settings.clone(),
                 &dir,
-                std::sync::Arc::new(construct_agent::screen::NoSignals),
+                construct_agent::screen::platform_signals(),
             )
         })
     });
