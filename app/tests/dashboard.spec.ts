@@ -535,6 +535,67 @@ test('the arrows and the date picker change the day the periods are counted from
   });
 });
 
+/** A page of widgets that count a week at the most. */
+const weeklyDocument = gridPlaces([
+  widget('total', 'total', [0, 0, 12, 2]),
+  widget('per-day', 'bars_per_day', [0, 2, 12, 4], { period: 'last_week' }),
+]);
+
+test('with weekly widgets only, the arrows step by a week and the date picker jumps to a week', async ({
+  session,
+}) => {
+  const agent = newAgent({ document: weeklyDocument });
+  await withAgent(session, agent, async (page) => {
+    const today = startOfDay(now);
+    const monday = mondayOf(today);
+    const firstDay = (): string | undefined =>
+      agent.requests.filter((request) => request.widget === 'total').at(-1)?.days[0]?.label;
+    const header = page.locator('#dashboard-period');
+    await expect.poll(firstDay).toBe(dayLabel(monday));
+    await expect(header).toHaveText('Nov 16 – Nov 22, 2026');
+    await expect(page.locator('#dashboard-previous-day')).toHaveCount(0);
+    await expect(page.locator('#dashboard-next-day')).toHaveCount(0);
+
+    await page.locator('#dashboard-previous-week').click();
+    await expect.poll(firstDay).toBe(dayLabel(addDays(monday, -7)));
+    await expect(header).toHaveText('Nov 9 – Nov 15, 2026');
+    await page.locator('#dashboard-next-week').click();
+    await page.locator('#dashboard-next-week').click();
+    await expect.poll(firstDay).toBe(dayLabel(addDays(monday, 7)));
+    await expect(header).toHaveText('Nov 23 – Nov 29, 2026');
+
+    // A date in the middle of a week: the page shows that week.
+    await page.locator('#dashboard-date').click();
+    await page.getByRole('button', { name: /November 4th,/ }).click();
+    await expect.poll(firstDay).toBe('2026-11-02');
+    await expect(header).toHaveText('Nov 2 – Nov 8, 2026');
+
+    // Each widget names its days: the week of the page, and the week before it.
+    await expect(page.locator('#widget-total')).toContainText('This week · Nov 2 – Nov 8');
+    await expect(page.locator('#widget-per-day')).toContainText('Last week · Oct 26 – Nov 1');
+    await screenshotBothThemes(page, 'dashboard-period-week');
+  });
+});
+
+test('with a widget that counts a day, the arrows step by a day and the header names the day', async ({
+  session,
+}) => {
+  const agent = newAgent();
+  await withAgent(session, agent, async (page) => {
+    const header = page.locator('#dashboard-period');
+    await expect(header).toHaveText('Nov 18, 2026');
+    await page.locator('#dashboard-previous-day').click();
+    await expect(header).toHaveText('Nov 17, 2026');
+    await expect(page.locator('#widget-end-of-day')).toContainText('2026-11-17');
+    await expect(page.locator('#widget-total')).toContainText('This week · Nov 16 – Nov 22');
+    await page.locator('#dashboard-next-day').click();
+    await page.locator('#dashboard-next-day').click();
+    await expect(header).toHaveText('Nov 19, 2026');
+    await expect(page.locator('#widget-end-of-day')).toContainText('2026-11-19');
+    await screenshotBothThemes(page, 'dashboard-period-day');
+  });
+});
+
 test('the page says when it is reading the history', async ({ session }) => {
   let release: () => void = () => undefined;
   const agent = newAgent({

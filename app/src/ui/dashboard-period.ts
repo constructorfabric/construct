@@ -1,5 +1,5 @@
 import { addDays, format, startOfDay, startOfWeek } from 'date-fns';
-import type { DayBounds, Period } from '../dashboard-protocol';
+import type { DashboardDocument, DayBounds, Period } from '../dashboard-protocol';
 import { t } from '../translation';
 
 /** The Monday of the week of `date`; the page's weeks run Monday to Sunday. */
@@ -71,4 +71,47 @@ export function periodDays(period: Period, anchor: Date): DayBounds[] {
     case 'last_30_days':
       return run(addDays(today, -29), 30);
   }
+}
+
+/** Whether a widget of the document counts a single day, so that the page has to step by a day. */
+export function countsDay(document: DashboardDocument | null): boolean {
+  return (
+    document !== null &&
+    document.widgets.some(
+      (widget) => widget.kind === 'day_summary' || (widget.period ?? document.period) === 'today',
+    )
+  );
+}
+
+/**
+ * The day the periods of the page are counted from. A page that counts a day stands on the day
+ * chosen; one that counts weeks at most stands on the last day of the chosen week, so that the
+ * week, and the seven days up to it, are the week chosen.
+ */
+export function periodAnchor(document: DashboardDocument | null, day: Date): Date {
+  return countsDay(document) ? day : addDays(mondayOf(day), 6);
+}
+
+/** The days a page shows, as it names them: `Nov 18, 2026`, or `Nov 16 – Nov 22, 2026`. */
+export function pageLabel(document: DashboardDocument | null, day: Date): string {
+  const anchor = periodAnchor(document, day);
+  if (countsDay(document)) {
+    return format(anchor, 'MMM d, yyyy');
+  }
+  return `${shortDate(mondayOf(anchor))} – ${format(anchor, 'MMM d, yyyy')}`;
+}
+
+/** The first and the last day of a period, as a widget names them: `Nov 16 – Nov 22`. */
+export function rangeLabel(days: readonly DayBounds[]): string {
+  const first = days[0];
+  const last = days[days.length - 1];
+  if (first === undefined || last === undefined || first.label === last.label) {
+    return first === undefined ? '' : shortDate(parseDay(first.label));
+  }
+  return `${shortDate(parseDay(first.label))} – ${shortDate(parseDay(last.label))}`;
+}
+
+function parseDay(label: string): Date {
+  const [year = 0, month = 1, day = 1] = label.split('-').map(Number);
+  return new Date(year, month - 1, day);
 }

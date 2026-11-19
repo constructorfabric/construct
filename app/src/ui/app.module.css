@@ -249,6 +249,11 @@
   gap: var(--space-2);
 }
 
+.toolbarPeriod {
+  color: var(--muted-foreground);
+  margin: 0;
+}
+
 /* While a widget is dragged the library hides the page's text selection with a style of its own,
    which the policy refuses; this rule does the same. */
 :global(.react-draggable-transparent-selection) *::selection {

@@ -7,7 +7,7 @@ import type {
   SummaryResult,
   Widget,
 } from '../dashboard-protocol';
-import { dayBounds, dayLabel, periodDays } from './dashboard-period';
+import { dayBounds, dayLabel, periodAnchor, periodDays } from './dashboard-period';
 import { lostAgent } from './lost-agent';
 
 /** How long the page waits before it asks again while the agent reads the history. */
@@ -102,11 +102,11 @@ export interface DashboardControls {
 }
 
 /**
- * The dashboard document with the numbers of each of its widgets, counted from `anchor`, which
- * stands for today. The agent watches the file, so the page asks again every few seconds and
+ * The dashboard document with the numbers of each of its widgets, counted from the day the page
+ * stands on (`day`; see `periodAnchor`), which stands for today. The agent watches the file, so the page asks again every few seconds and
  * reads the numbers again when the document, or the day, changes.
  */
-export function useDashboard(anchor: Date): DashboardControls {
+export function useDashboard(day: Date): DashboardControls {
   const [file, setFile] = useState<File | { readonly error: string } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   // What the page last took from the agent.
@@ -188,6 +188,7 @@ export function useDashboard(anchor: Date): DashboardControls {
   }, []);
 
   const document = file !== null && 'document' in file ? file.document : null;
+  const anchor = periodAnchor(document, day);
   // The problem of the file is not a reason to count again: the document is the same.
   const key = `${dayLabel(anchor)}|${JSON.stringify(document)}`;
   // The same document and day but for the hidden projects and the names: only the numbers change.

@@ -28,7 +28,7 @@ import type {
 } from '../dashboard-protocol';
 import { t } from '../translation';
 import styles from './app.module.css';
-import { dayLabel, formatMinutes, periodDays } from './dashboard-period';
+import { dayLabel, formatMinutes, periodDays, rangeLabel } from './dashboard-period';
 import { DaySummary } from './DaySummary';
 import { SessionsDialog } from './SessionsDialog';
 import { drillSource } from './drill-source';
@@ -418,7 +418,10 @@ export function DashboardWidget({
     );
   })();
   return (
-    <WidgetCard title={title} period={widget.kind === 'day_summary' ? dayLabel(day) : period}>
+    <WidgetCard
+      title={title}
+      period={widget.kind === 'day_summary' ? dayLabel(day) : `${period} · ${rangeLabel(days)}`}
+    >
       {body}
       {drill !== null && (
         <SessionsDialog
