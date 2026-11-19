@@ -10,20 +10,15 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
   Button,
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-  Heading,
   Spinner,
-  Text,
 } from '@gears-frontx/ui-kit';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { t } from '../translation';
 import { reasonText } from './chat-reasons';
 import styles from './app.module.css';
+import { ControlRow } from './components/ControlRow';
+import { Section } from './components/Section';
 import { OutcomeMessage } from './ModelSettingsForm';
 import type { Chat } from './useChat';
 import type { Erasing } from './useErasing';
@@ -57,102 +52,107 @@ export function YourDataSection({
   };
 
   return (
-    <section aria-labelledby="your-data-title" className={styles.collection}>
-      <Heading id="your-data-title" typography="heading-1" render={<h2 />}>
-        {t('YourData.Title')}
-      </Heading>
-      <Text tone="muted">{t('YourData.Hint')}</Text>
-      <FieldGroup className={styles.form}>
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel id="your-data-chats-label">{t('YourData.Chats')}</FieldLabel>
-            <FieldDescription>{t('YourData.ChatsHint')}</FieldDescription>
-          </FieldContent>
-          <AlertDialog>
-            <AlertDialogTrigger
-              render={
-                <Button
-                  id="chat-delete-all"
-                  variant="outline"
-                  aria-labelledby="your-data-chats-label"
-                  disabled={busy || conversations.length === 0}
-                >
-                  {t('YourData.Chats')}
-                </Button>
-              }
+    <Section
+      titleId="your-data-title"
+      title={t('YourData.Title')}
+      description={t('YourData.Hint')}
+      after={
+        <>
+          {chatsError === null ? null : (
+            <OutcomeMessage id="chats-error" outcome={{ kind: 'error', text: chatsError }} />
+          )}
+          {busy ? <Spinner id="erase-running" label={t('YourData.Erasing')} /> : null}
+          {erasure.state.kind === 'done' ? (
+            <Alert id="erase-done" className={styles.outcome} role="status">
+              {t('YourData.Done')}
+            </Alert>
+          ) : null}
+          {erasure.state.kind === 'failed' ? (
+            <OutcomeMessage
+              id="erase-error"
+              outcome={{ kind: 'error', text: erasure.state.reason }}
             />
-            <AlertDialogContent size="sm">
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t('YourData.ChatsConfirmTitle')}</AlertDialogTitle>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel id="chat-delete-all-cancel">
-                  {t('YourData.Cancel')}
-                </AlertDialogCancel>
-                <AlertDialogAction
-                  id="chat-delete-all-confirm"
-                  variant="destructive"
-                  onClick={() => void deleteChats()}
-                >
-                  {t('YourData.ChatsConfirmYes')}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </Field>
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel id="your-data-everything-label">{t('YourData.Everything')}</FieldLabel>
-            <FieldDescription>{t('YourData.EverythingHint')}</FieldDescription>
-          </FieldContent>
-          <AlertDialog>
-            <AlertDialogTrigger
-              render={
-                <Button
-                  id="erase-everything"
-                  variant="destructive"
-                  aria-labelledby="your-data-everything-label"
-                  disabled={busy}
-                >
-                  {t('YourData.Everything')}
-                </Button>
-              }
-            />
-            <AlertDialogContent size="sm">
-              <AlertDialogHeader>
-                <AlertDialogTitle>{t('YourData.EverythingConfirmTitle')}</AlertDialogTitle>
-                <AlertDialogDescription id="erase-everything-body">
-                  {t('YourData.EverythingConfirmBody')}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel id="erase-everything-cancel">
-                  {t('YourData.Cancel')}
-                </AlertDialogCancel>
-                <AlertDialogAction
-                  id="erase-everything-confirm"
-                  variant="destructive"
-                  onClick={() => void erasure.start()}
-                >
-                  {t('YourData.EverythingConfirmYes')}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </Field>
-      </FieldGroup>
-      {chatsError === null ? null : (
-        <OutcomeMessage id="chats-error" outcome={{ kind: 'error', text: chatsError }} />
-      )}
-      {busy ? <Spinner id="erase-running" label={t('YourData.Erasing')} /> : null}
-      {erasure.state.kind === 'done' ? (
-        <Alert id="erase-done" className={styles.outcome} role="status">
-          {t('YourData.Done')}
-        </Alert>
-      ) : null}
-      {erasure.state.kind === 'failed' ? (
-        <OutcomeMessage id="erase-error" outcome={{ kind: 'error', text: erasure.state.reason }} />
-      ) : null}
-    </section>
+          ) : null}
+        </>
+      }
+    >
+      <ControlRow
+        id="your-data-chats"
+        label={t('YourData.Chats')}
+        description={t('YourData.ChatsHint')}
+      >
+        <AlertDialog>
+          <AlertDialogTrigger
+            render={
+              <Button
+                id="chat-delete-all"
+                variant="outline"
+                aria-labelledby="your-data-chats-label"
+                disabled={busy || conversations.length === 0}
+              >
+                {t('YourData.Chats')}
+              </Button>
+            }
+          />
+          <AlertDialogContent size="sm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('YourData.ChatsConfirmTitle')}</AlertDialogTitle>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel id="chat-delete-all-cancel">
+                {t('YourData.Cancel')}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                id="chat-delete-all-confirm"
+                variant="destructive"
+                onClick={() => void deleteChats()}
+              >
+                {t('YourData.ChatsConfirmYes')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </ControlRow>
+      <ControlRow
+        id="your-data-everything"
+        label={t('YourData.Everything')}
+        description={t('YourData.EverythingHint')}
+      >
+        <AlertDialog>
+          <AlertDialogTrigger
+            render={
+              <Button
+                id="erase-everything"
+                variant="destructive"
+                aria-labelledby="your-data-everything-label"
+                disabled={busy}
+              >
+                {t('YourData.Everything')}
+              </Button>
+            }
+          />
+          <AlertDialogContent size="sm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('YourData.EverythingConfirmTitle')}</AlertDialogTitle>
+              <AlertDialogDescription id="erase-everything-body">
+                {t('YourData.EverythingConfirmBody')}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel id="erase-everything-cancel">
+                {t('YourData.Cancel')}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                id="erase-everything-confirm"
+                variant="destructive"
+                onClick={() => void erasure.start()}
+              >
+                {t('YourData.EverythingConfirmYes')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </ControlRow>
+    </Section>
   );
 }

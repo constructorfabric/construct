@@ -1,14 +1,4 @@
-import {
-  Alert,
-  Button,
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-  Heading,
-  Input,
-} from '@gears-frontx/ui-kit';
+import { Alert, Button } from '@gears-frontx/ui-kit';
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { DEFAULT_BASE_URL, DEFAULT_MODEL } from '../agent-settings';
@@ -16,6 +6,8 @@ import type { ModelInput, ModelSettings, ModelTestResult } from '../agent-settin
 import { t } from '../translation';
 import styles from './app.module.css';
 import { CheckList } from './CheckList';
+import { Section } from './components/Section';
+import { TextFieldRow } from './components/TextFieldRow';
 import { withProgress } from './check-reasons';
 import type { CheckRow } from './check-reasons';
 
@@ -76,10 +68,8 @@ export function ModelSettingsForm({
       touch(name);
     }
   };
-  const errorOf = (name: Required): { readonly message: string }[] =>
-    touched.has(name) && values[name].trim() === ''
-      ? [{ message: t('ModelSettingsForm.Required') }]
-      : [];
+  const errorOf = (name: Required): string | undefined =>
+    touched.has(name) && values[name].trim() === '' ? t('ModelSettingsForm.Required') : undefined;
 
   const save = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
@@ -140,52 +130,12 @@ export function ModelSettingsForm({
   };
 
   return (
-    <section aria-labelledby="model-section-title" className={styles.section}>
-      <Heading id="model-section-title" typography="heading-1" render={<h2 />}>
-        {t('ModelSettingsForm.Title')}
-      </Heading>
-      <form className={styles.form} onSubmit={(event) => void save(event)} noValidate>
-        <FieldGroup>
-          <Field data-invalid={errorOf('baseUrl').length > 0 || undefined}>
-            <FieldLabel htmlFor="model-base-url">{t('ModelSettingsForm.Address')}</FieldLabel>
-            <Input
-              id="model-base-url"
-              value={values.baseUrl}
-              onChange={(event) => edit('baseUrl', event.target.value)}
-              onBlur={() => touch('baseUrl')}
-              aria-invalid={errorOf('baseUrl').length > 0 || undefined}
-              disabled={busy !== null}
-            />
-            <FieldError errors={errorOf('baseUrl')} />
-          </Field>
-          <Field data-invalid={errorOf('model').length > 0 || undefined}>
-            <FieldLabel htmlFor="model-name">{t('ModelSettingsForm.Model')}</FieldLabel>
-            <Input
-              id="model-name"
-              value={values.model}
-              onChange={(event) => edit('model', event.target.value)}
-              onBlur={() => touch('model')}
-              aria-invalid={errorOf('model').length > 0 || undefined}
-              disabled={busy !== null}
-            />
-            <FieldError errors={errorOf('model')} />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="model-api-key">{t('ModelSettingsForm.ApiKey')}</FieldLabel>
-            <Input
-              id="model-api-key"
-              type="password"
-              value={values.apiKey}
-              placeholder={settings.apiKeySet ? savedKeyDots : undefined}
-              onChange={(event) => edit('apiKey', event.target.value)}
-              disabled={busy !== null}
-            />
-            {settings.apiKeySet && (
-              <FieldDescription>{t('ModelSettingsForm.KeySavedHint')}</FieldDescription>
-            )}
-          </Field>
-        </FieldGroup>
-        <div className={styles.actions}>
+    <Section
+      titleId="model-section-title"
+      title={t('ModelSettingsForm.Title')}
+      onSubmit={(event) => void save(event)}
+      actions={
+        <>
           <Button
             id="model-save"
             type="submit"
@@ -216,11 +166,44 @@ export function ModelSettingsForm({
               {t('ModelSettingsForm.RemoveKey')}
             </Button>
           )}
-        </div>
-      </form>
-      {rows !== null && <CheckList rows={rows} />}
-      {outcome !== null && <OutcomeMessage id="model-outcome" outcome={outcome} />}
-    </section>
+        </>
+      }
+      after={
+        <>
+          {rows !== null && <CheckList rows={rows} />}
+          {outcome !== null && <OutcomeMessage id="model-outcome" outcome={outcome} />}
+        </>
+      }
+    >
+      <TextFieldRow
+        id="model-base-url"
+        label={t('ModelSettingsForm.Address')}
+        value={values.baseUrl}
+        error={errorOf('baseUrl')}
+        disabled={busy !== null}
+        onChange={(value) => edit('baseUrl', value)}
+        onBlur={() => touch('baseUrl')}
+      />
+      <TextFieldRow
+        id="model-name"
+        label={t('ModelSettingsForm.Model')}
+        value={values.model}
+        error={errorOf('model')}
+        disabled={busy !== null}
+        onChange={(value) => edit('model', value)}
+        onBlur={() => touch('model')}
+      />
+      <TextFieldRow
+        id="model-api-key"
+        label={t('ModelSettingsForm.ApiKey')}
+        type="password"
+        value={values.apiKey}
+        placeholder={settings.apiKeySet ? savedKeyDots : undefined}
+        hint={settings.apiKeySet ? t('ModelSettingsForm.KeySavedHint') : undefined}
+        disabled={busy !== null}
+        onChange={(value) => edit('apiKey', value)}
+      />
+    </Section>
   );
 }
 

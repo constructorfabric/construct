@@ -5,7 +5,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarInset,
   SidebarMenu,
   SidebarProvider,
 } from '@gears-frontx/ui-kit';
@@ -14,12 +13,12 @@ import type { LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { t } from '../translation';
-import styles from './app.module.css';
 import { ChatPage } from './ChatPage';
 import type { ThreadPosition } from './ChatPage';
 import { AgentStatusLine } from './components/AgentStatusLine';
 import { ConnectorIndicators } from './components/ConnectorIndicators';
 import { MenuItem } from './components/MenuItem';
+import { PageFrame } from './components/PageFrame';
 import { ConversationList } from './ConversationList';
 import { DashboardPage } from './DashboardPage';
 import { MemoryPage } from './MemoryPage';
@@ -102,14 +101,16 @@ export function App(): ReactNode {
           ) : null}
         </SidebarFooter>
       </Sidebar>
-      <SidebarInset
-        render={<main className={page === 'chat' ? styles.contentChat : styles.content} />}
+      <PageFrame
+        layout={page === 'chat' ? 'chat' : 'page'}
+        banner={
+          needsMove ? (
+            <Alert id="needs-move" role="alert">
+              {t('App.NeedsMove')}
+            </Alert>
+          ) : null
+        }
       >
-        {needsMove ? (
-          <Alert id="needs-move" role="alert">
-            {t('App.NeedsMove')}
-          </Alert>
-        ) : null}
         {page === 'chat' ? (
           <ChatPage
             chat={chat}
@@ -120,25 +121,21 @@ export function App(): ReactNode {
               setPage('settings');
             }}
           />
+        ) : page === 'status' ? (
+          <StatusPage status={status} />
+        ) : page === 'dashboard' ? (
+          <DashboardPage status={status} onOpenSettings={() => setPage('settings')} />
+        ) : page === 'memory' ? (
+          <MemoryPage onOpenSettings={() => setPage('settings')} />
         ) : (
-          <div className={styles.column}>
-            {page === 'status' ? (
-              <StatusPage status={status} />
-            ) : page === 'dashboard' ? (
-              <DashboardPage status={status} onOpenSettings={() => setPage('settings')} />
-            ) : page === 'memory' ? (
-              <MemoryPage onOpenSettings={() => setPage('settings')} />
-            ) : (
-              <SettingsPage
-                chat={chat}
-                erasing={erasing}
-                status={status}
-                onOpenDashboard={() => setPage('dashboard')}
-              />
-            )}
-          </div>
+          <SettingsPage
+            chat={chat}
+            erasing={erasing}
+            status={status}
+            onOpenDashboard={() => setPage('dashboard')}
+          />
         )}
-      </SidebarInset>
+      </PageFrame>
     </SidebarProvider>
   );
 }

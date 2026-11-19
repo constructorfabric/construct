@@ -60,3 +60,54 @@
 .collectionFailed {
   color: var(--danger-foreground);
 }
+
+/* The one padding of a page; a chat page's own scrolling area reads it as well. */
+.frame {
+  --page-padding: var(--space-6);
+  box-sizing: border-box;
+  overflow: auto;
+  padding: var(--page-padding);
+}
+
+.frameChat {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.column {
+  width: 100%;
+  max-width: 38rem;
+  margin: 0 auto;
+}
+
+.banner {
+  margin-bottom: var(--space-4);
+}
+
+.frameChat > .banner {
+  margin: 0;
+  padding: var(--page-padding) var(--page-padding) 0;
+}
+
+.section {
+  margin-top: var(--space-8);
+}
+
+.fields {
+  margin-top: var(--space-3);
+}
+
+.notice {
+  margin-top: var(--space-2);
+}
+
+.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
