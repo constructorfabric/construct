@@ -1,3 +1,4 @@
+import { isCount, isRecord } from './agent-json';
 import type { ModelSettingsApi } from './agent-settings';
 import type { ChatApi } from './chat-protocol';
 import type { DashboardApi } from './dashboard-protocol';
@@ -24,6 +25,29 @@ export interface Part {
   readonly reason?: string;
 }
 
+/** What a connector does: follows its tool and stores turns, reads the files for the first time, is switched off, or failed. */
+export type ConnectorState = 'collecting' | 'scanning' | 'off' | 'failed';
+
+/** One tool the agent collects from, as the status answer tells it. */
+export interface Connector {
+  /** The tool's name as the agent sends it, such as `claude-code`. */
+  readonly name: string;
+  readonly state: ConnectorState;
+  /** Why the tool is not followed fully: a fixed text of the agent, shown as it comes. */
+  readonly reason?: string;
+  /** Turns stored since the agent started. */
+  readonly turns: number;
+  /** Lines that did not parse or were too long. */
+  readonly skipped: number;
+  /** Files that could not be read in the last pass. */
+  readonly unreadable: number;
+  /** When the last turn was stored, in milliseconds since the epoch; absent until one is, or from an older agent. */
+  readonly lastTurnAt?: number;
+}
+
+/** A turn stored within this long counts as data just collected. */
+export const justCollectedMs = 60_000;
+
 export type AgentStatus =
   | {
       readonly state: 'running';
@@ -37,6 +61,8 @@ export type AgentStatus =
       readonly construct?: Part;
       /** The permissions of the apps and websites collection; absent when the agent sends none. */
       readonly grants?: readonly Grant[];
+      /** The tools the agent collects from; absent when the agent sends none. */
+      readonly connectors?: readonly Connector[];
     }
   /** The socket answered "nobody here": no socket file, or nothing listening on it. */
   | { readonly state: 'stopped'; readonly reason: string; readonly startAtLogin: StartAtLogin }
@@ -79,6 +105,7 @@ export function parseStatusReply(line: string): AgentStatus {
   const database = 'database' in reply ? parsePart(reply.database) : undefined;
   const construct = 'construct' in reply ? parsePart(reply.construct) : undefined;
   const grants = 'screen' in reply ? parseGrants(reply.screen) : undefined;
+  const connectors = 'connectors' in reply ? parseConnectors(reply.connectors) : undefined;
   return {
     state: 'running',
     version: reply.version,
@@ -88,7 +115,74 @@ export function parseStatusReply(line: string): AgentStatus {
     ...(database === undefined ? {} : { database }),
     ...(construct === undefined ? {} : { construct }),
     ...(grants === undefined ? {} : { grants }),
+    ...(connectors === undefined ? {} : { connectors }),
   };
+}
+
+/**
+ * The `connectors` field: an object with one entry per tool. What the window does not know (another
+ * shape, a field of another type) is skipped, not an error: the rest of the status still shows.
+ */
+export function parseConnectors(value: unknown): readonly Connector[] | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const connectors: Connector[] = [];
+  for (const [name, entry] of Object.entries(value)) {
+    if (!isRecord(entry) || Array.isArray(entry)) {
+      continue;
+    }
+    // An `error` of any kind marks the tool failed; only a text of the agent's is kept as the reason.
+    const failed = 'error' in entry && entry.error !== null && entry.error !== undefined;
+    const reason = typeof entry.error === 'string' ? entry.error.trim() : '';
+    const lastTurnAt =
+      typeof entry.last_turn === 'string' ? Date.parse(entry.last_turn) : Number.NaN;
+    const state: ConnectorState = failed
+      ? 'failed'
+      : entry.off === true
+        ? 'off'
+        : entry.scanning === true
+          ? 'scanning'
+          : 'collecting';
+    connectors.push({
+      name,
+      state,
+      ...(reason === '' ? {} : { reason }),
+      turns: isCount(entry.turns) ? entry.turns : 0,
+      skipped: isCount(entry.skipped) ? entry.skipped : 0,
+      unreadable: isCount(entry.unreadable) ? entry.unreadable : 0,
+      ...(Number.isNaN(lastTurnAt) ? {} : { lastTurnAt }),
+    });
+  }
+  return connectors;
+}
+
+/** What the sidebar says about collection; nothing when there is nothing worth saying. */
+export type CollectionSummary = 'failed' | 'collecting' | 'scanning' | 'off';
+
+export function summarizeCollection(
+  connectors: readonly Connector[] | undefined,
+  now: number,
+): CollectionSummary | undefined {
+  if (connectors === undefined || connectors.length === 0) {
+    return undefined;
+  }
+  if (connectors.some((connector) => connector.state === 'failed')) {
+    return 'failed';
+  }
+  const justCollected = (connector: Connector): boolean =>
+    connector.state === 'collecting' &&
+    connector.lastTurnAt !== undefined &&
+    // A time after the app's clock is not a turn just stored.
+    now >= connector.lastTurnAt &&
+    now - connector.lastTurnAt <= justCollectedMs;
+  if (connectors.some(justCollected)) {
+    return 'collecting';
+  }
+  if (connectors.some((connector) => connector.state === 'scanning')) {
+    return 'scanning';
+  }
+  return connectors.every((connector) => connector.state === 'off') ? 'off' : undefined;
 }
 
 function isPartState(value: unknown): value is PartState {

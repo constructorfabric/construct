@@ -1,4 +1,4 @@
-import { parseLine, replyError } from './agent-json';
+import { isCount, parseLine, replyError } from './agent-json';
 
 /** Where a setup run is, as the agent names it. `idle`: no run has been started yet. */
 export type SetupState =
@@ -54,10 +54,6 @@ export const setupDays = 30;
 export const setupStartLine = `dashboard-setup-start ${JSON.stringify({ days: setupDays })}`;
 export const setupStatusLine = 'dashboard-setup-status';
 export const setupCancelLine = 'dashboard-setup-cancel';
-
-function isCount(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
 
 function isSetupState(value: unknown): value is SetupState {
   return setupStates.some((state) => state === value);

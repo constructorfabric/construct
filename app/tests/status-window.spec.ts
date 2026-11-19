@@ -344,18 +344,19 @@ test('the theme follows the operating system', async ({ page }) => {
   await expect(page.locator('#agent-status')).toHaveText('running');
   const cdp = await page.context().newCDPSession(page);
   const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  // The page may be taller than the window (the real agent adds a card for each tool it collects
+  // from), so the check is that a theme does not change its height, not that it never scrolls.
+  const height = () => page.evaluate(() => document.documentElement.scrollHeight);
   const backgrounds: string[] = [];
+  const heights: number[] = [];
   for (const scheme of ['light', 'dark', 'light'] as const) {
     await screenshotInTheme(page, cdp, scheme, 'status');
     backgrounds.push(await background());
+    heights.push(await height());
   }
   const [light, dark, lightAgain] = backgrounds;
   expect(dark).not.toBe(light);
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollHeight <= document.documentElement.clientHeight,
-    ),
-  ).toBe(true);
+  expect(new Set(heights).size).toBe(1);
   expect(lightAgain).toBe(light);
 });
 
@@ -391,4 +392,118 @@ test('the window tells the user to move the app only when the app asks for it', 
   await expect(notice).toHaveCount(1);
   await expect(notice).toHaveAttribute('id', 'needs-move');
   await screenshotBothThemes(page, 'needs-move');
+});
+
+function secondsAgo(seconds: number): string {
+  return new Date(Date.now() - seconds * 1000).toISOString();
+}
+
+test('a turn stored a few seconds ago shows collecting in the sidebar and on the page', async ({
+  session,
+}) => {
+  const reply = runningReply({
+    connectors: {
+      'claude-code': { turns: 12, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
+      codex: { turns: 0, skipped: 0, scanning: false },
+    },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#sidebar-collection')).toHaveText('collecting');
+    const claude = page.locator('#connector-claude-code');
+    await expect(claude.getByRole('heading', { name: 'Claude Code' })).toBeVisible();
+    await expect(page.locator('#connector-claude-code-state')).toHaveText('collecting');
+    await expect(page.locator('#connector-claude-code-turns')).toHaveText('12 turns stored');
+    await expect(page.locator('#connector-claude-code-last-turn')).toHaveText('last turn just now');
+    await expect(page.locator('#connector-claude-code-reason')).toHaveCount(0);
+    await expect(page.locator('#connector-codex-state')).toHaveText('collecting');
+    await expect(page.locator('#connector-codex-last-turn')).toHaveText('no turn stored yet');
+    await screenshotBothThemes(page, 'status-connectors-collecting');
+  });
+});
+
+test('a connector with an error shows failed with its reason, in the sidebar too', async ({
+  session,
+}) => {
+  const reason = 'the session files cannot be listed';
+  const reply = runningReply({
+    connectors: {
+      'claude-code': { turns: 2, skipped: 0, scanning: false, error: reason },
+      codex: { turns: 4, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
+    },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#sidebar-collection')).toHaveText('collection failed');
+    await expect(page.locator('#connector-claude-code-state')).toHaveText('failed');
+    await expect(page.locator('#connector-claude-code-state')).toHaveAttribute(
+      'data-state',
+      'failed',
+    );
+    await expect(page.locator('#connector-claude-code-reason')).toHaveText(reason);
+    await expect(page.locator('#connector-codex-state')).toHaveText('collecting');
+    await screenshotBothThemes(page, 'status-connectors-failed');
+  });
+});
+
+const quietStates = [
+  { name: 'off', sidebar: 'collection off', extra: { off: true } },
+  { name: 'scanning', sidebar: 'scanning', extra: { scanning: true } },
+] as const;
+
+for (const { name, sidebar, extra } of quietStates) {
+  test(`collection that is ${name} shows ${name} in the sidebar and on the page`, async ({
+    session,
+  }) => {
+    const reply = runningReply({
+      connectors: {
+        'claude-code': { turns: 3, skipped: 0, scanning: false, ...extra },
+        codex: { turns: 0, skipped: 0, scanning: false, ...extra },
+      },
+    });
+    await withStandIn(session, reply, async (page) => {
+      await page.getByRole('button', { name: 'Status', exact: true }).click();
+      await expect(page.locator('#sidebar-collection')).toHaveText(sidebar);
+      await expect(page.locator('#connector-claude-code-state')).toHaveText(name);
+      await expect(page.locator('#connector-codex-state')).toHaveText(name);
+      await screenshotBothThemes(page, `status-connectors-${name}`);
+    });
+  });
+}
+
+test('the last turn reads in minutes, then as a date, and a tool the app has no name for shows as sent', async ({
+  session,
+}) => {
+  const reply = runningReply({
+    connectors: {
+      'claude-code': { turns: 5, skipped: 0, scanning: false, last_turn: secondsAgo(300) },
+      codex: { turns: 6, skipped: 0, scanning: false, last_turn: secondsAgo(3 * 3600) },
+      'another-tool': { turns: 1, skipped: 0, scanning: false },
+    },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#connector-claude-code-last-turn')).toHaveText(
+      /^last turn [45] min ago$/,
+    );
+    await expect(page.locator('#connector-codex-last-turn')).toHaveText(
+      /^last turn \d{1,2} [A-Z][a-z]{2} \d{4}, \d{2}:\d{2}$/,
+    );
+    await expect(page.locator('#connector-another-tool').getByRole('heading')).toHaveText(
+      'another-tool',
+    );
+    // Nothing was stored within the last minute, so the sidebar says nothing about collection.
+    await expect(page.locator('#sidebar-collection')).toHaveCount(0);
+  });
+});
+
+test('an agent that sends no connectors shows no collection line and no connector cards', async ({
+  session,
+}) => {
+  await withStandIn(session, runningReply({}), async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#agent-status')).toHaveText('running');
+    await expect(page.locator('#sidebar-collection')).toHaveCount(0);
+    await expect(page.locator('[id^="connector-"]')).toHaveCount(0);
+  });
 });
