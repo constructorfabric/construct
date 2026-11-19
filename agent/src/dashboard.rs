@@ -82,6 +82,18 @@ pub enum Sessions {
     All,
 }
 
+/// What a widget counts the time of.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(inline)]
+pub enum Source {
+    /// The time of the sessions of the AI tools. What a document with no source reads as.
+    #[default]
+    AiSessions,
+    /// The time each application and site was in front on this computer.
+    OnScreen,
+}
+
 /// What a widget draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -104,10 +116,28 @@ pub enum WidgetKind {
 pub enum GroupBy {
     Project,
     Ticket,
+    /// AI sessions only: the tool that wrote the session.
     Tool,
-    /// The grouping the setup found for the user's work: clients, courses, topics.
+    /// AI sessions only: the grouping the setup found for the user's work: clients, courses,
+    /// topics.
     Collection,
     Day,
+    /// On screen only: the application in front.
+    App,
+    /// On screen only: the site in front, the host of the address of the tab.
+    Site,
+}
+
+impl GroupBy {
+    /// Whether the time of `source` can be grouped this way.
+    #[must_use]
+    pub const fn fits(self, source: Source) -> bool {
+        match self {
+            Self::Project | Self::Ticket | Self::Day => true,
+            Self::Tool | Self::Collection => matches!(source, Source::AiSessions),
+            Self::App | Self::Site => matches!(source, Source::OnScreen),
+        }
+    }
 }
 
 /// What a widget keeps: a name left out means no limit on it.
@@ -153,9 +183,12 @@ pub struct Widget {
     /// The widget's own period; the dashboard's when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period: Option<Period>,
-    /// The widget's own sessions; the dashboard's when left out.
+    /// The widget's own sessions; the dashboard's when left out. Only AI sessions have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions: Option<Sessions>,
+    /// What the widget counts the time of; the dashboard's when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Filter>,
     pub position: Position,
@@ -167,14 +200,18 @@ pub struct Widget {
     dir_path = "schemas",
     base = DashboardV1,
     type_id = gts_id!("cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v1~"),
-    description = "The activity dashboard: a developer's time by project and ticket. It lists the widgets of the page, each with a kind, a place on a grid of 12 columns and optionally its own period, sessions and filter, and holds the projects the page hides and the names it shows for projects.",
-    properties = "period,sessions,widgets,hidden_projects,project_names"
+    description = "The activity dashboard: a developer's time by project and ticket. It lists the widgets of the page, each with a kind, a place on a grid of 12 columns and optionally its own period, sessions, source and filter, and holds the projects the page hides and the names it shows for projects. The source of time is AI sessions or On screen, and a document with none reads as AI sessions.",
+    properties = "period,sessions,source,widgets,hidden_projects,project_names"
 )]
 pub struct ActivityDashboardV1 {
     /// The period of every widget that has none of its own.
     pub period: Period,
     /// The sessions of every widget that has none of its own.
     pub sessions: Sessions,
+    /// The source of every widget that has none of its own; AI sessions when left out.
+    // The type reads every member as present, so a reader of a document that leaves this one out
+    // puts a `null` there first (see `payload_of` in the numbers).
+    pub source: Option<Source>,
     /// The widgets, in no order: the grid places them.
     pub widgets: Vec<Widget>,
     /// Projects the page leaves out.
@@ -291,7 +328,8 @@ pub fn validate_activity(document: &Value) -> Result<(), Violation> {
 }
 
 /// The rules of the widgets that a schema cannot carry: a widget stays inside the grid, ids are
-/// unique and only a table names what it groups by.
+/// unique, only a table names what it groups by, and a widget asks only what its source can
+/// answer.
 fn check_rules(document: &Value) -> Result<(), Violation> {
     let Some(widgets) = document
         .pointer("/payload/widgets")
@@ -299,6 +337,9 @@ fn check_rules(document: &Value) -> Result<(), Violation> {
     else {
         return Ok(());
     };
+    let page_source = document
+        .pointer("/payload/source")
+        .and_then(|v| serde_json::from_value::<Source>(v.clone()).ok());
     let mut seen = std::collections::BTreeSet::new();
     for (index, widget) in widgets.iter().enumerate() {
         let place = |member: &str| format!("/payload/widgets/{index}{member}");
@@ -333,25 +374,66 @@ fn check_rules(document: &Value) -> Result<(), Violation> {
         if !is_table && grouped {
             return Err(violation("/group_by", "only a table has group_by"));
         }
+        let source = widget
+            .get("source")
+            .and_then(|v| serde_json::from_value::<Source>(v.clone()).ok())
+            .or(page_source)
+            .unwrap_or_default();
+        let group_by = widget
+            .get("group_by")
+            .and_then(|v| serde_json::from_value::<GroupBy>(v.clone()).ok());
+        if group_by.is_some_and(|group_by| !group_by.fits(source)) {
+            return Err(violation(
+                "/group_by",
+                match source {
+                    Source::AiSessions => "AI sessions are not grouped by app or site",
+                    Source::OnScreen => "the time on screen is not grouped by tool or collection",
+                },
+            ));
+        }
+        if source == Source::OnScreen {
+            if widget.get("kind").and_then(Value::as_str) == Some("day_summary") {
+                return Err(violation(
+                    "/kind",
+                    "the summary of the day is of AI sessions only",
+                ));
+            }
+            if widget.get("sessions").is_some_and(|v| !v.is_null()) {
+                return Err(violation(
+                    "/sessions",
+                    "the time on screen has no sessions to choose between",
+                ));
+            }
+            if widget
+                .pointer("/filter/tools")
+                .is_some_and(|tools| !tools.is_null())
+            {
+                return Err(violation(
+                    "/filter/tools",
+                    "the time on screen has no tools to filter by",
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+fn default_widget(id: &str, kind: &str, group_by: Option<&str>, at: [u32; 4]) -> Value {
+    let mut widget = json!({
+        "id": id,
+        "kind": kind,
+        "position": { "column": at[0], "row": at[1], "width": at[2], "height": at[3] },
+    });
+    if let (Some(group_by), Some(object)) = (group_by, widget.as_object_mut()) {
+        object.insert("group_by".to_owned(), json!(group_by));
+    }
+    widget
 }
 
 /// The document written at the first start: this week, the user's own sessions, a total, bars
 /// per day, a table by project, a table by ticket and the summary of the end of the day.
 #[must_use]
 pub fn default_activity() -> Value {
-    let widget = |id: &str, kind: &str, group_by: Option<&str>, at: [u32; 4]| {
-        let mut widget = json!({
-            "id": id,
-            "kind": kind,
-            "position": { "column": at[0], "row": at[1], "width": at[2], "height": at[3] },
-        });
-        if let (Some(group_by), Some(object)) = (group_by, widget.as_object_mut()) {
-            object.insert("group_by".to_owned(), json!(group_by));
-        }
-        widget
-    };
     json!({
         "type": ACTIVITY_TYPE,
         "title": "Activity",
@@ -359,16 +441,46 @@ pub fn default_activity() -> Value {
             "period": "this_week",
             "sessions": "own",
             "widgets": [
-                widget("total", "total", None, [0, 0, 12, 2]),
-                widget("per-day", "bars_per_day", None, [0, 2, 12, 4]),
-                widget("by-project", "table", Some("project"), [0, 6, 6, 5]),
-                widget("by-ticket", "table", Some("ticket"), [6, 6, 6, 5]),
-                widget("end-of-day", "day_summary", None, [0, 11, 12, 3]),
+                default_widget("total", "total", None, [0, 0, 12, 2]),
+                default_widget("per-day", "bars_per_day", None, [0, 2, 12, 4]),
+                default_widget("by-project", "table", Some("project"), [0, 6, 6, 5]),
+                default_widget("by-ticket", "table", Some("ticket"), [6, 6, 6, 5]),
+                default_widget("end-of-day", "day_summary", None, [0, 11, 12, 3]),
             ],
             "hidden_projects": [],
             "project_names": {},
         },
     })
+}
+
+/// [`default_activity`] with the time on screen below it: a total, bars per day and a table by
+/// application, by site and by ticket. The document of a computer that collects the screen.
+#[must_use]
+pub fn default_activity_with_screen() -> Value {
+    let mut document = default_activity();
+    let screen = [
+        default_widget("screen-total", "total", None, [0, 14, 12, 2]),
+        default_widget("screen-per-day", "bars_per_day", None, [0, 16, 12, 4]),
+        default_widget("screen-by-app", "table", Some("app"), [0, 20, 4, 5]),
+        default_widget("screen-by-site", "table", Some("site"), [4, 20, 4, 5]),
+        default_widget("screen-by-ticket", "table", Some("ticket"), [8, 20, 4, 5]),
+    ];
+    if let Some(widgets) = document
+        .pointer_mut("/payload/widgets")
+        .and_then(Value::as_array_mut)
+    {
+        for mut widget in screen {
+            widget["source"] = json!("on_screen");
+            widgets.push(widget);
+        }
+    }
+    document
+}
+
+fn write_document(workspace: &Workspace, document: &Value) -> Result<(), Error> {
+    let mut text = serde_json::to_string_pretty(document).map_err(|_| Error::NotText)?;
+    text.push('\n');
+    workspace.write(ACTIVITY_FILE, &text)
 }
 
 /// Writes the default activity dashboard into the workspace when there is none. A file that is
@@ -377,13 +489,49 @@ pub fn default_activity() -> Value {
 /// # Errors
 /// The workspace refuses to read or write the file.
 pub fn ensure_default(workspace: &Workspace) -> Result<bool, Error> {
+    ensure_default_for(workspace, false)
+}
+
+/// [`ensure_default`], with the time on screen in the default when `screen` is set: the person
+/// collects it.
+///
+/// # Errors
+/// The workspace refuses to read or write the file.
+pub fn ensure_default_for(workspace: &Workspace, screen: bool) -> Result<bool, Error> {
     match workspace.read(ACTIVITY_FILE, None, Some(1)) {
         Ok(_) => return Ok(false),
         Err(Error::NotFound) => {}
         Err(e) => return Err(e),
     }
-    let mut text = serde_json::to_string_pretty(&default_activity()).map_err(|_| Error::NotText)?;
-    text.push('\n');
-    workspace.write(ACTIVITY_FILE, &text)?;
+    write_document(
+        workspace,
+        &if screen {
+            default_activity_with_screen()
+        } else {
+            default_activity()
+        },
+    )?;
+    Ok(true)
+}
+
+/// Puts the time on screen into the dashboard when the file is still the default as it was
+/// written without it. A document that differs in anything, or that is not a document, is the
+/// person's (or the chat's) and is not touched. Returns whether the file was written.
+///
+/// # Errors
+/// The workspace refuses to read or write the file.
+pub fn offer_screen(workspace: &Workspace, max_bytes: u64) -> Result<bool, Error> {
+    let text = match workspace.read_whole(ACTIVITY_FILE, max_bytes) {
+        Ok(text) => text,
+        Err(Error::NotFound) => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    if serde_json::from_str::<Value>(&text).ok() != Some(default_activity()) {
+        return Ok(false);
+    }
+    // A save that lands between the read above and the replacement below is written over: the
+    // window is the time to parse a small document, and it cannot be closed without a lock on the
+    // file, which the chat's file tools do not take, as for the edits of the dashboard.
+    write_document(workspace, &default_activity_with_screen())?;
     Ok(true)
 }
