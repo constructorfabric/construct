@@ -65,6 +65,7 @@ pub fn own_stores(
     manage: &crate::manage::Manager,
     activity: &crate::activity::Feed,
     setup: Option<&crate::dashboard_setup::SetupJob>,
+    screen: Option<&crate::screen::Screen>,
     runtime: &tokio::runtime::Handle,
 ) -> OwnStores {
     let mut stores: Vec<Arc<dyn OwnStore>> =
@@ -74,6 +75,9 @@ pub fn own_stores(
     }
     if let Some(setup) = setup {
         stores.push(Arc::new(setup.clone()));
+    }
+    if let Some(screen) = screen {
+        stores.push(Arc::new(screen.clone()));
     }
     stores.push(Arc::new(crate::activity::ActivityStore::new(
         activity, runtime,

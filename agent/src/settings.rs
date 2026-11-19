@@ -13,6 +13,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
@@ -51,10 +52,14 @@ pub const TOOLS: [&str; 2] = ["claude-code", "codex"];
 /// What the readers collect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+// One flag per switch: these are the field names of the settings file and of the answer.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Collection {
     pub enabled: bool,
     pub claude_code: bool,
     pub codex: bool,
+    /// The screen samples (see `screen`): off until the person switches them on.
+    pub screen: bool,
 }
 
 impl Default for Collection {
@@ -63,6 +68,7 @@ impl Default for Collection {
             enabled: true,
             claude_code: true,
             codex: true,
+            screen: false,
         }
     }
 }
@@ -181,6 +187,7 @@ struct CollectionUpdate {
     enabled: Option<bool>,
     claude_code: Option<bool>,
     codex: Option<bool>,
+    screen: Option<bool>,
 }
 
 impl Update {
@@ -296,6 +303,7 @@ fn merged(data: &Data, update: Update) -> Result<Data, Error> {
         target.enabled = c.enabled.unwrap_or(target.enabled);
         target.claude_code = c.claude_code.unwrap_or(target.claude_code);
         target.codex = c.codex.unwrap_or(target.codex);
+        target.screen = c.screen.unwrap_or(target.screen);
     }
     Ok(next)
 }
@@ -306,6 +314,8 @@ fn merged(data: &Data, update: Update) -> Result<Data, Error> {
 pub struct Settings {
     path: Arc<PathBuf>,
     data: Arc<Mutex<Data>>,
+    /// Whether this computer can give the screen signals; set by the sampler, which knows.
+    screen_supported: Arc<AtomicBool>,
 }
 
 impl Settings {
@@ -343,11 +353,17 @@ impl Settings {
         let settings = Self {
             path: Arc::new(path),
             data: Arc::new(Mutex::new(data.clone())),
+            screen_supported: Arc::new(AtomicBool::new(false)),
         };
         if unreadable {
             settings.save(&data)?;
         }
         Ok(settings)
+    }
+
+    /// Tells whether this computer can give the screen signals, as the settings answer says.
+    pub fn set_screen_supported(&self, supported: bool) {
+        self.screen_supported.store(supported, Ordering::SeqCst);
     }
 
     fn lock(&self) -> MutexGuard<'_, Data> {
@@ -375,6 +391,7 @@ impl Settings {
             && match tool {
                 "claude-code" => c.claude_code,
                 "codex" => c.codex,
+                crate::screen::SOURCE => c.screen,
                 crate::chat::SOURCE => true,
                 _ => false,
             }
@@ -429,6 +446,8 @@ impl Settings {
                 "api_key_set": data.model.api_key.is_some(),
             },
             "collection": data.collection,
+            // What this computer can collect.
+            "supports": { "screen": self.screen_supported.load(Ordering::SeqCst) },
             // For the information badge: why collection is off.
             "notice": data.recovered.then_some("settings file was unreadable; collection is off"),
         })
@@ -512,6 +531,39 @@ mod tests {
             .unwrap();
         assert!(!s.collects("claude-code") && !s.collects("codex"));
         assert_eq!(s.tools_off(), ["claude-code", "codex"]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_with_no_screen_reads_as_off() {
+        let dir = scratch("no-screen");
+        fs::write(
+            dir.join(FILE_NAME),
+            r#"{"version":1,"collection":{"enabled":true,"claude_code":true,"codex":false}}"#,
+        )
+        .unwrap();
+        let s = Settings::open(&dir).unwrap();
+        assert!(!s.collection().screen);
+        assert!(!s.collects("screen"));
+        assert!(!s.collection().codex);
+        let v: serde_json::Value = serde_json::from_str(&s.get_response()).unwrap();
+        assert_eq!(v["collection"]["screen"], false);
+        assert_eq!(v["supports"]["screen"], false);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_screen_is_collected_only_while_all_collection_and_its_switch_are_on() {
+        let dir = scratch("screen-switch");
+        let s = Settings::open(&dir).unwrap();
+        assert!(!s.collects("screen"));
+        s.apply(update(r#"{"collection":{"screen":true}}"#))
+            .unwrap();
+        assert!(s.collects("screen"));
+        s.apply(update(r#"{"collection":{"enabled":false}}"#))
+            .unwrap();
+        assert!(!s.collects("screen"));
+        assert!(Settings::open(&dir).unwrap().collection().screen);
         let _ = fs::remove_dir_all(dir);
     }
 

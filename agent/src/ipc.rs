@@ -56,6 +56,7 @@ pub fn status_response(
     service_registered: Option<bool>,
     facts: Option<serde_json::Value>,
     activity: Option<serde_json::Value>,
+    screen: Option<serde_json::Value>,
 ) -> String {
     let mut reply = serde_json::json!({
         "status": "running",
@@ -72,6 +73,9 @@ pub fn status_response(
     }
     if let Some(activity) = activity {
         reply["activity"] = activity;
+    }
+    if let Some(screen) = screen {
+        reply["screen"] = screen;
     }
     if let Some(registered) = service_registered {
         reply["service"] = if registered {
@@ -174,6 +178,7 @@ mod unix {
     use crate::follow::Stats;
     use crate::manage::Manager;
     use crate::model::{ModelHealth, ModelState};
+    use crate::screen::Screen;
     use crate::settings::{Settings, Update};
 
     /// Mode of the `construct` runtime directory: the user only.
@@ -216,6 +221,7 @@ mod unix {
         numbers: Option<Numbers>,
         details: Option<Details>,
         setup: Option<SetupJob>,
+        screen: Option<Screen>,
     }
 
     impl Server {
@@ -255,6 +261,7 @@ mod unix {
                 numbers: None,
                 details: None,
                 setup: None,
+                screen: None,
             })
         }
 
@@ -359,6 +366,13 @@ mod unix {
             self
         }
 
+        /// Show the screen samples as the `screen` row of `status`.
+        #[must_use]
+        pub fn with_screen(mut self, screen: Screen) -> Self {
+            self.screen = Some(screen);
+            self
+        }
+
         #[must_use]
         pub fn path(&self) -> &Path {
             &self.path
@@ -385,6 +399,7 @@ mod unix {
                         let numbers = self.numbers.clone();
                         let details = self.details.clone();
                         let setup = self.setup.clone();
+                        let screen = self.screen.clone();
                         thread::spawn(move || {
                             let shared = Shared {
                                 database: &database,
@@ -400,6 +415,7 @@ mod unix {
                                 numbers: numbers.as_ref(),
                                 details: details.as_ref(),
                                 setup: setup.as_ref(),
+                                screen: screen.as_ref(),
                             };
                             if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
@@ -526,6 +542,7 @@ mod unix {
         numbers: Option<&'a Numbers>,
         details: Option<&'a Details>,
         setup: Option<&'a SetupJob>,
+        screen: Option<&'a Screen>,
     }
 
     /// Never log, or return in an error, any part of `line`: it can hold a key.
@@ -559,6 +576,7 @@ mod unix {
                 (shared.service)(),
                 shared.manage.map(Manager::status),
                 shared.activity.map(Feed::to_json),
+                shared.screen.map(Screen::status),
             ),
             ("backfill", _) => shared.manage.map_or_else(
                 || error_response("backfill is not available"),
@@ -806,6 +824,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["status"], "running");
@@ -827,6 +846,7 @@ mod tests {
             "m",
             "configured",
             Some(true),
+            None,
             None,
             None,
         );
