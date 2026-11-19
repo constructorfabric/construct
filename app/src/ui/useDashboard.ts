@@ -92,6 +92,11 @@ async function widgetNumbers(
 export interface DashboardControls {
   readonly state: DashboardState;
   /**
+   * The document the page has read, also while the numbers are being counted: the toolbar stands on
+   * it, so the arrows and the date do not vanish at every step.
+   */
+  readonly document: DashboardDocument | null;
+  /**
    * Writes the changes to the document, one at a time and in the order asked, and shows the
    * document the agent answers. A change the agent refuses stops the rest of its list.
    */
@@ -103,8 +108,9 @@ export interface DashboardControls {
 
 /**
  * The dashboard document with the numbers of each of its widgets, counted from the day the page
- * stands on (`day`; see `periodAnchor`), which stands for today. The agent watches the file, so the page asks again every few seconds and
- * reads the numbers again when the document, or the day, changes.
+ * stands on (`day`; see `periodAnchor`), which stands for today. The agent watches the file, so
+ * the page asks again every few seconds and reads the numbers again when the document, or the day,
+ * changes.
  */
 export function useDashboard(day: Date): DashboardControls {
   const [file, setFile] = useState<File | { readonly error: string } | null>(null);
@@ -285,5 +291,5 @@ export function useDashboard(day: Date): DashboardControls {
       collecting: loaded.collecting,
     };
   })();
-  return { state, change, failure, dismissFailure };
+  return { state, document, change, failure, dismissFailure };
 }

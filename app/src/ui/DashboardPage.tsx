@@ -294,8 +294,7 @@ export function DashboardPage({
   readonly onOpenSettings: () => void;
 }): ReactNode {
   const [day, setDay] = useState(() => startOfDay(new Date()));
-  const { state, change, failure, dismissFailure } = useDashboard(day);
-  const document = state.kind === 'ready' ? state.document : null;
+  const { state, document, change, failure, dismissFailure } = useDashboard(day);
   // The arrows step by the shortest period a widget counts: a day when one counts a day, else a
   // week, and then the week arrows are the only ones.
   const byDay = countsDay(document);

@@ -508,8 +508,8 @@ test('the arrows and the date picker change the day the periods are counted from
   const agent = newAgent();
   await withAgent(session, agent, async (page) => {
     const today = startOfDay(now);
-    const firstDay = (): string | undefined =>
-      agent.requests.filter((request) => request.widget === 'total').at(-1)?.days[0]?.label;
+    const firstDay = (widget = 'total'): string | undefined =>
+      agent.requests.filter((request) => request.widget === widget).at(-1)?.days[0]?.label;
     await expect.poll(firstDay).toBe(dayLabel(mondayOf(today)));
 
     await page.getByRole('button', { name: 'Next week', exact: true }).click();
@@ -548,8 +548,8 @@ test('with weekly widgets only, the arrows step by a week and the date picker ju
   await withAgent(session, agent, async (page) => {
     const today = startOfDay(now);
     const monday = mondayOf(today);
-    const firstDay = (): string | undefined =>
-      agent.requests.filter((request) => request.widget === 'total').at(-1)?.days[0]?.label;
+    const firstDay = (widget = 'total'): string | undefined =>
+      agent.requests.filter((request) => request.widget === widget).at(-1)?.days[0]?.label;
     const header = page.locator('#dashboard-period');
     await expect.poll(firstDay).toBe(dayLabel(monday));
     await expect(header).toHaveText('Nov 16 – Nov 22, 2026');
@@ -568,12 +568,40 @@ test('with weekly widgets only, the arrows step by a week and the date picker ju
     await page.locator('#dashboard-date').click();
     await page.getByRole('button', { name: /November 4th,/ }).click();
     await expect.poll(firstDay).toBe('2026-11-02');
+    // The widget of last week asks for the seven days before that week.
+    await expect.poll(() => firstDay('per-day')).toBe('2026-10-26');
     await expect(header).toHaveText('Nov 2 – Nov 8, 2026');
 
     // Each widget names its days: the week of the page, and the week before it.
     await expect(page.locator('#widget-total')).toContainText('This week · Nov 2 – Nov 8');
     await expect(page.locator('#widget-per-day')).toContainText('Last week · Oct 26 – Nov 1');
     await screenshotBothThemes(page, 'dashboard-period-week');
+  });
+});
+
+test('the arrows and the header stay while the numbers of the next period are read', async ({
+  session,
+}) => {
+  const agent = newAgent({ document: weeklyDocument });
+  await withAgent(session, agent, async (page) => {
+    const header = page.locator('#dashboard-period');
+    await expect(header).toHaveText('Nov 16 – Nov 22, 2026');
+    await expect(page.locator('#value-total')).toHaveText(ownWeek);
+    let release: () => void = () => undefined;
+    agent.hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const previous = page.locator('#dashboard-previous-week');
+    await previous.focus();
+    await previous.click();
+    await expect(page.getByText('Reading the history')).toBeVisible();
+    // Nothing of the toolbar goes while the page reads: the header names the new week, and the
+    // arrow that was pressed is still there, with the focus.
+    await expect(header).toHaveText('Nov 9 – Nov 15, 2026');
+    await expect(previous).toBeFocused();
+    await expect(page.locator('#dashboard-date')).toBeVisible();
+    release();
+    await expect(page.locator('#value-total')).toBeVisible();
   });
 });
 

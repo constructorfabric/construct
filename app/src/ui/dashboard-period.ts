@@ -27,10 +27,17 @@ export function dayBounds(date: Date): DayBounds {
   };
 }
 
+/** `count` days, one at least, from `first`. */
+function run(first: Date, count: number): [DayBounds, ...DayBounds[]] {
+  return [
+    dayBounds(first),
+    ...Array.from({ length: count - 1 }, (_, index) => dayBounds(addDays(first, index + 1))),
+  ];
+}
+
 /** The seven days, Monday to Sunday, of the week of `date`. */
-export function weekBounds(date: Date): DayBounds[] {
-  const first = mondayOf(date);
-  return Array.from({ length: 7 }, (_, index) => dayBounds(addDays(first, index)));
+export function weekBounds(date: Date): [DayBounds, ...DayBounds[]] {
+  return run(mondayOf(date), 7);
 }
 
 /** A day as the page names it, `Nov 16`. */
@@ -47,11 +54,9 @@ export function formatMinutes(minutes: number): string {
 }
 
 /** The days of a period, as the document names it, counted from `anchor`, which stands for today. */
-export function periodDays(period: Period, anchor: Date): DayBounds[] {
+export function periodDays(period: Period, anchor: Date): [DayBounds, ...DayBounds[]] {
   const today = startOfDay(anchor);
-  const run = (first: Date, count: number): DayBounds[] =>
-    Array.from({ length: count }, (_, index) => dayBounds(addDays(first, index)));
-  const month = (offset: number): DayBounds[] => {
+  const month = (offset: number): [DayBounds, ...DayBounds[]] => {
     const first = new Date(today.getFullYear(), today.getMonth() + offset, 1);
     return run(first, new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate());
   };
@@ -86,7 +91,9 @@ export function countsDay(document: DashboardDocument | null): boolean {
 /**
  * The day the periods of the page are counted from. A page that counts a day stands on the day
  * chosen; one that counts weeks at most stands on the last day of the chosen week, so that the
- * week, and the seven days up to it, are the week chosen.
+ * week, and the seven days up to it, are the week chosen. The month widgets follow that last day:
+ * a month is not a week, so they cannot follow the week's own days, and the other widgets are the
+ * ones the header names.
  */
 export function periodAnchor(document: DashboardDocument | null, day: Date): Date {
   return countsDay(document) ? day : addDays(mondayOf(day), 6);
@@ -101,17 +108,22 @@ export function pageLabel(document: DashboardDocument | null, day: Date): string
   return `${shortDate(mondayOf(anchor))} – ${format(anchor, 'MMM d, yyyy')}`;
 }
 
-/** The first and the last day of a period, as a widget names them: `Nov 16 – Nov 22`. */
-export function rangeLabel(days: readonly DayBounds[]): string {
-  const first = days[0];
-  const last = days[days.length - 1];
-  if (first === undefined || last === undefined || first.label === last.label) {
-    return first === undefined ? '' : shortDate(parseDay(first.label));
+/** A day label, `2026-11-16`, as the date of that day in the user's time zone. */
+export function dateOfLabel(label: string): Date | null {
+  const [year, month, day] = label.split('-').map(Number);
+  if (year === undefined || month === undefined || day === undefined) {
+    return null;
   }
-  return `${shortDate(parseDay(first.label))} – ${shortDate(parseDay(last.label))}`;
+  return new Date(year, month - 1, day);
 }
 
-function parseDay(label: string): Date {
-  const [year = 0, month = 1, day = 1] = label.split('-').map(Number);
-  return new Date(year, month - 1, day);
+/** The first and the last day of a period, as a widget names them: `Nov 16 – Nov 22`. */
+export function rangeLabel(days: readonly [DayBounds, ...DayBounds[]]): string {
+  const first = days[0];
+  const last = days.at(-1) ?? first;
+  const name = ({ label }: DayBounds): string => {
+    const date = dateOfLabel(label);
+    return date === null ? label : shortDate(date);
+  };
+  return first.label === last.label ? name(first) : `${name(first)} – ${name(last)}`;
 }
