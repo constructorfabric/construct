@@ -25,8 +25,7 @@ use std::fmt;
 
 use connectors::minute_of;
 
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
+use time::{Date, Month};
 
 use super::{assign, findings};
 
@@ -169,9 +168,29 @@ pub fn minute_number(time: &str) -> Option<i64> {
     {
         return None;
     }
-    let parsed = OffsetDateTime::parse(&format!("{minute}:00Z"), &Rfc3339).ok()?;
-    Some(parsed.unix_timestamp().div_euclid(60))
+    // `YYYY-MM-DDTHH:MM`, digits only: read in place, a store of a year of minutes is read often.
+    let b = minute.as_bytes();
+    let digits = |from: usize, to: usize| -> Option<i32> {
+        b[from..to].iter().try_fold(0_i32, |n, c| {
+            c.is_ascii_digit().then(|| n * 10 + i32::from(c - b'0'))
+        })
+    };
+    if b[4] != b'-' || b[7] != b'-' || b[13] != b':' {
+        return None;
+    }
+    let month = Month::try_from(u8::try_from(digits(5, 7)?).ok()?).ok()?;
+    let date =
+        Date::from_calendar_date(digits(0, 4)?, month, u8::try_from(digits(8, 10)?).ok()?).ok()?;
+    let (hh, mm) = (digits(11, 13)?, digits(14, 16)?);
+    if hh > 23 || mm > 59 {
+        return None;
+    }
+    let days = i64::from(date.to_julian_day()) - UNIX_EPOCH_JULIAN_DAY;
+    Some(days * 24 * 60 + i64::from(hh) * 60 + i64::from(mm))
 }
+
+/// The Julian day number of 1970-01-01.
+const UNIX_EPOCH_JULIAN_DAY: i64 = 2_440_588;
 
 /// Whether a session counts as unattended: it has prompts from scripts and none from a person
 /// or from an author that is not known.

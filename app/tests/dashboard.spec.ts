@@ -61,6 +61,8 @@ interface Agent {
   building: number;
   /** How many times the page has asked for the document. */
   looks: number;
+  /** How many answers of `numbersError` the agent has given. */
+  failed: number;
   readonly requests: Request[];
 }
 
@@ -137,6 +139,7 @@ function numbersReply(agent: Agent, request: Request): string {
     return JSON.stringify({ error: 'the activity time is being built' });
   }
   if (agent.numbersError !== null) {
+    agent.failed += 1;
     return JSON.stringify({ error: agent.numbersError });
   }
   const found = agent.document?.payload.widgets.find((w) => w.id === request.widget);
@@ -248,6 +251,7 @@ function newAgent(overrides: Partial<Agent> = {}): Agent {
     documentError: null,
     hold: null,
     looks: 0,
+    failed: 0,
     numbersError: null,
     settingsError: null,
     building: 0,
@@ -775,8 +779,10 @@ test('a recount that fails keeps the numbers that were on show', async ({ sessio
     await expect(page.locator('#value-total')).toHaveText(ownWeek);
     agent.numbersError = 'the activity time could not be read';
     await page.clock.runFor(30_000);
-    // The agent has been asked again and has failed; the page still shows the last numbers.
-    expect(agent.requests.length).toBeGreaterThan(4);
+    // The agent has failed all four widgets of the page, and a round trip to it that began
+    // after that has come back: the failed answers have been through the page.
+    await expect.poll(() => agent.failed).toBeGreaterThanOrEqual(4);
+    await page.evaluate(() => window.constructAgent.getSettings());
     await expect(page.locator('#value-total')).toHaveText(ownWeek);
     await expect(page.locator('#dashboard-empty')).toHaveCount(0);
     agent.numbersError = null;

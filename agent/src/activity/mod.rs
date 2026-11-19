@@ -8,7 +8,7 @@
 //! and the ticket ids the user names with how often (the text rule for a ticket). Applying a record is idempotent and the result does not depend on the order records
 //! arrive in, so a step-by-step store equals a rebuilt one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -412,31 +412,45 @@ impl Store {
     }
 
     async fn read_session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {
+        // The minutes are read on their own, a row per session with the minutes gathered by the
+        // database, and joined to the sessions here: a join of a row per minute to its session
+        // costs several times as much.
         let rows = sqlx::query(
             "select s.tool, s.session, s.project, s.ticket, s.area, s.collection, s.person_prompts,
-                    s.unattended_prompts, s.unknown_prompts, m.minute
-             from activity.sessions s
-             join activity.minutes m on m.tool = s.tool and m.session = s.session
-             order by s.tool, s.session, m.minute",
+                    s.unattended_prompts, s.unknown_prompts
+             from activity.sessions s order by s.tool, s.session",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| err("read the sessions", e))?;
+        let minutes: Vec<(String, String, Vec<String>)> = sqlx::query_as(
+            "select tool, session, array_agg(minute order by minute)
+             from activity.minutes group by tool, session",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|e| err("read the minutes of the sessions", e))?;
-        let mut sessions: Vec<rules::SessionMinutes> = Vec::new();
+        // By the key, not by position: the order the database sorts text in is its own.
+        let mut minutes: HashMap<(String, String), Vec<String>> = minutes
+            .into_iter()
+            .map(|(tool, session, texts)| ((tool, session), texts))
+            .collect();
+        let mut sessions: Vec<rules::SessionMinutes> = Vec::with_capacity(minutes.len());
         for row in &rows {
-            let fail = |e| err("read a minute", e);
+            let fail = |e| err("read a session", e);
             let tool: String = row.try_get("tool").map_err(fail)?;
             let session: String = row.try_get("session").map_err(fail)?;
-            let text: String = row.try_get("minute").map_err(fail)?;
-            let minute = rules::minute_number(&text)
-                .ok_or_else(|| err("read a minute", format!("{text:?} is not a minute")))?;
-            if let Some(last) = sessions
-                .last_mut()
-                .filter(|s| s.tool == tool && s.session == session)
-            {
-                last.minutes.push(minute);
+            // A session without minutes is not listed.
+            let Some(texts) = minutes.remove(&(tool.clone(), session.clone())) else {
                 continue;
-            }
+            };
+            let numbers = texts
+                .iter()
+                .map(|text| {
+                    rules::minute_number(text)
+                        .ok_or_else(|| err("read a minute", format!("{text:?} is not a minute")))
+                })
+                .collect::<Result<Vec<i64>, Error>>()?;
             sessions.push(rules::SessionMinutes {
                 project: row.try_get("project").map_err(fail)?,
                 ticket: row.try_get("ticket").map_err(fail)?,
@@ -449,7 +463,7 @@ impl Store {
                 ),
                 tool,
                 session,
-                minutes: vec![minute],
+                minutes: numbers,
             });
         }
         Ok(sessions)
