@@ -183,6 +183,19 @@ impl Signals for NoSignals {
     }
 }
 
+/// The signals of this computer: the Mac's on a Mac, else none.
+#[must_use]
+pub fn platform_signals() -> Arc<dyn Signals> {
+    #[cfg(target_os = "macos")]
+    {
+        Arc::new(crate::mac_signals::MacSignals::new())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Arc::new(NoSignals)
+    }
+}
+
 /// The clock of the sampler, so the tests can move it.
 pub trait Clock: Send + Sync {
     fn now(&self) -> SystemTime;

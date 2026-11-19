@@ -79,6 +79,15 @@ libc = "0.2"
 # The readiness probe of the host (plain HTTP) and the model Test call (rustls only, no OpenSSL).
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
+# The signals of a Mac (see `mac_signals`). Safe bindings only: the workspace forbids unsafe code.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEventSource", "CGEventTypes", "libc", "CGSession", "CGDirectDisplay", "CGDisplayConfiguration"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary", "CFString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSRunLoop", "NSDate", "NSString", "NSObjCRuntime", "NSArray"] }
+accessibility = "0.2"
+accessibility-sys = "0.2"
+
 [dev-dependencies]
 # Zones with a clock change, for the tests of the days.
 chrono-tz = "0.10"
