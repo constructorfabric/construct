@@ -37,7 +37,7 @@ const NO_CALENDAR: &str = "the days of the periods cannot be worked out from the
 time zone of this computer, so the numbers cannot be counted";
 
 /// How the tool reads the sessions of the activity store.
-pub type SessionSource = Arc<dyn Fn() -> Result<Vec<SessionMinutes>, &'static str> + Send + Sync>;
+pub type SessionSource = Arc<dyn Fn() -> Result<Arc<[SessionMinutes]>, &'static str> + Send + Sync>;
 
 /// The days of the periods, in the time zone of this computer.
 #[derive(Clone)]

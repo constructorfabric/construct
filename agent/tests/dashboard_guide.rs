@@ -127,7 +127,7 @@ fn the_tool_names_both_files_and_the_instruction_does_not_change() {
     let dashboard = Dashboard::open(Arc::new(workspace));
     let tool = dashboard_view::tool(
         dashboard,
-        Arc::new(|| Ok(Vec::new())),
+        Arc::new(|| Ok(Vec::new().into())),
         dashboard_view::Calendar::default(),
     );
     let description = construct_agent::chat::tool::ChatTool::description(&*tool);

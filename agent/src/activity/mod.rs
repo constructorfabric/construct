@@ -32,7 +32,7 @@ pub mod rules;
 pub const DBNAME: &str = "activity";
 /// The version of the rules that turn records into rows. Change it when a rule changes: the
 /// next start drops the store and it is rebuilt.
-pub const RULES_VERSION: i32 = 3;
+pub const RULES_VERSION: i32 = 4;
 
 /// The advisory lock `apply` and `rebuild` take for their transaction, so that no two writers
 /// overlap: a record applied while the store is being cleared would be lost, and `touch` reads a
@@ -136,9 +136,19 @@ impl Stored {
     }
 }
 
+/// The sessions as [`Store::session_minutes`] reads them, kept while the store does not change:
+/// a page asks for the same state several times in a row, and each read takes the whole history.
+#[derive(Debug, Default)]
+struct Cache {
+    /// Goes up after every write to the store, so an entry of an earlier number is stale.
+    version: AtomicU64,
+    kept: Mutex<Option<(u64, Arc<[rules::SessionMinutes]>)>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     pool: PgPool,
+    cache: Arc<Cache>,
     /// What the setup found, as the assignment of a session uses it.
     findings: Arc<Mutex<Findings>>,
 }
@@ -158,6 +168,7 @@ impl Store {
             .map_err(|e| err("connect to the activity database", e))?;
         let store = Self {
             pool,
+            cache: Arc::default(),
             findings: Arc::default(),
         };
         if let Err(e) = store.prepare().await {
@@ -195,7 +206,9 @@ impl Store {
         lock_store(&mut tx).await?;
         let findings = self.findings();
         apply_in(&mut tx, record, &findings).await?;
-        tx.commit().await.map_err(|e| err("commit", e))
+        tx.commit().await.map_err(|e| err("commit", e))?;
+        self.changed();
+        Ok(())
     }
 
     /// Makes the whole store again from the record files, in one transaction: a reader never
@@ -232,6 +245,7 @@ impl Store {
             }
         }
         tx.commit().await.map_err(|e| err("commit", e))?;
+        self.changed();
         Ok(applied)
     }
 
@@ -278,6 +292,7 @@ impl Store {
             changed.push((stored.tool, stored.session));
         }
         tx.commit().await.map_err(|e| err("commit", e))?;
+        self.changed();
         *lock(&self.findings) = new;
         Ok(changed)
     }
@@ -290,7 +305,15 @@ impl Store {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
         lock_store(&mut tx).await?;
         clear_in(&mut tx).await?;
-        tx.commit().await.map_err(|e| err("commit", e))
+        tx.commit().await.map_err(|e| err("commit", e))?;
+        self.changed();
+        Ok(())
+    }
+
+    /// Drops what was kept of the sessions: the store has changed.
+    fn changed(&self) {
+        self.cache.version.fetch_add(1, Ordering::SeqCst);
+        *lock(&self.cache.kept) = None;
     }
 
     /// Every session, ordered by tool and session.
@@ -358,7 +381,22 @@ impl Store {
     ///
     /// # Errors
     /// Fails when the query is refused or a stored minute cannot be read.
-    pub async fn session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {
+    pub async fn session_minutes(&self) -> Result<Arc<[rules::SessionMinutes]>, Error> {
+        let version = self.cache.version.load(Ordering::SeqCst);
+        if let Some((kept, sessions)) = &*lock(&self.cache.kept)
+            && *kept == version
+        {
+            return Ok(Arc::clone(sessions));
+        }
+        let sessions: Arc<[rules::SessionMinutes]> = self.read_session_minutes().await?.into();
+        // A write between the read and here made the read stale: it is not kept.
+        if self.cache.version.load(Ordering::SeqCst) == version {
+            *lock(&self.cache.kept) = Some((version, Arc::clone(&sessions)));
+        }
+        Ok(sessions)
+    }
+
+    async fn read_session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {
         let rows = sqlx::query(
             "select s.tool, s.session, s.project, s.ticket, s.area, s.collection, s.person_prompts,
                     s.unattended_prompts, s.unknown_prompts, m.minute
@@ -514,11 +552,15 @@ fn is_utc_time(time: &str) -> bool {
         && time::OffsetDateTime::parse(time, &time::format_description::well_known::Rfc3339).is_ok()
 }
 
+/// The tool name of the chat of the app: time spent in it is not the user's work.
+const CHAT_TOOL: &str = "chat";
+
 /// Whether the store counts the record at all; tool calls and results of a chat carry no
 /// activity.
 fn is_activity(record: &Record) -> bool {
     match record {
-        Record::Turn(_) | Record::Mark(_) => true,
+        Record::Turn(turn) => turn.tool != CHAT_TOOL,
+        Record::Mark(mark) => mark.tool != CHAT_TOOL,
         Record::ToolCall(_) | Record::ToolResult(_) => false,
     }
 }
@@ -528,7 +570,7 @@ async fn apply_in(
     record: &Record,
     findings: &Findings,
 ) -> Result<bool, Error> {
-    if !is_utc_time(record.time()) {
+    if !is_activity(record) || !is_utc_time(record.time()) {
         return Ok(false);
     }
     match record {
@@ -745,7 +787,8 @@ async fn touch(
 
 #[cfg(test)]
 mod tests {
-    use super::is_utc_time;
+    use super::{is_activity, is_utc_time};
+    use connectors::{Author, Mark, Record, Role, Turn};
 
     #[test]
     fn only_real_utc_times_written_with_z_count() {
@@ -759,5 +802,36 @@ mod tests {
         assert!(!is_utc_time("2026-11-11T10:15"));
         assert!(!is_utc_time(""));
         assert!(!is_utc_time("yesterday"));
+    }
+
+    #[test]
+    fn time_in_the_chat_is_not_activity() {
+        let turn = |tool: &str| {
+            Record::Turn(Turn {
+                tool: tool.into(),
+                session: "s".into(),
+                time: "2026-11-11T10:15:30Z".into(),
+                folder: String::new(),
+                branch: String::new(),
+                role: Role::User,
+                author: Author::Person,
+                text: String::new(),
+                tools: Vec::new(),
+            })
+        };
+        let mark = |tool: &str| {
+            Record::Mark(Mark {
+                tool: tool.into(),
+                session: "s".into(),
+                time: "2026-11-11T10:15:30Z".into(),
+                folder: String::new(),
+                branch: String::new(),
+                tools: Vec::new(),
+            })
+        };
+        assert!(is_activity(&turn("claude")));
+        assert!(is_activity(&mark("claude")));
+        assert!(!is_activity(&turn("chat")));
+        assert!(!is_activity(&mark("chat")));
     }
 }

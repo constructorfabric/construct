@@ -83,7 +83,7 @@ pub fn render_tool(
     );
     construct_agent::chat::dashboard_view::tool(
         construct_agent::dashboard_document::Dashboard::open(std::sync::Arc::clone(workspace)),
-        std::sync::Arc::new(|| Ok(fixture())),
+        std::sync::Arc::new(|| Ok(fixture().into())),
         calendar,
     )
 }

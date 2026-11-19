@@ -162,8 +162,9 @@ fn a_session_shows_its_time_in_the_users_offset_and_a_short_id_and_no_text() {
             "session": "shop-ses",
         })
     );
-    // The second session was shared with another group for ten minutes; they count whole.
-    assert_eq!(page["sessions"][1]["minutes"], 20);
+    // The second session shared ten of its twenty minutes with another group, which takes half
+    // of each: it holds fifteen, so the sessions add up to the row.
+    assert_eq!(page["sessions"][1]["minutes"], 15);
     assert_eq!(page["next_offset"], Value::Null);
 }
 

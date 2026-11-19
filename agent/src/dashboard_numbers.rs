@@ -28,6 +28,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use std::sync::Arc;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
@@ -458,7 +460,7 @@ impl Numbers {
     ///
     /// # Errors
     /// With a plain reason when the store is not ready or cannot be read.
-    pub fn read_sessions(&self) -> Result<Vec<SessionMinutes>, &'static str> {
+    pub fn read_sessions(&self) -> Result<Arc<[SessionMinutes]>, &'static str> {
         let store = self.feed.readable_store()?;
         self.runtime.block_on(store.session_minutes()).map_err(|e| {
             // The reason stays in the agent's log, as the activity store's own failures do.
@@ -472,10 +474,10 @@ impl Numbers {
 /// no good one) and a way to read the sessions, which runs only for a request that is fine.
 /// [`Numbers::answer`] is this with the live store.
 #[must_use]
-pub fn respond(
+pub fn respond<S: AsRef<[SessionMinutes]>>(
     argument: &str,
     document: Option<&Value>,
-    sessions: impl FnOnce() -> Result<Vec<SessionMinutes>, &'static str>,
+    sessions: impl FnOnce() -> Result<S, &'static str>,
 ) -> String {
     let request = match read_request(argument, document) {
         Ok(request) => request,
@@ -489,7 +491,7 @@ pub fn respond(
         Ok(sessions) => sessions,
         Err(message) => return crate::ipc::error_response(message),
     };
-    match numbers(&sessions, &request.days, &request.spec) {
+    match numbers(sessions.as_ref(), &request.days, &request.spec) {
         Ok(answer) => {
             let mut reply = answer.to_json();
             if let Some((id, kind)) = request.widget {

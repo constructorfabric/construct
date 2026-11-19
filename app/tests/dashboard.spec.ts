@@ -649,6 +649,18 @@ test('the page says when there is nothing to show', async ({ session }) => {
   });
 });
 
+test('work done while the page is open appears without a click', async ({ session }) => {
+  const agent = newAgent();
+  await withAgent(session, agent, async (page) => {
+    await expect(page.locator('#value-total')).toHaveText(ownWeek);
+    // The document is the same: only a count on a timer can bring the new numbers.
+    agent.empty = true;
+    await page.clock.runFor(30_000);
+    await expect(page.locator('#dashboard-empty')).toContainText('Nothing to show');
+    await expect(page.locator('#value-total')).toHaveCount(0);
+  });
+});
+
 test('the page says when collection is off, and links to Settings', async ({ session }) => {
   await withAgent(session, newAgent({ empty: true, collecting: false }), async (page) => {
     await expect(page.locator('#dashboard-off')).toContainText('Collection is off');

@@ -9,7 +9,7 @@
 //!   and `group_by`) with the `group` to open, and `offset`, `limit` and `utc_offset_minutes` (the
 //!   user's offset from UTC, `0` when left out; the times of the answer are in it). The answer
 //!   lists the sessions that have time in the group, the earliest first, a page at a time. A
-//!   session shows when it first and last counted in the group, how many minutes it counted in,
+//!   session shows when it first and last counted in the group, its share of the group in whole minutes,
 //!   and the first characters of its id.
 //! * `dashboard-summary`: the request of `dashboard-numbers` with one `day` in place of `days`,
 //!   and no `group_by`. The answer is one text line for each ticket and, for time with no ticket,
@@ -17,6 +17,8 @@
 //! * `dashboard-state`: no argument. `reading` while the store is built, with the records read,
 //!   `empty` when it holds nothing, `ready` otherwise, or `unavailable`; `tools_off` names the tools
 //!   whose collection is switched off.
+
+use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use time::format_description::well_known::Rfc3339;
@@ -50,7 +52,7 @@ pub struct SessionRow {
     pub start: String,
     /// The end of the last minute it counted in.
     pub end: String,
-    /// The minutes it counted in. A minute shared with other groups counts whole.
+    /// Its share of the group in whole minutes: the shares of a group add up to the group.
     pub minutes: u64,
     pub tool: String,
     /// The project as the page names it.
@@ -141,16 +143,18 @@ pub fn sessions_of(
         ))
     });
     let total = spans.len();
+    let shares = whole_shares(&spans);
     let rows = spans
         .into_iter()
+        .zip(shares)
         .skip(offset)
         .take(limit)
-        .map(|span| {
+        .map(|(span, minutes)| {
             let session = &kept[span.session];
             SessionRow {
                 start: clock(span.first, zone),
                 end: clock(span.last + 1, zone),
-                minutes: span.minutes,
+                minutes,
                 tool: session.tool.clone(),
                 project: selection
                     .shown
@@ -172,6 +176,26 @@ pub fn sessions_of(
         limit,
         rows,
     })
+}
+
+/// The whole minutes of each span, so that they add up to the whole minutes of the group. A
+/// minute two sessions of a group share is split between them, so a list of the sessions adds up
+/// to the row it opens. The rounding gives the leftover minutes to the largest remainders.
+fn whole_shares(spans: &[Span]) -> Vec<u64> {
+    let total: u64 = spans.iter().map(|s| s.parts).sum();
+    let target = (total + PARTS_PER_MINUTE / 2) / PARTS_PER_MINUTE;
+    let mut shares: Vec<u64> = spans.iter().map(|s| s.parts / PARTS_PER_MINUTE).collect();
+    let mut left = target.saturating_sub(shares.iter().sum());
+    let mut order: Vec<usize> = (0..spans.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(spans[i].parts % PARTS_PER_MINUTE));
+    for i in order {
+        if left == 0 {
+            break;
+        }
+        shares[i] += 1;
+        left -= 1;
+    }
+    shares
 }
 
 /// A time of whole minutes as a person says it: `1 h 20 min`, `2 h`, `45 min`.
@@ -301,10 +325,10 @@ fn read_sessions_request(
 /// The JSON line for a `dashboard-sessions` request, given the dashboard `document` and a way to
 /// read the sessions, which runs only for a request that is fine.
 #[must_use]
-pub fn respond_sessions(
+pub fn respond_sessions<S: AsRef<[SessionMinutes]>>(
     argument: &str,
     document: Option<&Value>,
-    load: impl FnOnce() -> Result<Vec<SessionMinutes>, &'static str>,
+    load: impl FnOnce() -> Result<S, &'static str>,
 ) -> String {
     let read = match read_sessions_request(argument, document) {
         Ok(read) => read,
@@ -319,7 +343,7 @@ pub fn respond_sessions(
         Err(message) => return error_response(message),
     };
     match sessions_of(
-        &sessions,
+        sessions.as_ref(),
         &read.request.days,
         &read.request.spec,
         &read.group,
@@ -333,10 +357,10 @@ pub fn respond_sessions(
 
 /// The JSON line for a `dashboard-summary` request.
 #[must_use]
-pub fn respond_summary(
+pub fn respond_summary<S: AsRef<[SessionMinutes]>>(
     argument: &str,
     document: Option<&Value>,
-    load: impl FnOnce() -> Result<Vec<SessionMinutes>, &'static str>,
+    load: impl FnOnce() -> Result<S, &'static str>,
 ) -> String {
     let read = || -> Result<Request, String> {
         let mut object = object_of(argument)?;
@@ -359,7 +383,7 @@ pub fn respond_summary(
         Ok(sessions) => sessions,
         Err(message) => return error_response(message),
     };
-    match summary_of(&sessions, &request.days[0], &request.spec) {
+    match summary_of(sessions.as_ref(), &request.days[0], &request.spec) {
         Ok(summary) => json!({
             "day": request.days[0].label,
             "total_minutes": summary.total_minutes,
@@ -403,7 +427,7 @@ impl Details {
         (!document.is_null()).then_some(document)
     }
 
-    fn load(&self) -> Result<Vec<SessionMinutes>, &'static str> {
+    fn load(&self) -> Result<Arc<[SessionMinutes]>, &'static str> {
         let store = self.feed.readable_store()?;
         self.runtime.block_on(store.session_minutes()).map_err(|e| {
             eprintln!("dashboard details: {e}");
@@ -466,5 +490,38 @@ mod tests {
             "1969-12-31T22:30:00-01:30"
         );
         assert!(offset_of(5000).is_err());
+    }
+
+    fn shop_session(id: &str, minutes: std::ops::RangeInclusive<i64>) -> SessionMinutes {
+        SessionMinutes {
+            tool: "claude".to_owned(),
+            session: id.to_owned(),
+            project: "/work/shop".to_owned(),
+            ticket: String::new(),
+            area: String::new(),
+            collection: String::new(),
+            unattended: false,
+            minutes: minutes.collect(),
+        }
+    }
+
+    #[test]
+    fn overlapping_sessions_of_a_project_add_up_to_its_row() {
+        // A is minutes 0..=9 and B is 5..=14: the project holds 15 minutes, 5 of them shared.
+        let sessions = [shop_session("a", 0..=9), shop_session("b", 5..=14)];
+        let days = [Day {
+            label: "d".to_owned(),
+            start: 0,
+            end: 1440,
+        }];
+        let spec = crate::dashboard_numbers::Spec {
+            kind: Some(Kind::Person),
+            grouping: Some(Grouping::Project),
+            ..Default::default()
+        };
+        let page = sessions_of(&sessions, &days, &spec, "shop", 0, (0, 50)).unwrap();
+        let shares: Vec<u64> = page.rows.iter().map(|r| r.minutes).collect();
+        assert_eq!(shares.iter().sum::<u64>(), 15);
+        assert_eq!(shares.len(), 2);
     }
 }

@@ -129,6 +129,10 @@ pub struct Span {
     pub last: i64,
     /// How many whole minutes it counted in; a minute shared with other groups counts whole.
     pub minutes: u64,
+    /// The time it holds in the group, in [`PARTS_PER_MINUTE`]th of a minute: a minute of the
+    /// group is shared equally between the sessions of the group that count in it, so the
+    /// sessions of a group add up to the group.
+    pub parts: u64,
 }
 
 /// The answer: the groups, their total and the sessions that have any time in the period.
@@ -371,15 +375,18 @@ pub fn calculate_spans(
             entry.1 += parts;
             total_parts += parts;
             counted_sessions.extend(members.iter().copied());
-            for session in members {
+            let size = members.len() as u64;
+            for (place, session) in members.into_iter().enumerate() {
                 let span = entry.2.entry(session).or_insert(Span {
                     session,
                     first: *minute,
                     last: *minute,
                     minutes: 0,
+                    parts: 0,
                 });
                 span.last = *minute;
                 span.minutes += 1;
+                span.parts += parts / size + u64::from((place as u64) < parts % size);
             }
         }
     }

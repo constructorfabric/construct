@@ -336,15 +336,19 @@ fn a_request_that_cannot_be_used_says_why_and_repeats_nothing() {
 fn the_store_not_being_ready_is_the_answer_and_nothing_is_read_for_a_bad_request() {
     let document = default_activity();
     let reply = respond(&widget_request("total"), Some(&document), || {
-        Err("the activity time is being built")
+        Err::<Vec<SessionMinutes>, _>("the activity time is being built")
     });
     assert_eq!(
         reply,
         json!({ "error": "the activity time is being built" }).to_string()
     );
-    let reply = respond("{}", Some(&document), || {
-        panic!("a bad request does not read the store")
-    });
+    let reply = respond(
+        "{}",
+        Some(&document),
+        || -> Result<Vec<SessionMinutes>, &'static str> {
+            panic!("a bad request does not read the store")
+        },
+    );
     assert!(reply.contains("error"));
 }
 
@@ -638,9 +642,13 @@ fn the_days_are_checked_before_the_store_is_read() {
         { "label": "b", "start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z" },
     ] })
     .to_string();
-    let reply = respond(&overlap, Some(&default_activity()), || {
-        panic!("a day set that cannot be used does not read the store")
-    });
+    let reply = respond(
+        &overlap,
+        Some(&default_activity()),
+        || -> Result<Vec<SessionMinutes>, &'static str> {
+            panic!("a day set that cannot be used does not read the store")
+        },
+    );
     assert_eq!(
         reply,
         json!({ "error": "the days a and b overlap" }).to_string()
