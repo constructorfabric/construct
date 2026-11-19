@@ -340,6 +340,39 @@ async fn the_chat_of_the_app_is_not_stored_as_activity() {
 
 #[tokio::test]
 #[ignore = "starts PostgreSQL; run with --ignored"]
+async fn callers_that_ask_together_share_one_read_and_a_write_is_seen() {
+    let stand = Stand::new("act-share").await;
+    let (store, _) = stand.with_fixture().await;
+    // Five callers on a cold store: one read serves them all.
+    store
+        .apply(&mark("w", "2026-11-11T10:00:00Z", "/w/x", "main"))
+        .await
+        .unwrap();
+    let reads = futures_util::future::join_all((0..5).map(|_| store.session_minutes())).await;
+    let reads: Vec<_> = reads.into_iter().map(Result::unwrap).collect();
+    assert!(reads.iter().all(|r| std::sync::Arc::ptr_eq(r, &reads[0])));
+    // The next read of the same state is the kept one.
+    let again = store.session_minutes().await.unwrap();
+    assert!(std::sync::Arc::ptr_eq(&again, &reads[0]));
+    // A write is seen by the next read, which is a new one.
+    store
+        .apply(&mark("w", "2026-11-11T10:30:00Z", "/w/x", "main"))
+        .await
+        .unwrap();
+    let after = store.session_minutes().await.unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&after, &reads[0]));
+    let minutes = |all: &[construct_agent::activity::rules::SessionMinutes]| {
+        all.iter()
+            .find(|s| s.session == "w")
+            .map(|s| s.minutes.len())
+    };
+    assert_eq!(minutes(&after), minutes(&reads[0]).map(|n| n + 1));
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
 async fn stored_prompt_authors_decide_whose_time_a_session_is() {
     use Author::{Person, Unattended, Unknown};
     use Role::User;

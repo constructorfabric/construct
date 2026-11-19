@@ -769,6 +769,23 @@ test('the page shows the error of the agent, and not numbers, when the agent can
   });
 });
 
+test('a recount that fails keeps the numbers that were on show', async ({ session }) => {
+  const agent = newAgent();
+  await withAgent(session, agent, async (page) => {
+    await expect(page.locator('#value-total')).toHaveText(ownWeek);
+    agent.numbersError = 'the activity time could not be read';
+    await page.clock.runFor(30_000);
+    // The agent has been asked again and has failed; the page still shows the last numbers.
+    expect(agent.requests.length).toBeGreaterThan(4);
+    await expect(page.locator('#value-total')).toHaveText(ownWeek);
+    await expect(page.locator('#dashboard-empty')).toHaveCount(0);
+    agent.numbersError = null;
+    agent.empty = true;
+    await page.clock.runFor(30_000);
+    await expect(page.locator('#dashboard-empty')).toContainText('Nothing to show');
+  });
+});
+
 test('the page does not call collection on when the settings cannot be read', async ({
   session,
 }) => {

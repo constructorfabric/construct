@@ -222,6 +222,8 @@ export function useDashboard(day: Date): DashboardControls {
     let timer: ReturnType<typeof setTimeout> | undefined;
     // What the page shows now, so that a count that came out the same changes nothing.
     let shown = '';
+    // Whether the page shows numbers that were all counted: a recount that fails keeps them.
+    let good = false;
     const read = (): void => {
       Promise.all([
         Promise.all(
@@ -241,6 +243,13 @@ export function useDashboard(day: Date): DashboardControls {
             return;
           }
           timer = setTimeout(read, refreshMs);
+          const whole = settings.ok && entries.every(([, counted]) => counted.ok);
+          // A failed recount keeps the numbers on show, as a failed look at the file does; the
+          // next one may count again.
+          if (!whole && good) {
+            return;
+          }
+          good = whole;
           const text = JSON.stringify([entries, settings]);
           if (text === shown) {
             return;
@@ -257,8 +266,7 @@ export function useDashboard(day: Date): DashboardControls {
         (error: unknown) => {
           if (!cancelled) {
             timer = setTimeout(read, refreshMs);
-            // A failed recount keeps the numbers on show, as a failed look at the file does.
-            if (shown !== '') {
+            if (good) {
               return;
             }
             setLoaded({
