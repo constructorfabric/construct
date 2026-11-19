@@ -290,17 +290,128 @@ test('an address with nothing behind it shows its reason within 15 seconds', asy
   });
 });
 
-test('leaving the page ends a running answer', async ({ page, provider }) => {
+const goTo = (page: Page, name: string) =>
+  page.getByRole('button', { name, exact: true }).click();
+
+test('a running answer goes on while the person is on another page', async ({ page, provider }) => {
+  provider.script = { chunks: ['Part ', 'one ', 'end.'], pauseMs: 0, holdAt: 1 };
+  await configure(page, { address: provider.url });
+  await ask(page, 'long answer please');
+  await expect(assistant(page)).toContainText('Part');
+
+  await goTo(page, 'Dashboard');
+  await expect(page.locator('#chat-thread')).toHaveCount(0);
+  // Nothing happens when an answer is left alone, so there is nothing to wait for: the wait is the
+  // time that leaving a page took to abort the provider before, with some to spare.
+  await page.waitForTimeout(stopDeadlineMs + 500);
+  expect(provider.aborted()).toBe(0);
+
+  await goTo(page, 'Chat');
+  await expect(page.locator('#chat-stop-button')).toBeVisible();
+  await expect(page.locator('#chat-failure')).toHaveCount(0);
+  await expect(assistant(page)).toHaveText('Part');
+
+  provider.release();
+  await expect(assistant(page)).toHaveText('Part one end.');
+  await expect(page.locator('#chat-failure')).toHaveCount(0);
+  await expect(page.locator('#chat-stop-button')).toHaveCount(0);
+  expect(provider.aborted()).toBe(0);
+  await screenshotBothThemes(page, 'chat-after-coming-back');
+});
+
+test('an answer that ended while the person was away is in the thread', async ({
+  page,
+  provider,
+}) => {
+  provider.script = { chunks: ['Part ', 'two ', 'end.'], pauseMs: 0, holdAt: 1 };
+  await configure(page, { address: provider.url });
+  await ask(page, 'long answer please');
+  await expect(assistant(page)).toContainText('Part');
+
+  // Settings enables Delete all once the window has the conversation in its list, and the list is
+  // read when the window gets the end of the answer: so that is when the answer ended while away.
+  await goTo(page, 'Settings');
+  await expect(page.locator('#chat-delete-all')).toBeDisabled();
+  provider.release();
+  await expect(page.locator('#chat-delete-all')).toBeEnabled();
+
+  await goTo(page, 'Chat');
+  await expect(assistant(page)).toHaveText('Part two end.');
+  await expect(page.locator('#chat-failure')).toHaveCount(0);
+  await expect(page.locator('#chat-stop-button')).toHaveCount(0);
+  await expect(page.locator('#chat-input')).toBeEnabled();
+});
+
+test('an answer that failed while the person was away shows its reason', async ({
+  page,
+  provider,
+}) => {
   provider.script = { chunks: ['Part ', 'never'], pauseMs: 0, holdAt: 1, forever: true };
   await configure(page, { address: provider.url });
   await ask(page, 'long answer please');
   await expect(assistant(page)).toContainText('Part');
 
-  await page.getByRole('button', { name: 'Status', exact: true }).click();
-  await expect.poll(() => provider.aborted(), { timeout: stopDeadlineMs }).toBe(1);
-  await page.getByRole('button', { name: 'Chat', exact: true }).click();
-  await expect(page.locator('#chat-failure')).toContainText('Stopped');
-  await expect(assistant(page)).toHaveText('Part');
+  // As in the test above, Delete all turns enabled when the window has got the end of the answer.
+  await goTo(page, 'Settings');
+  await expect(page.locator('#chat-delete-all')).toBeDisabled();
+  provider.drop();
+  await expect(page.locator('#chat-delete-all')).toBeEnabled();
+  await goTo(page, 'Chat');
+  await expect(page.locator('#chat-failure')).toBeVisible();
+  await expect(page.locator('#chat-failure')).not.toContainText('Stopped');
+  await expect(page.locator('#chat-retry')).toBeVisible();
+});
+
+test('a thread scrolled up stays where it was after another page', async ({ page, provider }) => {
+  const lines = Array.from({ length: 60 }, (_, index) => `- line ${index}\n`);
+  provider.script = { chunks: lines, pauseMs: 20, holdAt: 30 };
+  await configure(page, { address: provider.url });
+  await ask(page, 'count');
+  await expect(assistant(page)).toContainText('line 29');
+  const thread = page.locator('#chat-thread');
+  await expect.poll(() => atBottom(page)).toBe(true);
+
+  // The reader scrolls up, and leaves while the rest of the answer comes.
+  await thread.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await expect.poll(() => atBottom(page)).toBe(false);
+  await goTo(page, 'Dashboard');
+  provider.release();
+  await expect.poll(() => provider.sent()).toBe(60);
+  await goTo(page, 'Chat');
+  await expect(assistant(page)).toContainText('line 59');
+  expect(await thread.evaluate((element) => element.scrollTop)).toBeLessThan(100);
+  expect(await atBottom(page)).toBe(false);
+
+  // A reader who was at the bottom is at the bottom when they come back.
+  await thread.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect.poll(() => atBottom(page)).toBe(true);
+  await goTo(page, 'Dashboard');
+  await goTo(page, 'Chat');
+  await expect.poll(() => atBottom(page)).toBe(true);
+});
+
+test('Delete all in Settings stops an answer that is running', async ({ page, provider }) => {
+  provider.script = { chunks: ['First answer.'], pauseMs: 0 };
+  await configure(page, { address: provider.url });
+  await ask(page, 'first');
+  await expect(assistant(page)).toHaveText('First answer.');
+  await expect(rows(page)).toHaveCount(1);
+  provider.script = { chunks: ['Part ', 'never'], pauseMs: 0, holdAt: 1, forever: true };
+  await ask(page, 'long answer please');
+  await expect(assistant(page).last()).toContainText('Part');
+
+  await goTo(page, 'Settings');
+  await page.locator('#chat-delete-all').click();
+  await page.locator('#chat-delete-all-confirm').click();
+  await expect.poll(() => provider.aborted(), { timeout: stopDeadlineMs * 2 }).toBe(1);
+  await goTo(page, 'Chat');
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.locator('#chat-empty')).toBeVisible();
+  await expect(page.locator('#chat-stop-button')).toHaveCount(0);
 });
 
 test('neither the key nor the message is in the agent log, the status answer or the output', async ({

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { deleteAll } from '../chat-protocol';
 import type { ChatEvent, ConversationSummary } from '../chat-protocol';
+import { deleteAllChats } from './chat-delete';
 import { chatReducer, initialChatState } from './chat-state';
 import type { ChatState } from './chat-state';
 
@@ -21,14 +22,17 @@ export interface Chat {
 }
 
 /**
- * The chat page's state and what it does with the agent. `visible` is whether the page is on
- * screen: leaving it ends a running answer, which closes its connection.
+ * The chat's state and what it does with the agent. It lives above the pages, so an answer goes on
+ * while the person is on another page; only the app closing ends it, and so do Stop, Delete all
+ * and the unmount of the hook.
  */
-export function useChat(visible: boolean): Chat {
+export function useChat(): Chat {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   // What the callbacks below read when they run, so they stay the same function.
   const latest = useRef(state);
   latest.current = state;
+  // Callers waiting for the running answer to end.
+  const endWaiters = useRef<(() => void)[]>([]);
 
   /** Reads the list into the state; gives it, or `null` when it could not be read. */
   const refresh = useCallback(async (): Promise<readonly ConversationSummary[] | null> => {
@@ -57,20 +61,17 @@ export function useChat(visible: boolean): Chat {
         case 'done':
           dispatch({ type: 'done', stopped: event.stopped });
           void refresh();
+          endWaiters.current.splice(0).forEach((resolve) => resolve());
           break;
         case 'error':
           dispatch({ type: 'failed', reason: event.reason });
           void refresh();
+          endWaiters.current.splice(0).forEach((resolve) => resolve());
           break;
       }
     });
   }, [refresh]);
 
-  useEffect(() => {
-    if (!visible) {
-      void window.constructAgent.stopAnswer();
-    }
-  }, [visible]);
   useEffect(
     () => () => {
       void window.constructAgent.stopAnswer();
@@ -144,7 +145,18 @@ export function useChat(visible: boolean): Chat {
     }, []),
     remove,
     removeAll: useCallback(async () => {
-      const result = await window.constructAgent.deleteConversation(deleteAll);
+      const result = await deleteAllChats({
+        running: () => latest.current.running,
+        stopAndWait: async (ms) => {
+          const ended = new Promise<void>((resolve) => {
+            endWaiters.current.push(resolve);
+            setTimeout(resolve, ms);
+          });
+          void window.constructAgent.stopAnswer();
+          await ended;
+        },
+        remove: () => window.constructAgent.deleteConversation(deleteAll),
+      });
       if (!result.ok) {
         return result.error;
       }

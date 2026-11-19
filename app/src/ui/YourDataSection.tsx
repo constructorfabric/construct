@@ -50,7 +50,7 @@ export function YourDataSection({
       setChatsError(null);
       return;
     }
-    // The agent refuses while an answer still runs, in the moment before leaving Chat has stopped it.
+    // Delete all stops a running answer first; the agent still refuses when that answer will not end.
     // The table's keys are all in en.json (checked by the unit test of `reasonText`).
     const text = reasonText(reason);
     setChatsError(t(text.key as Parameters<typeof t>[0], text.values));
