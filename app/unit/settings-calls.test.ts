@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import net from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { TestProgress } from '../src/agent-settings';
 import { createSettingsHandlers } from '../src/settings-calls';
+import { startFakeAgent } from './fake-agent';
 
 const secret = 'sk-secret-4f9a';
 
@@ -18,44 +18,21 @@ async function withFakeAgent(
     heard: readonly TestProgress[],
   ) => Promise<void>,
 ): Promise<void> {
-  const runtimeDir = mkdtempSync(path.join(tmpdir(), 'cb-unit-'));
-  mkdirSync(path.join(runtimeDir, 'construct'));
-  const lines: string[] = [];
+  const agent = await startFakeAgent(answer);
   const heard: TestProgress[] = [];
-  const clients = new Set<net.Socket>();
-  const server = net.createServer((client) => {
-    clients.add(client);
-    client.setEncoding('utf8');
-    client.once('data', (data: string) => {
-      const line = data.trim();
-      lines.push(line);
-      void Promise.resolve(answer(line)).then((reply) => {
-        if (reply !== null) {
-          client.end(`${reply}\n`);
-        }
-      });
-    });
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(path.join(runtimeDir, 'construct', 'agent.sock'), resolve);
-  });
   try {
     await check(
       createSettingsHandlers(
-        { env: { XDG_RUNTIME_DIR: runtimeDir }, platform: 'linux' },
+        { env: { XDG_RUNTIME_DIR: agent.runtimeDir }, platform: 'linux' },
         (event) => {
           heard.push(event);
         },
       ),
-      lines,
+      agent.lines,
       heard,
     );
   } finally {
-    clients.forEach((client) => {
-      client.destroy();
-    });
-    await new Promise((resolve) => server.close(resolve));
-    rmSync(runtimeDir, { recursive: true, force: true });
+    await agent.close();
   }
 }
 

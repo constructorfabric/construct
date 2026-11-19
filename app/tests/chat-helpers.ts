@@ -20,6 +20,7 @@ export async function configure(
   await page.getByRole('button', { name: 'Chat', exact: true }).click();
 }
 
+export const rows = (page: Page) => page.locator('#chat-conversations li');
 export const input = (page: Page) => page.locator('#chat-input');
 export const assistant = (page: Page) => page.locator('[data-role=assistant]');
 

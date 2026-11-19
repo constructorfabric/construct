@@ -18,6 +18,7 @@ const reasons: readonly (readonly [string, string, boolean])[] = [
   ['empty message', 'ChatReason.Empty', false],
   ['unknown conversation', 'ChatReason.UnknownConversation', false],
   ['request too large', 'ChatReason.RequestTooLarge', false],
+  ['cannot delete', 'ChatReason.CannotDelete', false],
   ['agent not running', 'ChatReason.AgentAbsent', false],
 ];
 

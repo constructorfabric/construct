@@ -26,6 +26,7 @@ import { tones } from './state-tones';
 import { StatusPage } from './StatusPage';
 import { useAgentStatus } from './useAgentStatus';
 import { useChat } from './useChat';
+import { useErasing } from './useErasing';
 
 type Page = 'chat' | 'dashboard' | 'memory' | 'status' | 'settings';
 
@@ -35,6 +36,7 @@ export function App(): ReactNode {
   const { status, refresh } = useAgentStatus();
   const state = status?.state ?? 'unknown';
   const chat = useChat(page === 'chat');
+  const erasing = useErasing(chat.reload);
   // The model may have been set in Settings a moment ago; the chat page must not say otherwise.
   useEffect(() => {
     if (page === 'chat') {
@@ -182,7 +184,11 @@ export function App(): ReactNode {
             ) : page === 'memory' ? (
               <MemoryPage onOpenSettings={() => setPage('settings')} />
             ) : (
-              <SettingsPage onOpenDashboard={() => setPage('dashboard')} />
+              <SettingsPage
+                chat={chat}
+                erasing={erasing}
+                onOpenDashboard={() => setPage('dashboard')}
+              />
             )}
           </div>
         )}

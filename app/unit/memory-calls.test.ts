@@ -7,6 +7,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createMemoryHandlers, memoryLimits } from '../src/memory-calls';
 import type { MemoryLimits } from '../src/memory-calls';
+import { startFakeAgent } from './fake-agent';
 
 const token = 'ab'.repeat(32);
 const person = '11111111-6a88-4768-9dfc-6bcd5187d9ed';
@@ -387,5 +388,100 @@ describe('the memory handlers', () => {
         expect(result).toEqual({ ok: false, error: 'Construct is not ready' });
       },
     );
+  });
+});
+
+describe('the erasure handlers', () => {
+  it('read from the settings route whether the gear still erases', async () => {
+    let erasing = true;
+    await withHost(
+      (_request, response) => {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            subject_id: 's',
+            personalization_enabled: false,
+            erasure_in_progress: erasing,
+          }),
+        );
+      },
+      async (_dir, _port, seen, handlers) => {
+        expect(await handlers().erasing()).toEqual({ ok: true, erasing: true });
+        erasing = false;
+        expect(await handlers().erasing()).toEqual({ ok: true, erasing: false });
+        expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+          `GET /construct/v1/subjects/${person}/settings`,
+          `GET /construct/v1/subjects/${person}/settings`,
+        ]);
+        expect(seen.every((s) => s.authorization === `Bearer ${token}`)).toBe(true);
+      },
+    );
+  });
+
+  it.each([
+    ['an unreadable answer', json('{"erasure_in_progress":"yes"}')],
+    ['a refusal', json('{}', 500)],
+  ])('answer %s of the settings route with a fixed reason', async (_name, handler) => {
+    await withHost(handler, async (_dir, _port, _seen, handlers) => {
+      expect(await handlers().erasing()).toEqual({ ok: false, error: 'Construct is not ready' });
+    });
+  });
+
+  it('say the agent is not running when no host is announced', async () => {
+    await withHost(json('{}'), async (runtimeDir, _port, _seen, handlers) => {
+      rmSync(path.join(runtimeDir, 'construct', 'connection.json'));
+      expect(await handlers().erasing()).toEqual({ ok: false, error: 'the agent is not running' });
+    });
+  });
+
+  it.each(['started', 'running'])(
+    'send memory-erase to the agent, and take an erasure that is %s as asked for',
+    async (erasure) => {
+      await withHost(json('{}'), async (runtimeDir, _port, _seen, handlers) => {
+        const agent = await startFakeAgent(
+          () => JSON.stringify({ erasure, collection_enabled: false }),
+          runtimeDir,
+        );
+        try {
+          expect(await handlers().erase()).toEqual({ ok: true, running: erasure === 'running' });
+          expect(agent.lines).toEqual(['memory-erase']);
+        } finally {
+          await agent.close();
+        }
+      });
+    },
+  );
+
+  it('give the reason of an agent that refuses', async () => {
+    await withHost(json('{}'), async (runtimeDir, _port, _seen, handlers) => {
+      const error =
+        'collection is off, but the erasure did not start: the Construct host cannot be reached';
+      const agent = await startFakeAgent(() => JSON.stringify({ error }), runtimeDir);
+      try {
+        expect(await handlers().erase()).toEqual({ ok: false, error });
+      } finally {
+        await agent.close();
+      }
+    });
+  });
+
+  it('answer a reply that says nothing of an erasure as a failure, not as a start', async () => {
+    await withHost(json('{}'), async (runtimeDir, _port, _seen, handlers) => {
+      const agent = await startFakeAgent(() => '{"status":"running"}', runtimeDir);
+      try {
+        expect(await handlers().erase()).toEqual({
+          ok: false,
+          error: 'the agent reply says nothing of an erasure',
+        });
+      } finally {
+        await agent.close();
+      }
+    });
+  });
+
+  it('say the agent is not running when there is no socket', async () => {
+    await withHost(json('{}'), async (_dir, _port, _seen, handlers) => {
+      expect(await handlers().erase()).toEqual({ ok: false, error: 'the agent is not running' });
+    });
   });
 });

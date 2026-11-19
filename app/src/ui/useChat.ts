@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { deleteAll } from '../chat-protocol';
-import type { ChatEvent } from '../chat-protocol';
+import type { ChatEvent, ConversationSummary } from '../chat-protocol';
 import { chatReducer, initialChatState } from './chat-state';
 import type { ChatState } from './chat-state';
 
@@ -14,7 +14,10 @@ export interface Chat {
   readonly retry: () => void;
   readonly stop: () => void;
   readonly remove: (conversation: string) => void;
-  readonly removeAll: () => void;
+  /** Deletes every conversation; resolves with the agent's reason when it could not. */
+  readonly removeAll: () => Promise<string | null>;
+  /** Shows what the agent holds now: the list, and a new chat when the open one is gone. */
+  readonly reload: () => void;
 }
 
 /**
@@ -27,13 +30,15 @@ export function useChat(visible: boolean): Chat {
   const latest = useRef(state);
   latest.current = state;
 
-  const refresh = useCallback(async () => {
+  /** Reads the list into the state; gives it, or `null` when it could not be read. */
+  const refresh = useCallback(async (): Promise<readonly ConversationSummary[] | null> => {
     const result = await window.constructAgent.listConversations();
-    dispatch(
-      result.ok
-        ? { type: 'listed', conversations: result.conversations }
-        : { type: 'notice', notice: result.error },
-    );
+    if (!result.ok) {
+      dispatch({ type: 'notice', notice: result.error });
+      return null;
+    }
+    dispatch({ type: 'listed', conversations: result.conversations });
+    return result.conversations;
   }, []);
 
   useEffect(() => {
@@ -113,7 +118,7 @@ export function useChat(visible: boolean): Chat {
           dispatch({ type: 'notice', notice: result.error });
           return;
         }
-        if (which === deleteAll || which === latest.current.active) {
+        if (which === latest.current.active) {
           dispatch({ type: 'new-chat' });
         }
         void refresh();
@@ -138,8 +143,27 @@ export function useChat(visible: boolean): Chat {
       void window.constructAgent.stopAnswer();
     }, []),
     remove,
-    removeAll: useCallback(() => {
-      remove(deleteAll);
-    }, [remove]),
+    removeAll: useCallback(async () => {
+      const result = await window.constructAgent.deleteConversation(deleteAll);
+      if (!result.ok) {
+        return result.error;
+      }
+      dispatch({ type: 'new-chat' });
+      await refresh();
+      return null;
+    }, [refresh]),
+    reload: useCallback(() => {
+      void refresh().then((conversations) => {
+        // The open conversation stays unless the agent no longer has it.
+        const { active } = latest.current;
+        if (
+          conversations !== null &&
+          active !== '' &&
+          !conversations.some((entry) => entry.id === active)
+        ) {
+          dispatch({ type: 'new-chat' });
+        }
+      });
+    }, [refresh]),
   };
 }
