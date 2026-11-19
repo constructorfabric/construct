@@ -127,8 +127,6 @@ pub struct Span {
     pub first: i64,
     /// The last minute it counted in.
     pub last: i64,
-    /// How many whole minutes it counted in; a minute shared with other groups counts whole.
-    pub minutes: u64,
     /// The time it holds in the group, in [`PARTS_PER_MINUTE`]th of a minute: a minute of the
     /// group is shared equally between the sessions of the group that count in it, so the
     /// sessions of a group add up to the group.
@@ -381,11 +379,9 @@ pub fn calculate_spans(
                     session,
                     first: *minute,
                     last: *minute,
-                    minutes: 0,
                     parts: 0,
                 });
                 span.last = *minute;
-                span.minutes += 1;
                 span.parts += parts / size + u64::from((place as u64) < parts % size);
             }
         }

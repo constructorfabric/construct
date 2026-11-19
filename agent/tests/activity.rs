@@ -274,6 +274,72 @@ async fn the_stored_minutes_give_the_time_of_a_period() {
 
 #[tokio::test]
 #[ignore = "starts PostgreSQL; run with --ignored"]
+async fn the_chat_of_the_app_is_not_stored_as_activity() {
+    let stand = Stand::new("act-chat").await;
+    let store = stand.store().await;
+    let chat = |time: &str| {
+        Record::Turn(Turn {
+            tool: "chat".into(),
+            session: "c".into(),
+            time: time.into(),
+            folder: String::new(),
+            branch: String::new(),
+            role: Role::User,
+            author: Author::Unknown,
+            text: "hello".into(),
+            tools: Vec::new(),
+        })
+    };
+    let work = turn(
+        "w",
+        "2026-11-11T10:00:00Z",
+        Role::User,
+        Author::Person,
+        "/w/x",
+        "main",
+    );
+    let sink = sink_with(&stand, &[work, chat("2026-11-11T11:00:00Z")]);
+    let days = [Day {
+        label: "2026-11-11".into(),
+        start: minute_number("2026-11-11T00:00").unwrap(),
+        end: minute_number("2026-11-12T00:00").unwrap(),
+    }];
+    let by_tool = |store: Store| {
+        let days = days.clone();
+        async move {
+            store
+                .activity(&days, Kind::Both, Grouping::Tool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // A rebuild leaves the chat out.
+    store.rebuild(&sink).await.unwrap();
+    let report = by_tool(store.clone()).await;
+    let tools: Vec<&str> = report.groups.iter().map(|g| g.key.as_str()).collect();
+    assert_eq!(tools, ["claude"]);
+    let total = report.total_parts;
+
+    // So does a record applied while the agent runs, and the time of the week does not change.
+    store.apply(&chat("2026-11-11T12:00:00Z")).await.unwrap();
+    let report = by_tool(store.clone()).await;
+    assert_eq!(report.groups.len(), 1);
+    assert_eq!(report.total_parts, total);
+    assert!(
+        store
+            .sessions()
+            .await
+            .unwrap()
+            .iter()
+            .all(|s| s.tool != "chat")
+    );
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
 async fn stored_prompt_authors_decide_whose_time_a_session_is() {
     use Author::{Person, Unattended, Unknown};
     use Role::User;

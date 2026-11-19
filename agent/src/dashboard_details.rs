@@ -325,10 +325,10 @@ fn read_sessions_request(
 /// The JSON line for a `dashboard-sessions` request, given the dashboard `document` and a way to
 /// read the sessions, which runs only for a request that is fine.
 #[must_use]
-pub fn respond_sessions<S: AsRef<[SessionMinutes]>>(
+pub fn respond_sessions(
     argument: &str,
     document: Option<&Value>,
-    load: impl FnOnce() -> Result<S, &'static str>,
+    load: impl FnOnce() -> Result<Arc<[SessionMinutes]>, &'static str>,
 ) -> String {
     let read = match read_sessions_request(argument, document) {
         Ok(read) => read,
@@ -343,7 +343,7 @@ pub fn respond_sessions<S: AsRef<[SessionMinutes]>>(
         Err(message) => return error_response(message),
     };
     match sessions_of(
-        sessions.as_ref(),
+        &sessions,
         &read.request.days,
         &read.request.spec,
         &read.group,
@@ -357,10 +357,10 @@ pub fn respond_sessions<S: AsRef<[SessionMinutes]>>(
 
 /// The JSON line for a `dashboard-summary` request.
 #[must_use]
-pub fn respond_summary<S: AsRef<[SessionMinutes]>>(
+pub fn respond_summary(
     argument: &str,
     document: Option<&Value>,
-    load: impl FnOnce() -> Result<S, &'static str>,
+    load: impl FnOnce() -> Result<Arc<[SessionMinutes]>, &'static str>,
 ) -> String {
     let read = || -> Result<Request, String> {
         let mut object = object_of(argument)?;
@@ -383,7 +383,7 @@ pub fn respond_summary<S: AsRef<[SessionMinutes]>>(
         Ok(sessions) => sessions,
         Err(message) => return error_response(message),
     };
-    match summary_of(sessions.as_ref(), &request.days[0], &request.spec) {
+    match summary_of(&sessions, &request.days[0], &request.spec) {
         Ok(summary) => json!({
             "day": request.days[0].label,
             "total_minutes": summary.total_minutes,
@@ -520,8 +520,15 @@ mod tests {
             ..Default::default()
         };
         let page = sessions_of(&sessions, &days, &spec, "shop", 0, (0, 50)).unwrap();
+        // Each holds 7.5 minutes; the leftover minute goes to the earlier session.
         let shares: Vec<u64> = page.rows.iter().map(|r| r.minutes).collect();
-        assert_eq!(shares.iter().sum::<u64>(), 15);
-        assert_eq!(shares.len(), 2);
+        assert_eq!(shares, vec![8, 7]);
+        // The shares are of the whole group, not of the page: the second page keeps its share.
+        let second = sessions_of(&sessions, &days, &spec, "shop", 0, (1, 1)).unwrap();
+        assert_eq!(second.total, 2);
+        assert_eq!(
+            second.rows.iter().map(|r| r.minutes).collect::<Vec<_>>(),
+            vec![7]
+        );
     }
 }

@@ -474,10 +474,10 @@ impl Numbers {
 /// no good one) and a way to read the sessions, which runs only for a request that is fine.
 /// [`Numbers::answer`] is this with the live store.
 #[must_use]
-pub fn respond<S: AsRef<[SessionMinutes]>>(
+pub fn respond(
     argument: &str,
     document: Option<&Value>,
-    sessions: impl FnOnce() -> Result<S, &'static str>,
+    sessions: impl FnOnce() -> Result<Arc<[SessionMinutes]>, &'static str>,
 ) -> String {
     let request = match read_request(argument, document) {
         Ok(request) => request,
@@ -491,7 +491,7 @@ pub fn respond<S: AsRef<[SessionMinutes]>>(
         Ok(sessions) => sessions,
         Err(message) => return crate::ipc::error_response(message),
     };
-    match numbers(sessions.as_ref(), &request.days, &request.spec) {
+    match numbers(&sessions, &request.days, &request.spec) {
         Ok(answer) => {
             let mut reply = answer.to_json();
             if let Some((id, kind)) = request.widget {

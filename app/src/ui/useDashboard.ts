@@ -18,7 +18,8 @@ const documentPollMs = 2000;
 
 /**
  * How often the page counts again for the document and the day it already shows, so that work
- * done meanwhile appears without a click (the requirement is a minute).
+ * done meanwhile appears without a click. Each count reads the whole history in the agent, so it
+ * is not much more often than a person looks.
  */
 const refreshMs = 15_000;
 
@@ -256,7 +257,10 @@ export function useDashboard(day: Date): DashboardControls {
         (error: unknown) => {
           if (!cancelled) {
             timer = setTimeout(read, refreshMs);
-            shown = '';
+            // A failed recount keeps the numbers on show, as a failed look at the file does.
+            if (shown !== '') {
+              return;
+            }
             setLoaded({
               shape,
               numbers: new Map(),

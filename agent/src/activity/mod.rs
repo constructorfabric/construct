@@ -143,6 +143,9 @@ struct Cache {
     /// Goes up after every write to the store, so an entry of an earlier number is stale.
     version: AtomicU64,
     kept: Mutex<Option<(u64, Arc<[rules::SessionMinutes]>)>>,
+    /// Held while the history is read, so that the callers that ask together (a page asks for
+    /// every widget at once) wait for one read and share it.
+    reading: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -197,7 +200,8 @@ impl Store {
     }
 
     /// Applies one record. The same record twice changes nothing. Records that carry no
-    /// activity (tool calls and results of a chat) and records without a usable time are ignored.
+    /// activity (tool calls and results, and the turns and marks of the app's own chat) and
+    /// records without a usable time are ignored.
     ///
     /// # Errors
     /// Fails when a statement is refused.
@@ -382,18 +386,29 @@ impl Store {
     /// # Errors
     /// Fails when the query is refused or a stored minute cannot be read.
     pub async fn session_minutes(&self) -> Result<Arc<[rules::SessionMinutes]>, Error> {
-        let version = self.cache.version.load(Ordering::SeqCst);
-        if let Some((kept, sessions)) = &*lock(&self.cache.kept)
-            && *kept == version
-        {
-            return Ok(Arc::clone(sessions));
+        if let Some(sessions) = self.kept() {
+            return Ok(sessions);
         }
+        let _one_reader = self.cache.reading.lock().await;
+        if let Some(sessions) = self.kept() {
+            return Ok(sessions);
+        }
+        let version = self.cache.version.load(Ordering::SeqCst);
         let sessions: Arc<[rules::SessionMinutes]> = self.read_session_minutes().await?.into();
         // A write between the read and here made the read stale: it is not kept.
         if self.cache.version.load(Ordering::SeqCst) == version {
             *lock(&self.cache.kept) = Some((version, Arc::clone(&sessions)));
         }
         Ok(sessions)
+    }
+
+    /// The sessions kept from a read of the store as it is now, if there are any.
+    fn kept(&self) -> Option<Arc<[rules::SessionMinutes]>> {
+        let version = self.cache.version.load(Ordering::SeqCst);
+        match &*lock(&self.cache.kept) {
+            Some((kept, sessions)) if *kept == version => Some(Arc::clone(sessions)),
+            _ => None,
+        }
     }
 
     async fn read_session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {
@@ -552,15 +567,12 @@ fn is_utc_time(time: &str) -> bool {
         && time::OffsetDateTime::parse(time, &time::format_description::well_known::Rfc3339).is_ok()
 }
 
-/// The tool name of the chat of the app: time spent in it is not the user's work.
-const CHAT_TOOL: &str = "chat";
-
-/// Whether the store counts the record at all; tool calls and results of a chat carry no
-/// activity.
+/// Whether the store counts the record at all: tool calls and results carry no activity, and
+/// neither does anything the chat of the app wrote (time in the chat is not work time).
 fn is_activity(record: &Record) -> bool {
     match record {
-        Record::Turn(turn) => turn.tool != CHAT_TOOL,
-        Record::Mark(mark) => mark.tool != CHAT_TOOL,
+        Record::Turn(turn) => turn.tool != crate::chat::SOURCE,
+        Record::Mark(mark) => mark.tool != crate::chat::SOURCE,
         Record::ToolCall(_) | Record::ToolResult(_) => false,
     }
 }

@@ -44,7 +44,10 @@ fn widget_request(widget: &str) -> String {
 }
 
 fn ask(document: &Value, request: &str, sessions: &[SessionMinutes]) -> Value {
-    serde_json::from_str(&respond(request, Some(document), || Ok(sessions.to_vec()))).unwrap()
+    serde_json::from_str(&respond(request, Some(document), || {
+        Ok(sessions.to_vec().into())
+    }))
+    .unwrap()
 }
 
 #[allow(
@@ -260,8 +263,10 @@ fn an_unknown_widget_is_an_error_with_a_plain_reason() {
 
 #[test]
 fn a_widget_asked_without_a_good_document_is_an_error() {
-    let reply: Value =
-        serde_json::from_str(&respond(&widget_request("total"), None, || Ok(fixture()))).unwrap();
+    let reply: Value = serde_json::from_str(&respond(&widget_request("total"), None, || {
+        Ok(fixture().into())
+    }))
+    .unwrap();
     assert_eq!(
         reply,
         json!({ "error": "the dashboard document is not available" })
@@ -312,7 +317,7 @@ fn a_request_that_cannot_be_used_says_why_and_repeats_nothing() {
         ),
     ];
     for (request, reason) in cases {
-        let reply = respond(&request, Some(&document), || Ok(fixture()));
+        let reply = respond(&request, Some(&document), || Ok(fixture().into()));
         assert_eq!(
             reply,
             json!({ "error": reason }).to_string(),
@@ -327,7 +332,7 @@ fn a_request_that_cannot_be_used_says_why_and_repeats_nothing() {
     ] })
     .to_string();
     assert_eq!(
-        respond(&overlap, Some(&document), || Ok(fixture())),
+        respond(&overlap, Some(&document), || Ok(fixture().into())),
         json!({ "error": "the days a and b overlap" }).to_string()
     );
 }
@@ -336,19 +341,15 @@ fn a_request_that_cannot_be_used_says_why_and_repeats_nothing() {
 fn the_store_not_being_ready_is_the_answer_and_nothing_is_read_for_a_bad_request() {
     let document = default_activity();
     let reply = respond(&widget_request("total"), Some(&document), || {
-        Err::<Vec<SessionMinutes>, _>("the activity time is being built")
+        Err("the activity time is being built")
     });
     assert_eq!(
         reply,
         json!({ "error": "the activity time is being built" }).to_string()
     );
-    let reply = respond(
-        "{}",
-        Some(&document),
-        || -> Result<Vec<SessionMinutes>, &'static str> {
-            panic!("a bad request does not read the store")
-        },
-    );
+    let reply = respond("{}", Some(&document), || {
+        panic!("a bad request does not read the store")
+    });
     assert!(reply.contains("error"));
 }
 
@@ -388,8 +389,10 @@ fn a_heavy_month_is_answered_within_a_second() {
     let request = json!({ "widget": "by-project", "days": days }).to_string();
 
     let started = Instant::now();
-    let reply: Value =
-        serde_json::from_str(&respond(&request, Some(&document), || Ok(sessions.clone()))).unwrap();
+    let reply: Value = serde_json::from_str(&respond(&request, Some(&document), || {
+        Ok(sessions.clone().into())
+    }))
+    .unwrap();
     let took = started.elapsed();
     assert!(took < Duration::from_secs(1), "took {took:?}");
     // 40 projects, minus the 4 that only scripts worked in (the user's own time is counted) and
@@ -620,7 +623,7 @@ fn a_block_that_reaches_into_the_days_from_any_pause_the_rules_allow_is_kept_who
 #[test]
 fn a_request_is_refused_while_the_settings_of_the_page_cannot_be_used() {
     let period = json!({ "group_by": "project", "days": days_json() }).to_string();
-    let none = respond(&period, None, || Ok(fixture()));
+    let none = respond(&period, None, || Ok(fixture().into()));
     assert_eq!(
         none,
         json!({ "error": "the dashboard document is not available" }).to_string()
@@ -628,7 +631,7 @@ fn a_request_is_refused_while_the_settings_of_the_page_cannot_be_used() {
 
     let mut broken = default_activity();
     broken["payload"]["hidden_projects"] = json!("blog");
-    let reply = respond(&period, Some(&broken), || Ok(fixture()));
+    let reply = respond(&period, Some(&broken), || Ok(fixture().into()));
     assert_eq!(
         reply,
         json!({ "error": "the settings of the dashboard cannot be read" }).to_string()
@@ -642,13 +645,9 @@ fn the_days_are_checked_before_the_store_is_read() {
         { "label": "b", "start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z" },
     ] })
     .to_string();
-    let reply = respond(
-        &overlap,
-        Some(&default_activity()),
-        || -> Result<Vec<SessionMinutes>, &'static str> {
-            panic!("a day set that cannot be used does not read the store")
-        },
-    );
+    let reply = respond(&overlap, Some(&default_activity()), || {
+        panic!("a day set that cannot be used does not read the store")
+    });
     assert_eq!(
         reply,
         json!({ "error": "the days a and b overlap" }).to_string()
