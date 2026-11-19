@@ -1,6 +1,6 @@
 //! The dashboard: a document, kept in the workspace, that is an instance of a registered type.
 //!
-//! `DashboardV1` is the base type and `ActivityDashboardV1` the first type derived from it; a kind
+//! `DashboardV1` is the base type and `ActivityDashboardV2` the type derived from it; a kind
 //! for another audience is one more derived struct. `#[gts_type_schema]` submits each schema to
 //! the link-time inventory, which the host's types registry reads when it starts.
 //!
@@ -19,8 +19,17 @@ use crate::workspace::{Error, Workspace};
 
 /// The base type every dashboard derives from.
 pub const BASE_TYPE: &str = gts_id!("cf.construct.core.dashboard.v1~");
-/// The activity dashboard: a developer's time by project and ticket.
+/// The activity dashboard: a developer's time by project and ticket, and the time on screen.
+///
+/// The registry that holds a type refuses a new definition of it that it cannot prove accepts
+/// every document the old one accepted, and a longer list of names in `group_by` is not provable
+/// (see the tests of the schema). So the groupings of the time on screen came with a new major
+/// version, and [`ACTIVITY_TYPE_V1`] is the one before it.
 pub const ACTIVITY_TYPE: &str =
+    gts_id!("cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v2~");
+/// The activity dashboard as the first builds wrote it. A document of this type is still read and
+/// shown.
+pub const ACTIVITY_TYPE_V1: &str =
     gts_id!("cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v1~");
 /// Where the activity dashboard is kept, relative to the workspace.
 pub const ACTIVITY_FILE: &str = "dashboards/activity.json";
@@ -199,11 +208,11 @@ pub struct Widget {
 #[gts_type_schema(
     dir_path = "schemas",
     base = DashboardV1,
-    type_id = gts_id!("cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v1~"),
+    type_id = gts_id!("cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v2~"),
     description = "The activity dashboard: a developer's time by project and ticket. It lists the widgets of the page, each with a kind, a place on a grid of 12 columns and optionally its own period, sessions, source and filter, and holds the projects the page hides and the names it shows for projects. The source of time is AI sessions or On screen, and a document with none reads as AI sessions.",
     properties = "period,sessions,source,widgets,hidden_projects,project_names"
 )]
-pub struct ActivityDashboardV1 {
+pub struct ActivityDashboardV2 {
     /// The period of every widget that has none of its own.
     pub period: Period,
     /// The sessions of every widget that has none of its own.
@@ -249,7 +258,7 @@ pub fn base_schema() -> Value {
 /// The schema of the activity dashboard type.
 #[must_use]
 pub fn activity_schema() -> Value {
-    ActivityDashboardV1::gts_schema_with_refs()
+    ActivityDashboardV2::gts_schema_with_refs()
 }
 
 /// The schema a document of the activity type must pass, in one piece: the base type's schema and
@@ -324,6 +333,12 @@ pub fn validate(schema: &Value, document: &Value) -> Result<(), Violation> {
 /// # Errors
 /// The document breaks the schema or one of the rules; the violation names the place.
 pub fn validate_activity(document: &Value) -> Result<(), Violation> {
+    // The schema of this type accepts all that the first one did, so it checks the older document.
+    if document["type"] == ACTIVITY_TYPE_V1 {
+        let mut upgraded = document.clone();
+        upgraded["type"] = json!(ACTIVITY_TYPE);
+        return validate(&activity_schema(), &upgraded);
+    }
     validate(&activity_schema(), document)
 }
 
@@ -526,7 +541,14 @@ pub fn offer_screen(workspace: &Workspace, max_bytes: u64) -> Result<bool, Error
         Err(Error::NotFound) => return Ok(false),
         Err(e) => return Err(e),
     };
-    if serde_json::from_str::<Value>(&text).ok() != Some(default_activity()) {
+    // The default as an earlier build wrote it has the first type; it is the same document.
+    let Ok(mut document) = serde_json::from_str::<Value>(&text) else {
+        return Ok(false);
+    };
+    if document["type"] == ACTIVITY_TYPE_V1 {
+        document["type"] = json!(ACTIVITY_TYPE);
+    }
+    if document != default_activity() {
         return Ok(false);
     }
     // A save that lands between the read above and the replacement below is written over: the

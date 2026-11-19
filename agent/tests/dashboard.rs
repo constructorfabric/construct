@@ -5,9 +5,9 @@
 #![allow(clippy::unwrap_used)] // helpers outside #[test] functions use it too
 
 use construct_agent::dashboard::{
-    ACTIVITY_FILE, ACTIVITY_TYPE, ActivityDashboardV1, BASE_TYPE, DashboardV1, GRID_COLUMNS,
-    activity_schema, default_activity, default_activity_with_screen, ensure_default,
-    ensure_default_for, offer_screen, validate, validate_activity,
+    ACTIVITY_FILE, ACTIVITY_TYPE, ACTIVITY_TYPE_V1, ActivityDashboardV2, BASE_TYPE, DashboardV1,
+    GRID_COLUMNS, activity_schema, base_schema, default_activity, default_activity_with_screen,
+    ensure_default, ensure_default_for, offer_screen, validate, validate_activity,
 };
 use construct_agent::workspace::Workspace;
 use gts::GtsSchema;
@@ -74,7 +74,7 @@ fn the_default_document_validates_and_reads_into_the_type() {
     // The type reads every member as present: a document with no source is read with a null one.
     let mut read = document.clone();
     read["payload"]["source"] = Value::Null;
-    let typed: DashboardV1<ActivityDashboardV1> = serde_json::from_value(read.clone()).unwrap();
+    let typed: DashboardV1<ActivityDashboardV2> = serde_json::from_value(read.clone()).unwrap();
     assert_eq!(typed.payload.widgets.len(), 5);
     assert_eq!(typed.payload.source, None);
     assert_eq!(serde_json::to_value(&typed).unwrap(), read);
@@ -351,6 +351,18 @@ fn the_screen_is_offered_to_the_default_document_and_to_no_other() {
     // It is offered once: the document now holds it.
     assert!(!offer_screen(&workspace, 1 << 20).unwrap());
 
+    // The default as an earlier build wrote it (the first type) is the same document: it gets the
+    // screen too, and has the current type afterwards.
+    let mut first = default_activity();
+    first["type"] = json!(ACTIVITY_TYPE_V1);
+    workspace.write(ACTIVITY_FILE, &first.to_string()).unwrap();
+    assert!(offer_screen(&workspace, 1 << 20).unwrap());
+    assert_eq!(read_file(&workspace), default_activity_with_screen());
+    // An earlier default that the person changed is theirs, whatever its type.
+    first["title"] = json!("Mine");
+    workspace.write(ACTIVITY_FILE, &first.to_string()).unwrap();
+    assert!(!offer_screen(&workspace, 1 << 20).unwrap());
+
     // A document the person or the chat has changed is not touched, however small the change.
     let edits: [fn(&mut Value); 6] = [
         |d| d["title"] = json!("Mine"),
@@ -487,4 +499,74 @@ fn a_widget_asks_only_what_its_source_can_answer() {
             "the time on screen has no tools to filter by".to_owned()
         )
     );
+}
+
+/// The registry that holds a type refuses a new definition of it that it cannot prove accepts every
+/// document the old one accepted, with the comparison of `gts::GtsStore::compare_documents`.
+fn compare_with(earlier: &str) -> gts::SchemaComparison {
+    let earlier: Value = serde_json::from_str(earlier).unwrap();
+    let mut store = gts::GtsStore::new();
+    store.register_schema(BASE_TYPE, &base_schema()).unwrap();
+    store
+        .compare_documents(&earlier, &activity_schema())
+        .unwrap()
+}
+
+/// The schema as written for this version is a fixture. When this test fails, either change the
+/// schema in a way the comparison can prove, or give the type a new major version, keep this file
+/// and write the new schema as the fixture of that version.
+#[test]
+fn the_schema_accepts_every_document_the_one_as_written_accepted() {
+    let earlier = include_str!("fixtures/dashboard-activity-v2.schema.json");
+    assert_eq!(
+        serde_json::from_str::<Value>(earlier).unwrap()["$id"],
+        activity_schema()["$id"]
+    );
+    let comparison = compare_with(earlier);
+    assert_eq!(
+        comparison.backward_compatibility(),
+        gts::CompatibilityVerdict::Compatible,
+        "{:?}",
+        comparison.backward_diagnostics
+    );
+}
+
+/// The fault this version avoids: the schema of the first builds with `app` and `site` added to
+/// `group_by` cannot be proved to accept the documents of the first, so the registry refuses it.
+/// The comparison finds it, which shows the test above can fail.
+#[test]
+fn the_comparison_cannot_prove_the_new_groupings_over_the_first_schema() {
+    let comparison = compare_with(include_str!("fixtures/dashboard-activity-v1.schema.json"));
+    assert_eq!(
+        comparison.backward_compatibility(),
+        gts::CompatibilityVerdict::Unknown
+    );
+    let places: Vec<&str> = comparison
+        .backward_diagnostics
+        .iter()
+        .map(|d| d.path.as_str())
+        .collect();
+    assert_eq!(places, ["$.payload.widgets[].group_by"]);
+    assert_eq!(
+        comparison.backward_diagnostics[0].finding,
+        gts::CompatibilityFinding::NotProvable
+    );
+}
+
+#[test]
+fn a_document_of_the_first_type_is_still_valid() {
+    // What the first builds wrote: no source, only the groupings of the sessions.
+    let mut first = default_activity();
+    first["type"] = json!(ACTIVITY_TYPE_V1);
+    validate_activity(&first).unwrap();
+    // It is still held to the schema: the place of a fault is named as for any document.
+    first["payload"]["period"] = json!("tomorrow");
+    assert_eq!(
+        validate_activity(&first).unwrap_err().place,
+        "/payload/period"
+    );
+    // Any other type is refused.
+    let mut other = default_activity();
+    other["type"] = json!(format!("{BASE_TYPE}cf.construct.dashboard.activity.v3~"));
+    assert_eq!(validate_activity(&other).unwrap_err().place, "/type");
 }

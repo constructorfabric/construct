@@ -43,7 +43,7 @@ use crate::activity::rules::{
 };
 use crate::activity::screen_time::Block;
 use crate::dashboard::{
-    ActivityDashboardV1, DashboardV1, Filter, GroupBy, Sessions, Source, Widget, WidgetKind,
+    ActivityDashboardV2, DashboardV1, Filter, GroupBy, Sessions, Source, Widget, WidgetKind,
 };
 use crate::dashboard_document::Dashboard;
 use crate::dashboard_screen::{self, ScreenGrouping};
@@ -465,7 +465,7 @@ fn read_days(raw: Vec<RawDay>) -> Result<Vec<Day>, String> {
 
 /// The payload of the dashboard document, read once and typed. The document passed its type, so
 /// a payload that does not read is a fault of the agent, and the request is refused.
-pub(crate) type Payload = ActivityDashboardV1;
+pub(crate) type Payload = ActivityDashboardV2;
 
 pub(crate) fn payload_of(document: Option<&Value>) -> Result<Payload, String> {
     let mut document = document
