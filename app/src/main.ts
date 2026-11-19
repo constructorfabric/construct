@@ -45,7 +45,11 @@ import {
 import { createCopyHandler, createLinkHandler } from './external-calls';
 import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL } from './external';
 import { createMemoryHandlers } from './memory-calls';
-import { MEMORY_FACTS_CHANNEL, MEMORY_VERSION_CHANNEL } from './memory-protocol';
+import {
+  MEMORY_DELETE_CHANNEL,
+  MEMORY_FACTS_CHANNEL,
+  MEMORY_VERSION_CHANNEL,
+} from './memory-protocol';
 import { offerMoveToApplications } from './move-to-applications';
 import { createSettingsHandlers } from './settings-calls';
 
@@ -204,6 +208,7 @@ function startApp(): void {
     const memory = createMemoryHandlers({ env: process.env, platform: process.platform });
     ipcMain.handle(MEMORY_FACTS_CHANNEL, () => memory.facts());
     ipcMain.handle(MEMORY_VERSION_CHANNEL, () => memory.version());
+    ipcMain.handle(MEMORY_DELETE_CHANNEL, (_event, factId: unknown) => memory.remove(factId));
     const setup = createDashboardSetupHandlers({ env: process.env, platform: process.platform });
     ipcMain.handle(SETUP_START_CHANNEL, () => setup.start());
     ipcMain.handle(SETUP_STATUS_CHANNEL, () => setup.status());

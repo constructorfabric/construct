@@ -29,8 +29,12 @@ import {
 } from './dashboard-setup-protocol';
 import type { SetupResult } from './dashboard-setup-protocol';
 import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL } from './external';
-import { MEMORY_FACTS_CHANNEL, MEMORY_VERSION_CHANNEL } from './memory-protocol';
-import type { FactsResult, VersionResult } from './memory-protocol';
+import {
+  MEMORY_DELETE_CHANNEL,
+  MEMORY_FACTS_CHANNEL,
+  MEMORY_VERSION_CHANNEL,
+} from './memory-protocol';
+import type { FactDeleteResult, FactsResult, VersionResult } from './memory-protocol';
 import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
 import type { AgentStatus, ConstructAgentApi } from './agent-status';
 import {
@@ -80,6 +84,8 @@ const api: ConstructAgentApi = {
     ipcRenderer.invoke(DASHBOARD_SUMMARY_CHANNEL, input) as Promise<SummaryResult>,
   getMemoryFacts: () => ipcRenderer.invoke(MEMORY_FACTS_CHANNEL) as Promise<FactsResult>,
   getMemoryVersion: () => ipcRenderer.invoke(MEMORY_VERSION_CHANNEL) as Promise<VersionResult>,
+  deleteMemoryFact: (factId: string) =>
+    ipcRenderer.invoke(MEMORY_DELETE_CHANNEL, factId) as Promise<FactDeleteResult>,
   startDashboardSetup: () => ipcRenderer.invoke(SETUP_START_CHANNEL) as Promise<SetupResult>,
   getDashboardSetup: () => ipcRenderer.invoke(SETUP_STATUS_CHANNEL) as Promise<SetupResult>,
   cancelDashboardSetup: () => ipcRenderer.invoke(SETUP_CANCEL_CHANNEL) as Promise<SetupResult>,

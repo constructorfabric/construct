@@ -365,6 +365,21 @@
   margin-top: var(--space-6);
 }
 
+.factRow {
+  align-items: center;
+  display: flex;
+  gap: var(--space-1);
+}
+
+.deleteDone:focus {
+  outline: none;
+}
+
+.factBody {
+  flex: 1;
+  min-width: 0;
+}
+
 .branchTrigger {
   padding: var(--space-2) var(--space-4);
 }

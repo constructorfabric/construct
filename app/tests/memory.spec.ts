@@ -1,6 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
@@ -12,6 +12,8 @@ import { screenshotBothThemes } from './screenshots';
 const token = 'cd'.repeat(32);
 
 interface Fact {
+  /** The id the host gives the fact; by default one that stays with it, like the gear's. */
+  readonly id?: string;
   readonly entity_kind: string;
   readonly property: string;
   readonly value: unknown;
@@ -26,6 +28,16 @@ interface Host {
   /** Facts in a page, so that the list takes more than one call. */
   pageSize: number;
   readonly urls: string[];
+  /** The ids of the facts the page asked to delete, in order. */
+  readonly deletes: string[];
+  /** The status the host answers a delete with: 204 deletes the fact. */
+  deleteStatus: number;
+  /** While set, a delete waits for it before it is answered. */
+  deleteGate: Promise<void> | null;
+  /** While set, a list read (not the version look) is answered with its page only after it. */
+  listGate: Promise<void> | null;
+  /** How many list reads have been answered. */
+  listAnswered: number;
   /** Whether collection is on, as the stand-in agent says it. */
   collecting: boolean;
   /** The stand-in agent cannot give its settings. */
@@ -50,6 +62,11 @@ function newHost(session: Session): Host {
     status: 200,
     pageSize: 2,
     urls,
+    deletes: [],
+    deleteStatus: 204,
+    deleteGate: null,
+    listGate: null,
+    listAnswered: 0,
     collecting: true,
     settingsFail: false,
     port: () => (server.address() as AddressInfo).port,
@@ -66,11 +83,33 @@ function newHost(session: Session): Host {
       await new Promise((resolve) => server.close(resolve));
     },
   };
+  // A fact keeps its id when others are deleted, as in the gear.
+  const ids = new Map<Fact, string>();
+  const idOf = (fact: Fact): string => {
+    const known = ids.get(fact) ?? fact.id ?? `fact-${ids.size}`;
+    ids.set(fact, known);
+    return known;
+  };
   const server: Server = createServer((request, response) => {
+    void answer(request, response);
+  });
+  const answer = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const url = new URL(request.url ?? '', 'http://127.0.0.1');
     urls.push(`${url.pathname}${url.search}`);
     if (request.headers.authorization !== `Bearer ${token}`) {
       response.writeHead(401).end('{}');
+      return;
+    }
+    if (request.method === 'DELETE') {
+      const id = decodeURIComponent(url.pathname.split('/').pop() ?? '');
+      host.deletes.push(id);
+      await host.deleteGate;
+      const index = host.facts.findIndex((fact) => idOf(fact) === id);
+      if (host.deleteStatus === 204 && index >= 0) {
+        host.facts.splice(index, 1);
+        host.version = (host.version ?? 0) + 1;
+      }
+      response.writeHead(host.deleteStatus).end();
       return;
     }
     if (host.status !== 200) {
@@ -79,22 +118,30 @@ function newHost(session: Session): Host {
     }
     const limit = Math.min(Number(url.searchParams.get('limit') ?? '50'), host.pageSize);
     const from = Number(url.searchParams.get('cursor') ?? '0');
-    const items = host.facts.slice(from, from + limit).map((fact, index) => ({
-      ...fact,
-      fact_id: `fact-${from + index}`,
+    const items = host.facts.slice(from, from + limit).map((listed) => ({
+      entity_kind: listed.entity_kind,
+      property: listed.property,
+      value: listed.value,
+      fact_id: idOf(listed),
       origin: { kind: 'agent' },
       stored_at: '2026-11-18T10:30:00Z',
     }));
     const next = from + limit < host.facts.length ? String(from + limit) : null;
+    const version = host.version;
+    // The page is as it is now; a gated read tells it later, after what changed meanwhile.
+    if (limit > 1) {
+      await host.listGate;
+      host.listAnswered += 1;
+    }
     response.writeHead(200, { 'Content-Type': 'application/json' });
     response.end(
       JSON.stringify({
         items,
         page_info: { next_cursor: next, prev_cursor: null, limit },
-        version: host.version,
+        version,
       }),
     );
-  });
+  };
   server.listen(0, '127.0.0.1');
   return host;
 }
@@ -366,9 +413,237 @@ test('the page says in plain words that Construct is not ready, then fills in wh
   });
 });
 
+const deleteButton = (page: Page, name: string) =>
+  page.getByRole('button', { name: `Delete ${name}`, exact: true });
+
+test('Delete asks first, Cancel keeps the fact, and Yes removes the row and says what to do next', async ({
+  session,
+}) => {
+  const host = newHost(session);
+  host.facts = [...profile];
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    await deleteButton(page, 'Job title: Engineer').click();
+    const dialog = page.getByRole('alertdialog', { name: 'Delete Job title: Engineer?' });
+    await expect(dialog).toBeVisible();
+    await screenshotBothThemes(page, 'memory-delete-dialog');
+
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(tree.getByText('Engineer', { exact: true })).toBeVisible();
+    expect(host.deletes).toEqual([]);
+
+    await deleteButton(page, 'Job title: Engineer').click();
+    await page.getByRole('button', { name: 'Yes, delete' }).click();
+    await expect(tree.getByText('Engineer', { exact: true })).toHaveCount(0);
+    await expect(tree.getByText('Job title', { exact: true })).toHaveCount(0);
+    expect(host.deletes).toEqual(['fact-1']);
+    await expect(page.locator('#memory-delete-done')).toContainText(
+      'tell the chat the right value',
+    );
+    // The page reads the list again for the new version, and the fact stays gone.
+    await expect
+      .poll(() => host.urls.filter((url) => url.includes('limit=200')).length, { timeout: 20_000 })
+      .toBeGreaterThan(3);
+    await expect(tree.getByText('Engineer', { exact: true })).toHaveCount(0);
+    await expect(tree.getByText('Ada Lovelace', { exact: true })).toBeVisible();
+    await screenshotBothThemes(page, 'memory-after-delete');
+  });
+});
+
+test('a value with fields of its own is deleted as one fact', async ({ session }) => {
+  const host = newHost(session);
+  host.facts = [...profile];
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    await deleteButton(page, 'Work schedule: Mon to Fri').click();
+    await page.getByRole('button', { name: 'Yes, delete' }).click();
+    await expect(tree.getByRole('button', { name: /^Work schedule/ })).toHaveCount(0);
+    expect(host.deletes).toEqual(['fact-5']);
+    // The other facts of the person stay.
+    await expect(tree.getByText('Answer language', { exact: true })).toBeVisible();
+  });
+});
+
+test('each fact of a list has its own Delete, and only that one goes', async ({ session }) => {
+  const host = newHost(session);
+  host.facts = [...profile];
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    await tree.getByRole('button', { name: 'Skills (2)' }).click();
+    await deleteButton(page, 'Skills: Go').click();
+    await page.getByRole('button', { name: 'Yes, delete' }).click();
+    await expect(tree.getByRole('button', { name: /^Go/ })).toHaveCount(0);
+    await expect(tree.getByRole('button', { name: /^Skills: Rust/ })).toBeVisible();
+    expect(host.deletes).toEqual(['fact-3']);
+  });
+});
+
+test('a fact the gear no longer has (404) counts as deleted', async ({ session }) => {
+  const host = newHost(session);
+  host.facts = [...profile.slice(0, 2)];
+  host.deleteStatus = 404;
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    await deleteButton(page, 'Full name: Ada Lovelace').click();
+    await page.getByRole('button', { name: 'Yes, delete' }).click();
+    await expect(page.locator('#memory-tree').getByText('Ada Lovelace')).toHaveCount(0);
+    await expect(page.locator('#memory-delete-done')).toBeVisible();
+    expect(host.deletes).toEqual(['fact-0']);
+  });
+});
+
+test('a failed delete keeps the row, says why, and sending it again works', async ({ session }) => {
+  const host = newHost(session);
+  host.facts = [...profile.slice(0, 2)];
+  host.deleteStatus = 503;
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    await deleteButton(page, 'Full name: Ada Lovelace').click();
+    await page.getByRole('button', { name: 'Yes, delete' }).click();
+    await expect(page.locator('#memory-delete-failed')).toContainText(
+      'Full name: Ada Lovelace is not deleted: Construct is not ready',
+    );
+    await expect(tree.getByText('Ada Lovelace', { exact: true })).toBeVisible();
+    await expect(page.locator('#memory-delete-done')).toHaveCount(0);
+    await screenshotBothThemes(page, 'memory-delete-failed');
+
+    host.deleteStatus = 204;
+    await deleteButton(page, 'Full name: Ada Lovelace').click();
+    await page.getByRole('button', { name: 'Yes, delete' }).click();
+    await expect(tree.getByText('Ada Lovelace')).toHaveCount(0);
+    await expect(page.locator('#memory-delete-failed')).toHaveCount(0);
+    expect(host.deletes).toEqual(['fact-0', 'fact-0']);
+  });
+});
+
+test('Delete and its question work from the keyboard alone', async ({ session }) => {
+  const host = newHost(session);
+  host.facts = [...profile.slice(0, 2)];
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    const button = deleteButton(page, 'Full name: Ada Lovelace');
+    await button.focus();
+    await page.keyboard.press('Enter');
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toBeVisible();
+    // Escape leaves the fact in place and gives the focus back to the button.
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(button).toBeFocused();
+    expect(host.deletes).toEqual([]);
+
+    await page.keyboard.press('Space');
+    await expect(dialog).toBeVisible();
+    // The focus lands on Cancel; Tab moves on to the button that deletes.
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Yes, delete' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(tree.getByText('Ada Lovelace')).toHaveCount(0);
+    expect(host.deletes).toEqual(['fact-0']);
+    // The button of the deleted fact is gone: the focus is on the line that says what was done.
+    await expect(page.locator('#memory-delete-done')).toBeFocused();
+  });
+});
+
+test('the row stays, and every Delete waits, until the gear has answered', async ({ session }) => {
+  const host = newHost(session);
+  host.facts = [...profile.slice(0, 2)];
+  let release: () => void = () => undefined;
+  host.deleteGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    await deleteButton(page, 'Full name: Ada Lovelace').click();
+    await page.getByRole('button', { name: 'Yes, delete' }).click();
+    await expect.poll(() => host.deletes).toEqual(['fact-0']);
+    // The host has the call and has not answered: the row is still there, and no other delete
+    // can start.
+    await expect(tree.getByText('Ada Lovelace', { exact: true })).toBeVisible();
+    await expect(deleteButton(page, 'Job title: Engineer')).toBeDisabled();
+    await expect(page.locator('#memory-delete-done')).toHaveCount(0);
+    release();
+    await expect(tree.getByText('Ada Lovelace')).toHaveCount(0);
+    await expect(deleteButton(page, 'Job title: Engineer')).toBeEnabled();
+  });
+});
+
+test('a list read that began before a delete does not bring the deleted row back', async ({
+  session,
+}) => {
+  test.setTimeout(90_000);
+  const host = newHost(session);
+  host.facts = [...profile.slice(0, 2)];
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    await expect(tree.getByText('Ada Lovelace', { exact: true })).toBeVisible();
+
+    // The version changes, so the page reads the list again; the host holds that read open.
+    let release: () => void = () => undefined;
+    host.listGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const readsBefore = host.urls.filter((url) => url.includes('limit=200')).length;
+    host.version = 5;
+    await expect
+      .poll(() => host.urls.filter((url) => url.includes('limit=200')).length, {
+        timeout: 20_000,
+      })
+      .toBeGreaterThan(readsBefore);
+
+    // The fact is deleted while that read, which still lists it, is open.
+    await deleteButton(page, 'Full name: Ada Lovelace').click();
+    await page.getByRole('button', { name: 'Yes, delete' }).click();
+    await expect(tree.getByText('Ada Lovelace')).toHaveCount(0);
+    // Any read after this one is held too, so the page cannot put itself right before the check:
+    // what the page shows is what the old read left, however long the check takes.
+    const answered = host.listAnswered;
+    host.listGate = new Promise<void>(() => undefined);
+    release();
+    await expect.poll(() => host.listAnswered).toBeGreaterThan(answered);
+    // Time for the old list to reach the page. Without the guard its row is back and stays.
+    await page.waitForTimeout(1500);
+    expect(await tree.getByText('Ada Lovelace').count()).toBe(0);
+    await expect(tree.getByText('Engineer', { exact: true })).toBeVisible();
+  });
+});
+
+test('a fact the app cannot address has no Delete button', async ({ session }) => {
+  const host = newHost(session);
+  host.facts = [
+    { id: '..', entity_kind: 'identity', property: 'full_name', value: 'Ada Lovelace' },
+    { entity_kind: 'role', property: 'job_title', value: 'Engineer' },
+  ];
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    await expect(tree.getByText('Ada Lovelace', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Delete Full name/ })).toHaveCount(0);
+    await expect(deleteButton(page, 'Job title: Engineer')).toBeVisible();
+  });
+});
+
 test('the token and the port of the host never reach the window', async ({ session }) => {
   const host = newHost(session);
-  host.facts = profile;
+  host.facts = [...profile];
   await inMemoryPage(session, host, async (page) => {
     host.announce();
     await openMemory(page).click();
@@ -382,6 +657,7 @@ test('the token and the port of the host never reach the window', async ({ sessi
       Object.keys(Reflect.get(window, 'constructAgent') as object),
     );
     expect(names.filter((name) => /memory/i.test(name)).sort()).toEqual([
+      'deleteMemoryFact',
       'getMemoryFacts',
       'getMemoryVersion',
     ]);

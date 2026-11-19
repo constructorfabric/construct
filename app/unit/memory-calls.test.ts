@@ -31,6 +31,7 @@ function page(items: object[], next: string | null, version: number | null = 7):
 }
 
 interface Seen {
+  readonly method: string | undefined;
   readonly url: string;
   readonly authorization: string | undefined;
 }
@@ -51,7 +52,11 @@ async function withHost(
   mkdirSync(path.join(runtimeDir, 'construct'));
   const seen: Seen[] = [];
   const server = createServer((request, response) => {
-    seen.push({ url: request.url ?? '', authorization: request.headers.authorization });
+    seen.push({
+      method: request.method,
+      url: request.url ?? '',
+      authorization: request.headers.authorization,
+    });
     handler(request, response, seen);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -292,5 +297,95 @@ describe('the memory handlers', () => {
       writeFileSync(path.join(runtimeDir, 'construct', 'connection.json'), text);
       expect(await handlers().facts()).toEqual({ ok: false, error: 'Construct is not ready' });
     });
+  });
+
+  it('delete one fact with a DELETE to its route and the token', async () => {
+    await withHost(
+      (_request, response) => response.writeHead(204).end(),
+      async (_dir, _port, seen, handlers) => {
+        expect(await handlers().remove('fact-1')).toEqual({ ok: true });
+        expect(seen).toEqual([
+          {
+            method: 'DELETE',
+            url: `/construct/v1/subjects/${person}/facts/fact-1`,
+            authorization: `Bearer ${token}`,
+          },
+        ]);
+      },
+    );
+  });
+
+  it('count a fact that is not there (404) as deleted', async () => {
+    await withHost(
+      (_request, response) => response.writeHead(404).end('{}'),
+      async (_dir, _port, _seen, handlers) => {
+        expect(await handlers().remove('gone')).toEqual({ ok: true });
+      },
+    );
+  });
+
+  it('answer a failed delete with a fixed reason', async () => {
+    for (const status of [503, 500, 401, 200]) {
+      await withHost(
+        (_request, response) => response.writeHead(status).end(`secret ${token}`),
+        async (_dir, _port, _seen, handlers) => {
+          const result = await handlers().remove('fact-1');
+          expect(result).toEqual({ ok: false, error: 'Construct is not ready' });
+          expect(JSON.stringify(result)).not.toContain(token);
+        },
+      );
+    }
+  });
+
+  it('say the agent is not running when no host is announced', async () => {
+    const runtimeDir = mkdtempSync(path.join(tmpdir(), 'cb-unit-'));
+    try {
+      const handlers = createMemoryHandlers({
+        env: { XDG_RUNTIME_DIR: runtimeDir },
+        platform: 'linux',
+      });
+      expect(await handlers.remove('fact-1')).toEqual({
+        ok: false,
+        error: 'the agent is not running',
+      });
+    } finally {
+      rmSync(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuse an id that is not an id, without calling the host', async () => {
+    await withHost(
+      (_request, response) => response.writeHead(204).end(),
+      async (_dir, _port, seen, handlers) => {
+        for (const bad of [
+          '',
+          '.',
+          '..',
+          '../facts',
+          'a/b',
+          'a b',
+          'x'.repeat(200),
+          7,
+          null,
+          undefined,
+        ]) {
+          expect(await handlers().remove(bad)).toEqual({
+            ok: false,
+            error: 'Construct is not ready',
+          });
+        }
+        expect(seen).toEqual([]);
+      },
+    );
+  });
+
+  it('give up on a host that does not answer a delete within the deadline', async () => {
+    await withHost(
+      () => undefined,
+      async (_dir, _port, _seen, handlers) => {
+        const result = await handlers({ ...memoryLimits, deadlineMs: 150 }).remove('fact-1');
+        expect(result).toEqual({ ok: false, error: 'Construct is not ready' });
+      },
+    );
   });
 });
