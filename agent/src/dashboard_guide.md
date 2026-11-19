@@ -9,7 +9,7 @@ keeps the last good version and `render_dashboard` lists the errors with their p
 
 ```json
 {
-  "type": "gts.cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v1~",
+  "type": "gts.cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v2~",
   "title": "Activity",
   "payload": {
     "period": "this_week",
@@ -57,7 +57,7 @@ remove one, delete its object. For example, this puts a wider `by-tool` above a 
 
 ```json
 {
-  "type": "gts.cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v1~",
+  "type": "gts.cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v2~",
   "title": "Activity",
   "payload": {
     "period": "this_week",
