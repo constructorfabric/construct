@@ -36,10 +36,13 @@ async function withFakeAgent(
   }
 }
 
-const collection = '"collection":{"enabled":true,"claude_code":true,"codex":false},"notice":null';
+const collection =
+  '"collection":{"enabled":true,"claude_code":true,"codex":false,"screen":true},' +
+  '"supports":{"screen":true},"notice":null';
 const saved = `{"model":{"base_url":"https://x/v1","model":"m","api_key_set":true},${collection}}`;
 const collectionOut = {
-  collection: { enabled: true, claudeCode: true, codex: false },
+  collection: { enabled: true, claudeCode: true, codex: false, screen: true },
+  supportsScreen: true,
   notice: null,
 };
 

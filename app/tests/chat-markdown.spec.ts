@@ -1,6 +1,5 @@
-import type { ElectronApplication } from '@playwright/test';
 import { ask, assistant, configure, test } from './chat-helpers';
-import { expect } from './fixtures';
+import { expect, recordOpenedLinks } from './fixtures';
 import { screenshotBothThemes } from './screenshots';
 
 const link = 'https://example.com/docs';
@@ -33,19 +32,6 @@ const answer = [
 ].join('\n');
 
 const code = 'fn main() {\n    println!("hello");\n}';
-
-/** Replaces `shell.openExternal` in the main process with a recorder, and returns what it saw. */
-async function recordOpenedLinks(app: ElectronApplication): Promise<() => Promise<string[]>> {
-  await app.evaluate(({ shell }) => {
-    const opened: string[] = [];
-    Object.assign(globalThis, { openedLinks: opened });
-    shell.openExternal = (url: string) => {
-      opened.push(url);
-      return Promise.resolve();
-    };
-  });
-  return () => app.evaluate(() => Reflect.get(globalThis, 'openedLinks') as string[]);
-}
 
 test('an answer is shown as Markdown, and the HTML in it runs nothing', async ({
   page,

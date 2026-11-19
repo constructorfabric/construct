@@ -4,10 +4,19 @@ import type { Page } from '@playwright/test';
 export const now = new Date(2026, 10, 18, 10, 0, 0);
 
 /** What the agent answers to `settings-get`. */
-export function settingsReply(collecting: boolean): string {
+export function settingsReply(
+  collecting: boolean,
+  screen: { readonly supported: boolean; readonly on: boolean } = { supported: false, on: false },
+): string {
   return JSON.stringify({
     model: { base_url: 'https://example.invalid/v1', model: 'example-model', api_key_set: false },
-    collection: { enabled: collecting, claude_code: collecting, codex: collecting },
+    collection: {
+      enabled: collecting,
+      claude_code: collecting,
+      codex: collecting,
+      screen: screen.on,
+    },
+    supports: { screen: screen.supported },
     notice: null,
   });
 }

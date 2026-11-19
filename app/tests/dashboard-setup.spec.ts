@@ -71,7 +71,8 @@ function settingsReply(agent: Agent): string {
     model: agent.modelSet
       ? { base_url: 'https://example.invalid/v1', model: 'example-model', api_key_set: true }
       : { base_url: '', model: '', api_key_set: false },
-    collection: { enabled: true, claude_code: true, codex: true },
+    collection: { enabled: true, claude_code: true, codex: true, screen: false },
+    supports: { screen: false },
     notice: null,
   });
 }

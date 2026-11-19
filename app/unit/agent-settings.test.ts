@@ -73,13 +73,49 @@ describe('parseSettingsReply', () => {
   it('reads the model section', () => {
     const line =
       '{"model":{"base_url":"u","model":"m","api_key_set":true},' +
-      '"collection":{"enabled":false,"claude_code":true,"codex":false},"notice":"unreadable"}';
+      '"collection":{"enabled":false,"claude_code":true,"codex":false,"screen":false},' +
+      '"supports":{"screen":false},"notice":"unreadable"}';
     expect(parseSettingsReply(line)).toEqual({
       ok: true,
       model: { baseUrl: 'u', model: 'm', apiKeySet: true },
-      collection: { enabled: false, claudeCode: true, codex: false },
+      collection: { enabled: false, claudeCode: true, codex: false, screen: false },
+      supportsScreen: false,
       notice: 'unreadable',
     });
+  });
+
+  it('reads the screen switch and whether this computer supports it', () => {
+    const line =
+      '{"model":{"base_url":"u","model":"m","api_key_set":true},' +
+      '"collection":{"enabled":true,"claude_code":true,"codex":true,"screen":true},' +
+      '"supports":{"screen":true},"notice":null}';
+    expect(parseSettingsReply(line)).toMatchObject({
+      ok: true,
+      collection: { screen: true },
+      supportsScreen: true,
+    });
+  });
+
+  it.each([
+    [
+      'no screen switch',
+      '"collection":{"enabled":true,"claude_code":true,"codex":true},"supports":{"screen":true}',
+    ],
+    [
+      'a screen switch that is not a boolean',
+      '"collection":{"enabled":true,"claude_code":true,"codex":true,"screen":"on"},"supports":{"screen":true}',
+    ],
+    [
+      'no support answer',
+      '"collection":{"enabled":true,"claude_code":true,"codex":true,"screen":false}',
+    ],
+    [
+      'a support answer that is not a boolean',
+      '"collection":{"enabled":true,"claude_code":true,"codex":true,"screen":false},"supports":{"screen":"yes"}',
+    ],
+  ])('rejects a reply with %s', (_name, rest) => {
+    const line = `{"model":{"base_url":"u","model":"m","api_key_set":true},${rest}}`;
+    expect(() => parseSettingsReply(line)).toThrow(/screen settings/);
   });
 
   it.each([
@@ -89,11 +125,13 @@ describe('parseSettingsReply', () => {
   ])('has no notice when the agent %s', (_name, notice) => {
     const line =
       '{"model":{"base_url":"u","model":"m","api_key_set":true},' +
-      `"collection":{"enabled":true,"claude_code":true,"codex":true}${notice}}`;
+      `"collection":{"enabled":true,"claude_code":true,"codex":true,"screen":false},` +
+      `"supports":{"screen":false}${notice}}`;
     expect(parseSettingsReply(line)).toEqual({
       ok: true,
       model: { baseUrl: 'u', model: 'm', apiKeySet: true },
-      collection: { enabled: true, claudeCode: true, codex: true },
+      collection: { enabled: true, claudeCode: true, codex: true, screen: false },
+      supportsScreen: false,
       notice: null,
     });
   });
@@ -122,7 +160,8 @@ describe('parseSettingsReply', () => {
     [
       'a switch that is not a boolean',
       '{"model":{"base_url":"","model":"","api_key_set":true},' +
-        '"collection":{"enabled":true,"claude_code":"on","codex":true}}',
+        '"collection":{"enabled":true,"claude_code":"on","codex":true,"screen":false},' +
+        '"supports":{"screen":false}}',
       /no collection settings/,
     ],
   ])('rejects %s', (_name, line, message) => {
@@ -137,6 +176,7 @@ describe('parseCollectionInput', () => {
 
   it('keeps the switches given', () => {
     expect(parseCollectionInput({ codex: false })).toEqual({ codex: false });
+    expect(parseCollectionInput({ screen: true })).toEqual({ screen: true });
     expect(parseCollectionInput({ enabled: true, claudeCode: false, codex: true })).toEqual({
       enabled: true,
       claudeCode: false,
@@ -149,6 +189,7 @@ describe('parseCollectionInput', () => {
     ['not an object', 1],
     ['a switch that is not a boolean', { codex: 'on' }],
     ['only names it does not know', { claude_code: false, model: {} }],
+    ['a screen switch that is not a boolean', { screen: 'on' }],
     ['a valid switch beside an invalid one', { enabled: true, codex: 'yes' }],
   ])('refuses %s', (_name, value) => {
     expect(parseCollectionInput(value)).toBeNull();
@@ -156,6 +197,10 @@ describe('parseCollectionInput', () => {
 });
 
 describe('collectionSetLine', () => {
+  it('names the screen switch the way the agent does', () => {
+    expect(collectionSetLine({ screen: true })).toBe('settings-set {"collection":{"screen":true}}');
+  });
+
   it('uses the names of the agent and leaves out what is not given', () => {
     expect(collectionSetLine({ claudeCode: false })).toBe(
       'settings-set {"collection":{"claude_code":false}}',
@@ -170,14 +215,19 @@ describe('withCollectionReply', () => {
   const current = {
     ok: true,
     model: { baseUrl: 'new', model: 'new', apiKeySet: false },
-    collection: { enabled: true, claudeCode: true, codex: true },
+    collection: { enabled: true, claudeCode: true, codex: true, screen: false },
+    supportsScreen: true,
     notice: 'old notice',
   } as const;
-  const reply = { collection: { enabled: true, claudeCode: true, codex: false }, notice: null };
+  const reply = {
+    collection: { enabled: true, claudeCode: true, codex: false, screen: true },
+    notice: null,
+  };
 
   it('takes the collection and the notice and keeps the model the page holds now', () => {
     expect(withCollectionReply(current, reply)).toEqual({
       ok: true,
+      supportsScreen: true,
       model: { baseUrl: 'new', model: 'new', apiKeySet: false },
       ...reply,
     });

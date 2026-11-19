@@ -10,17 +10,24 @@ import {
 } from '@gears-frontx/ui-kit';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
+import type { AgentStatus } from '../agent-status';
 import type { CollectionInput, CollectionSettings } from '../agent-settings';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { OutcomeMessage } from './ModelSettingsForm';
+import { ScreenGrants } from './ScreenGrants';
 
 export function CollectionSettingsForm({
   settings,
+  supportsScreen,
+  status,
   notice,
   onSettings,
 }: {
   readonly settings: CollectionSettings;
+  /** Whether this computer can collect the time in apps and websites; when not, nothing of it shows. */
+  readonly supportsScreen: boolean;
+  readonly status: AgentStatus | null;
   readonly notice: string | null;
   readonly onSettings: (reply: {
     readonly collection: CollectionSettings;
@@ -99,6 +106,30 @@ export function CollectionSettingsForm({
             />
           </Field>
         </div>
+        {supportsScreen && (
+          <>
+            {/* Under a master switch that is off this one shows off too; its own saved value stays. */}
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel id="collection-screen-label" htmlFor="collection-screen">
+                  {t('CollectionSettingsForm.Screen')}
+                </FieldLabel>
+                <FieldDescription id="collection-screen-hint">
+                  {t('CollectionSettingsForm.ScreenHint')}
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="collection-screen"
+                checked={settings.enabled && settings.screen}
+                disabled={!settings.enabled}
+                aria-labelledby="collection-screen-label"
+                aria-describedby="collection-screen-hint"
+                onCheckedChange={(screen) => void save({ screen })}
+              />
+            </Field>
+            {settings.enabled && settings.screen && <ScreenGrants status={status} />}
+          </>
+        )}
       </FieldGroup>
       {error === null ? null : (
         <OutcomeMessage id="collection-error" outcome={{ kind: 'error', text: error }} />

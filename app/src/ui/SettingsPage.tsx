@@ -1,6 +1,7 @@
 import { Alert, Heading } from '@gears-frontx/ui-kit';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import type { AgentStatus } from '../agent-status';
 import { withCollectionReply } from '../agent-settings';
 import type { SettingsResult } from '../agent-settings';
 import { t } from '../translation';
@@ -16,10 +17,13 @@ import type { Erasing } from './useErasing';
 export function SettingsPage({
   chat,
   erasing,
+  status,
   onOpenDashboard,
 }: {
   readonly chat: Chat;
   readonly erasing: Erasing;
+  /** The agent's latest status, which the app polls; the permissions are read from it. */
+  readonly status: AgentStatus | null;
   readonly onOpenDashboard: () => void;
 }): ReactNode {
   const [loaded, setLoaded] = useState<SettingsResult | null>(null);
@@ -61,6 +65,8 @@ export function SettingsPage({
       />
       <CollectionSettingsForm
         settings={loaded.collection}
+        supportsScreen={loaded.supportsScreen}
+        status={status}
         notice={loaded.notice}
         onSettings={(reply) => setLoaded((current) => withCollectionReply(current, reply))}
       />

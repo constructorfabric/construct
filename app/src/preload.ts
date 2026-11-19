@@ -28,7 +28,7 @@ import {
   SETUP_STATUS_CHANNEL,
 } from './dashboard-setup-protocol';
 import type { SetupResult } from './dashboard-setup-protocol';
-import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL } from './external';
+import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL, OPEN_PANE_CHANNEL } from './external';
 import {
   MEMORY_DELETE_CHANNEL,
   MEMORY_ERASE_CHANNEL,
@@ -100,6 +100,7 @@ const api: ConstructAgentApi = {
   getDashboardSetup: () => ipcRenderer.invoke(SETUP_STATUS_CHANNEL) as Promise<SetupResult>,
   cancelDashboardSetup: () => ipcRenderer.invoke(SETUP_CANCEL_CHANNEL) as Promise<SetupResult>,
   openLink: (url) => ipcRenderer.invoke(OPEN_LINK_CHANNEL, url) as Promise<boolean>,
+  openPane: (pane) => ipcRenderer.invoke(OPEN_PANE_CHANNEL, pane) as Promise<boolean>,
   copyText: (text) => ipcRenderer.invoke(COPY_TEXT_CHANNEL, text) as Promise<boolean>,
   onChatEvent: (listener) => {
     // Only the event goes through, never Electron's own event object.

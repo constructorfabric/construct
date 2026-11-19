@@ -340,3 +340,18 @@ export const test = base.extend<{ session: Session; app: ElectronApplication; pa
     await expectNoPolicyViolations(page);
   },
 });
+
+/** Replaces `shell.openExternal` in the main process with a recorder, and returns what it saw: links and panes of System Settings alike. */
+export async function recordOpenedLinks(
+  app: ElectronApplication,
+): Promise<() => Promise<string[]>> {
+  await app.evaluate(({ shell }) => {
+    const opened: string[] = [];
+    Object.assign(globalThis, { openedLinks: opened });
+    shell.openExternal = (address: string) => {
+      opened.push(address);
+      return Promise.resolve();
+    };
+  });
+  return () => app.evaluate(() => Reflect.get(globalThis, 'openedLinks') as string[]);
+}

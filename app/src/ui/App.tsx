@@ -191,6 +191,7 @@ export function App(): ReactNode {
               <SettingsPage
                 chat={chat}
                 erasing={erasing}
+                status={status}
                 onOpenDashboard={() => setPage('dashboard')}
               />
             )}

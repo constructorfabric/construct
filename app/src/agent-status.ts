@@ -4,6 +4,8 @@ import type { DashboardApi } from './dashboard-protocol';
 import type { DashboardSetupApi } from './dashboard-setup-protocol';
 import type { ExternalApi } from './external';
 import type { MemoryApi } from './memory-protocol';
+import { parseGrants } from './screen-grants';
+import type { Grant } from './screen-grants';
 
 /**
  * Whether the agent starts at login. `unknown` when the agent is not running or its reply has no
@@ -33,6 +35,8 @@ export type AgentStatus =
       /** Absent when the agent does not tell it, or tells it in a way the window does not know. */
       readonly database?: Part;
       readonly construct?: Part;
+      /** The permissions of the apps and websites collection; absent when the agent sends none. */
+      readonly grants?: readonly Grant[];
     }
   /** The socket answered "nobody here": no socket file, or nothing listening on it. */
   | { readonly state: 'stopped'; readonly reason: string; readonly startAtLogin: StartAtLogin }
@@ -74,6 +78,7 @@ export function parseStatusReply(line: string): AgentStatus {
   }
   const database = 'database' in reply ? parsePart(reply.database) : undefined;
   const construct = 'construct' in reply ? parsePart(reply.construct) : undefined;
+  const grants = 'screen' in reply ? parseGrants(reply.screen) : undefined;
   return {
     state: 'running',
     version: reply.version,
@@ -82,6 +87,7 @@ export function parseStatusReply(line: string): AgentStatus {
     startAtLogin,
     ...(database === undefined ? {} : { database }),
     ...(construct === undefined ? {} : { construct }),
+    ...(grants === undefined ? {} : { grants }),
   };
 }
 

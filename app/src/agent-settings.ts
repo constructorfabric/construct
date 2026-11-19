@@ -14,11 +14,13 @@ export interface ModelInput {
   readonly apiKey?: string;
 }
 
-/** What the agent collects: all of it, and each tool on its own. */
+/** What the agent collects: all of it, each tool on its own, and the apps and websites. */
 export interface CollectionSettings {
   readonly enabled: boolean;
   readonly claudeCode: boolean;
   readonly codex: boolean;
+  /** The time in the person's apps and websites: off until the person turns it on. */
+  readonly screen: boolean;
 }
 
 /** The switches a call changes; a switch left out keeps its value. */
@@ -30,6 +32,8 @@ export type SettingsResult =
       readonly ok: true;
       readonly model: ModelSettings;
       readonly collection: CollectionSettings;
+      /** Whether this computer can collect the time in apps and websites. */
+      readonly supportsScreen: boolean;
       /** Why collection is off without the user's say, when the agent says so. */
       readonly notice: string | null;
     }
@@ -126,8 +130,8 @@ export function parseCollectionInput(value: unknown): CollectionInput | null {
   if (!isRecord(value)) {
     return null;
   }
-  const { enabled, claudeCode, codex } = value;
-  const given = [enabled, claudeCode, codex];
+  const { enabled, claudeCode, codex, screen } = value;
+  const given = [enabled, claudeCode, codex, screen];
   if (given.every((flag) => flag === undefined)) {
     return null;
   }
@@ -138,12 +142,18 @@ export function parseCollectionInput(value: unknown): CollectionInput | null {
     ...(typeof enabled === 'boolean' && { enabled }),
     ...(typeof claudeCode === 'boolean' && { claudeCode }),
     ...(typeof codex === 'boolean' && { codex }),
+    ...(typeof screen === 'boolean' && { screen }),
   };
 }
 
 /** `settings-set {"collection":{...}}`: the agent's names, and only the switches given. */
 export function collectionSetLine(input: CollectionInput): string {
-  const collection = { enabled: input.enabled, claude_code: input.claudeCode, codex: input.codex };
+  const collection = {
+    enabled: input.enabled,
+    claude_code: input.claudeCode,
+    codex: input.codex,
+    screen: input.screen,
+  };
   return `settings-set ${JSON.stringify({ collection })}`;
 }
 
@@ -203,6 +213,14 @@ export function parseSettingsReply(line: string): SettingsResult {
   ) {
     throw new Error('the agent reply has no collection settings');
   }
+  const { supports } = reply;
+  if (
+    typeof collection.screen !== 'boolean' ||
+    !isRecord(supports) ||
+    typeof supports.screen !== 'boolean'
+  ) {
+    throw new Error('the agent reply has no screen settings');
+  }
   return {
     ok: true,
     model: { baseUrl: model.base_url, model: model.model, apiKeySet: model.api_key_set },
@@ -210,7 +228,9 @@ export function parseSettingsReply(line: string): SettingsResult {
       enabled: collection.enabled,
       claudeCode: collection.claude_code,
       codex: collection.codex,
+      screen: collection.screen,
     },
+    supportsScreen: supports.screen,
     notice: typeof notice === 'string' ? notice : null,
   };
 }
