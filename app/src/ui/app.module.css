@@ -337,6 +337,14 @@
   margin-top: var(--space-6);
 }
 
+.factList.factList {
+  gap: var(--space-1);
+}
+
+.factItem {
+  padding-block: var(--space-1);
+}
+
 .factRow {
   align-items: center;
   display: flex;
@@ -353,7 +361,7 @@
 }
 
 .branchTrigger {
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-1) var(--space-2);
 }
 
 .branchLabel {
