@@ -303,6 +303,15 @@ impl Stand {
             .any(|(path, progress)| path.ends_with("cc1.jsonl") && progress.offset == length)
     }
 
+    /// Whether the reader has saved a position for any file.
+    fn log_has_a_position(&self) -> bool {
+        let sink = construct_agent::records::FileSink::new(&self.root.join("data/construct"));
+        !construct_agent::records::Sink::load_progress(&sink)
+            .unwrap()
+            .files
+            .is_empty()
+    }
+
     fn postmaster_pid(&self) -> Option<u32> {
         let file = self.root.join("data/construct/postgres/postmaster.pid");
         std::fs::read_to_string(file)
@@ -686,15 +695,22 @@ fn the_persons_own_routes_answer_to_the_token_and_the_erasure_empties_the_list()
         false
     );
 
-    // A prompt typed while collection is off is read and passed over: the reader's saved position
-    // reaches the end of the log, and nothing is stored or sent.
-    stand.type_live_prompt("I started a repository called gears-rust-two");
-    wait_until("the reader to pass the prompt", || {
-        stand.log_is_read_to_the_end()
+    // A prompt typed while collection is off is not read at all: no position is saved for the
+    // log, and nothing is stored or sent. The reader runs a pass every POLL_INTERVAL, so after
+    // two intervals at least one pass has seen the prompt, with collection off.
+    stand.wait("the readers to see the switch", |s| {
+        s["connectors"]["claude-code"]["off"] == true
     });
+    // Its words do not match the fake model, so it makes no fact of its own.
+    stand.type_live_prompt("I started a side project called two-gears");
+    thread::sleep(construct_agent::follow::POLL_INTERVAL * 2);
+    assert!(!stand.log_has_a_position());
     assert_eq!(model.conversations(), 2);
 
-    // The switch-on turns personalization on in the host first; a new prompt makes a fact again.
+    // The switch-on turns personalization on in the host first. The log is then read from
+    // nothing, and the journal of sent prompts is empty, so the facts of the whole log are made
+    // again. The language, the repository and the note come only from the two prompts typed
+    // before the erasure, so they show that those were read again.
     let on = stand.ask(r#"settings-set {"collection":{"enabled":true}}"#);
     assert!(on.get("error").is_none(), "{on}");
     assert_eq!(on["collection"]["enabled"], true);
@@ -702,16 +718,41 @@ fn the_persons_own_routes_answer_to_the_token_and_the_erasure_empties_the_list()
         stand.own("GET", "settings", None).1["personalization_enabled"],
         true
     );
-    // A reader decides at the start of a pass whether it stores: it has to have seen the switch.
-    stand.wait("the readers to see the switch", |s| {
-        s["connectors"]["claude-code"].get("off").is_none()
+    wait_until("the log to be read again", || {
+        stand.log_is_read_to_the_end()
     });
+    wait_until("the facts from before the erasure", || {
+        let properties: Vec<String> = stand.listed().into_iter().map(|(_, p)| p).collect();
+        ["programming_languages", "remembered_notes", "repositories"]
+            .iter()
+            .all(|wanted| properties.iter().any(|p| p == wanted))
+    });
+    // Wait until the rebuild is quiet, then one new prompt is exactly one more conversation.
+    let mut known = model.conversations();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        thread::sleep(construct_agent::follow::POLL_INTERVAL);
+        let now = model.conversations();
+        if now == known {
+            break;
+        }
+        known = now;
+        assert!(
+            Instant::now() < deadline,
+            "the rebuild did not become quiet"
+        );
+    }
     stand.type_live_prompt(REMEMBER_CATS_AGAIN);
-    wait_until("the new prompt", || model.conversations() == 3);
-    wait_until("a fact again", || stand.listed().len() == 1);
-    // The refused prompt names a repository: if it had been sent, the model would have made one.
-    assert_eq!(model.conversations(), 3);
-    assert!(stand.listed().iter().all(|(_, p)| p != "repositories"));
+    wait_until("the new prompt", || model.conversations() > known);
+    wait_until("the log to be read to the end", || {
+        stand.log_is_read_to_the_end()
+    });
+    thread::sleep(construct_agent::follow::POLL_INTERVAL * 2);
+    assert_eq!(
+        model.conversations(),
+        known + 1,
+        "the prompt was read twice"
+    );
 }
 
 /// Waits until `done`, five minutes at most.
