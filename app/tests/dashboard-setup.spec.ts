@@ -211,6 +211,97 @@ test('a press shows the steps and the sizes, then the report and a link to the d
   });
 });
 
+/** A report with a word longer than the window, a wide table and a long line of code. */
+const longReport = [
+  '## Trackers',
+  '',
+  `A very long word: ${'unbroken'.repeat(30)}`,
+  '',
+  '| Tracker | Projects | Notes |',
+  '| --- | --- | --- |',
+  `| One | 3 | ${'a long note, '.repeat(20)} |`,
+  '',
+  '```text',
+  `const line = '${'x'.repeat(200)}';`,
+  '```',
+  '',
+  'The end of the report.',
+].join('\n');
+
+test('a finished run shows the result in one box with an outline and padding', async ({
+  session,
+}) => {
+  const agent = newAgent();
+  finish(agent);
+  agent.report = longReport;
+  await withAgent(session, agent, async (page) => {
+    const done = page.locator('#setup-done');
+    await expect(done).toHaveText('The dashboard is built.');
+
+    // The line, the heading and the report share one frame.
+    const box = page.locator('#setup-result');
+    await expect(box.locator('#setup-done')).toBeVisible();
+    await expect(box.locator('#setup-report-title')).toBeVisible();
+    await expect(box.locator('#setup-report')).toBeVisible();
+    const frame = await box.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const body = element.firstElementChild;
+      return {
+        border: style.borderTopWidth,
+        borderStyle: style.borderTopStyle,
+        padding: body === null ? '0px' : getComputedStyle(body).paddingLeft,
+      };
+    });
+    expect(frame.borderStyle).toBe('solid');
+    expect(parseFloat(frame.border)).toBeGreaterThan(0);
+    expect(parseFloat(frame.padding)).toBeGreaterThan(0);
+
+    // Nothing of the report is cut or leaves the box: the long word wraps, the table scrolls
+    // inside its own area and the code block scrolls too.
+    await expect(box.locator('#setup-report')).toContainText('The end of the report.');
+    const inside = await box.evaluate((element) => {
+      const frameBox = element.getBoundingClientRect();
+      const leaving = [...element.querySelectorAll('#setup-report *')].filter((node) => {
+        // A table and a code block scroll inside their own area: that area's edge has to be inside.
+        if (node.closest('table, pre') != null) {
+          return false;
+        }
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && (rect.left < frameBox.left - 1 || rect.right > frameBox.right + 1);
+      });
+      return {
+        leaving: leaving.map((node) => node.tagName),
+        overflow: element.scrollWidth > element.clientWidth,
+      };
+    });
+    expect(inside.overflow).toBe(false);
+    expect(inside.leaving).toEqual([]);
+    await expect(box.getByRole('table')).toBeVisible();
+    // The wide table is held by an area that scrolls, so no column is cut.
+    const scrolls = await box
+      .getByRole('table')
+      .evaluate(
+        (table) =>
+          (table.parentElement?.scrollWidth ?? 0) > (table.parentElement?.clientWidth ?? 0),
+      );
+    expect(scrolls).toBe(true);
+    await expect(box.getByText('unbroken'.repeat(30), { exact: false })).toBeVisible();
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+
+    // The button that opens the dashboard sits below the box with a gap.
+    const gap = await page.evaluate(() => {
+      const card = document.querySelector('#setup-result');
+      const link = document.querySelector('#setup-open-dashboard');
+      if (!card || !link) return -1;
+      return link.getBoundingClientRect().top - card.getBoundingClientRect().bottom;
+    });
+    expect(gap).toBeGreaterThan(0);
+    await shoot(page, 'setup-report-long');
+  });
+});
+
 test('Cancel ends the run and the button is there again', async ({ session }) => {
   const agent = newAgent();
   writing(agent);
