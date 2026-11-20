@@ -895,6 +895,16 @@ impl Sink for Crashing {
     }
 }
 
+/// Every turn stored for a session of the fake tool, oldest first.
+fn stored_texts(s: &Setup, session: &str) -> Vec<String> {
+    FileSink::new(&s.data)
+        .turns_before("fake", session, "9999", usize::MAX)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.text)
+        .collect()
+}
+
 #[test]
 fn a_crash_in_a_long_first_scan_keeps_what_the_checkpoint_saved() {
     let s = Setup::new("checkpoint");
@@ -928,13 +938,24 @@ fn a_crash_in_a_long_first_scan_keeps_what_the_checkpoint_saved() {
         "the checkpoint is past the crash: {offset}"
     );
 
+    // The pass stops at its first failing save or append, which a slow pass reaches long before
+    // line 5200: how many turns were stored by then is not fixed.
+    let stored = stored_texts(&s, "a");
+    assert!(stored.len() <= 5200, "{}", stored.len());
+
     let stats = Stats::default();
     s.follower(&stats).pass().unwrap();
-    // The 200 lines after the checkpoint were stored already: only 5200..6000 are new.
-    assert_eq!(tool_status(&stats)["turns"], 800);
-    let tail = s.texts("a");
-    assert_eq!(tail.len(), 1000);
-    assert_eq!(tail[999], "line05999");
+    // Only what the crash left unstored is new; what was stored already is a replay.
+    assert_eq!(tool_status(&stats)["turns"], 6000 - stored.len());
+    // Every line is stored once, in order: no gap and no duplicate.
+    let all = stored_texts(&s, "a");
+    assert_eq!(all.len(), 6000);
+    assert!(
+        all.iter()
+            .enumerate()
+            .all(|(i, text)| *text == format!("line{i:05}")),
+        "the stored turns are not the 6000 lines in order"
+    );
 }
 
 #[test]
