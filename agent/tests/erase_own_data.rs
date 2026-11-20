@@ -15,11 +15,13 @@ use std::time::{Duration, SystemTime};
 use connectors::{Author, ClaudeCode, Codex, Registry, Role, Turn};
 use construct_agent::activity::Feed;
 use construct_agent::chat::{Chat, Link};
+use construct_agent::dashboard_setup::SetupJob;
 use construct_agent::erase::{OwnStore, OwnStores, own_stores};
 use construct_agent::follow::{Erase, Follower, Stats};
 use construct_agent::manage::Manager;
 use construct_agent::records::{FileSink, Sink};
 use construct_agent::settings::{Collection, Settings, Update};
+use construct_agent::workspace::Workspace;
 use serde_json::{Value, json};
 
 mod common;
@@ -27,7 +29,7 @@ mod common;
 use common::fake_host::FakeHost;
 use common::scripted::{Turn as Scripted, provider};
 use common::stand::{deadlines, timing, wait_for};
-use common::tools::{Under, claude_user, codex_meta, codex_user};
+use common::tools::{Under, claude_user, codex_meta, codex_user, recent_claude, recent_codex};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -36,6 +38,7 @@ const SETTINGS_ON: &str =
 const ERASING: &str =
     r#"{"subject_id":"s","personalization_enabled":false,"erasure_in_progress":true}"#;
 const CLAUDE_LOG: &str = ".claude/projects/project/sess-1.jsonl";
+const CODEX_ID: &str = "01a0bee2-6260-73a3-b389-43c86bb8930f";
 const CODEX_LOG: &str = ".codex/sessions/2026/11/11/rollout-2026-11-11T10-15-00-01a0bee2-6260-73a3-b389-43c86bb8930f.jsonl";
 
 fn registry() -> Registry {
@@ -161,6 +164,10 @@ impl Stand {
     }
 
     fn follower(&self) -> Follower<FileSink> {
+        self.follower_with(self.erase.clone())
+    }
+
+    fn follower_with(&self, erase: Erase) -> Follower<FileSink> {
         let settings = self.settings.clone();
         Follower::new(
             registry(),
@@ -170,7 +177,24 @@ impl Stand {
         )
         .unwrap()
         .with_switch(Arc::new(move |tool| settings.collects(tool)))
-        .with_erase(self.erase.clone())
+        .with_erase(erase)
+    }
+
+    /// A follower in a new process: its `Erase` handle knows of an erasure only what is on the
+    /// disk.
+    fn restarted(&self) -> Follower<FileSink> {
+        self.follower_with(Erase::new(&self.data, &["claude-code", "codex"]))
+    }
+
+    /// Whether the saved position of a file is at its end.
+    fn read_to_the_end(&self, path: &Path) -> bool {
+        let length = fs::metadata(path).unwrap().len();
+        FileSink::new(&self.data)
+            .load_progress()
+            .unwrap()
+            .files
+            .iter()
+            .any(|(file, progress)| Path::new(file) == path && progress.offset == length)
     }
 
     fn claude(&self) -> PathBuf {
@@ -186,11 +210,7 @@ impl Stand {
         append(&self.claude(), &format!("{}\n", claude_user("claude old")));
         append(
             &self.codex(),
-            &format!(
-                "{}\n{}\n",
-                codex_meta("01a0bee2-6260-73a3-b389-43c86bb8930f"),
-                codex_user("codex old")
-            ),
+            &format!("{}\n{}\n", codex_meta(CODEX_ID), codex_user("codex old")),
         );
         follower.pass().unwrap();
         if provider {
@@ -249,13 +269,16 @@ impl Stand {
             .unwrap();
     }
 
+    /// The stored texts of one session, in alphabetical order: the made-up lines share a time.
     fn stored_texts(&self, tool: &str, session: &str) -> Vec<String> {
-        FileSink::new(&self.data)
+        let mut texts = FileSink::new(&self.data)
             .turns_before(tool, session, "9999", 1000)
             .unwrap()
             .into_iter()
             .map(|t| t.text)
-            .collect()
+            .collect::<Vec<_>>();
+        texts.sort();
+        texts
     }
 }
 
@@ -318,34 +341,40 @@ fn the_erase_command_leaves_no_record_no_position_no_journal_and_no_conversation
 }
 
 #[test]
-fn after_a_switch_on_the_old_session_files_are_not_collected_and_a_new_line_is() {
+fn after_a_switch_on_the_old_session_files_are_collected_again_and_a_new_line_once() {
     let stand = Stand::new("http://127.0.0.1:9/v1");
     let mut follower = stand.follower();
     stand.fill(&mut follower, false);
     stand.erase_command();
-    // The readers go on while collection is off: they read, and store nothing.
+    // The readers go on while collection is off: they read nothing and set no position.
     follower.pass().unwrap();
     assert!(stand.records().is_empty());
+    assert!(!stand.progress_file().exists());
 
     stand.switch_on();
     follower.pass().unwrap();
-    assert!(
-        stand.records().is_empty(),
-        "an old session file was collected"
-    );
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+    assert_eq!(stand.stored_texts("codex", CODEX_ID), ["codex old"]);
 
     append(&stand.claude(), &format!("{}\n", claude_user("claude new")));
     append(&stand.codex(), &format!("{}\n", codex_user("codex new")));
     follower.pass().unwrap();
-    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude new"]);
+    follower.pass().unwrap();
     assert_eq!(
-        stand.stored_texts("codex", "01a0bee2-6260-73a3-b389-43c86bb8930f"),
-        ["codex new"]
+        stand.stored_texts("claude-code", "sess-1"),
+        ["claude new", "claude old"]
     );
+    assert_eq!(
+        stand.stored_texts("codex", CODEX_ID),
+        ["codex new", "codex old"]
+    );
+    // Each line was read once: the saved positions are at the ends of the files.
+    assert!(stand.read_to_the_end(&stand.claude()));
+    assert!(stand.read_to_the_end(&stand.codex()));
 }
 
 #[test]
-fn a_switch_on_at_once_after_the_erasure_does_not_collect_the_old_session_files_either() {
+fn a_switch_on_at_once_after_the_erasure_collects_the_old_session_files_too() {
     let stand = Stand::new("http://127.0.0.1:9/v1");
     let mut follower = stand.follower();
     stand.fill(&mut follower, false);
@@ -354,18 +383,251 @@ fn a_switch_on_at_once_after_the_erasure_does_not_collect_the_old_session_files_
     stand.switch_on();
 
     follower.pass().unwrap();
-    assert!(
-        stand.records().is_empty(),
-        "an old session file was collected"
-    );
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
     assert!(
         stand.progress_file().exists(),
         "the readers did not note where they are"
     );
+}
 
+#[test]
+fn a_line_written_while_collection_is_off_after_the_erasure_is_stored_once() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    stand.erase_command();
     append(&stand.claude(), &format!("{}\n", claude_user("claude new")));
     follower.pass().unwrap();
-    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude new"]);
+    assert!(stand.records().is_empty());
+
+    // A line that does not parse is counted each time it is read, whatever the sink drops.
+    append(&stand.claude(), "not a log line\n");
+    stand.switch_on();
+    follower.pass().unwrap();
+    follower.pass().unwrap();
+    assert_eq!(
+        stand.stored_texts("claude-code", "sess-1"),
+        ["claude new", "claude old"]
+    );
+    assert_eq!(stand.stats.to_json()["claude-code"]["skipped"], 1);
+    assert!(stand.read_to_the_end(&stand.claude()));
+}
+
+#[test]
+fn after_the_erasure_and_a_restart_no_position_is_left_while_collection_is_off() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    stand.erase_command();
+    drop(follower);
+
+    let mut restarted = stand.restarted();
+    restarted.pass().unwrap();
+    restarted.pass().unwrap();
+    assert!(stand.records().is_empty());
+    assert!(!stand.progress_file().exists());
+    // The marker stays: the erasure is not settled until a tool is read while it is on.
+    assert!(stand.data.join("erase-settling").exists());
+
+    stand.switch_on();
+    restarted.pass().unwrap();
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+    assert!(stand.progress_file().exists());
+    assert!(!stand.data.join("erase-settling").exists());
+}
+
+#[test]
+fn a_tool_that_stays_off_after_the_erasure_keeps_no_position_and_the_marker_names_it() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    stand.erase_command();
+    // Claude is switched on, Codex stays off by its own switch.
+    stand
+        .settings
+        .apply(Update::parse(r#"{"collection":{"codex":false}}"#).unwrap())
+        .unwrap();
+    stand.switch_on();
+    follower.pass().unwrap();
+
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+    assert!(stand.stored_texts("codex", CODEX_ID).is_empty());
+    let positions = fs::read_to_string(stand.progress_file()).unwrap();
+    assert!(positions.contains("sess-1.jsonl"), "{positions}");
+    assert!(!positions.contains("rollout-"), "{positions}");
+    assert_eq!(
+        fs::read_to_string(stand.data.join("erase-settling")).unwrap(),
+        "codex"
+    );
+
+    // Codex is switched on: it is collected from the start and the marker goes.
+    stand
+        .settings
+        .apply(Update::parse(r#"{"collection":{"codex":true}}"#).unwrap())
+        .unwrap();
+    follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("codex", CODEX_ID), ["codex old"]);
+    assert!(!stand.data.join("erase-settling").exists());
+}
+
+#[test]
+fn a_tool_read_while_on_after_the_erasure_is_not_held_back_by_a_restart_while_another_waits() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    stand.erase_command();
+    stand
+        .settings
+        .apply(Update::parse(r#"{"collection":{"codex":false}}"#).unwrap())
+        .unwrap();
+    stand.switch_on();
+    follower.pass().unwrap();
+    drop(follower);
+
+    // Collection goes off and the agent restarts; Codex still waits, Claude does not.
+    stand
+        .settings
+        .apply(Update::parse(r#"{"collection":{"enabled":false}}"#).unwrap())
+        .unwrap();
+    append(&stand.claude(), &format!("{}\n", claude_user("while off")));
+    let mut restarted = stand.restarted();
+    restarted.pass().unwrap();
+    stand.switch_on();
+    restarted.pass().unwrap();
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+}
+
+#[test]
+fn positions_a_crash_in_the_middle_of_the_erasure_left_are_dropped_at_the_restart() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    let positions = fs::read(stand.progress_file()).unwrap();
+    stand.erase_command();
+    drop(follower);
+    // The records are gone, the marker is there, and the positions were not removed yet.
+    fs::write(stand.progress_file(), positions).unwrap();
+    fs::write(stand.data.join("erase-settling"), "claude-code\ncodex").unwrap();
+
+    let mut restarted = stand.restarted();
+    restarted.pass().unwrap();
+    assert!(stand.records().is_empty());
+    assert!(
+        !fs::read_to_string(stand.progress_file())
+            .unwrap_or_default()
+            .contains("sess-1.jsonl")
+    );
+    stand.switch_on();
+    restarted.pass().unwrap();
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+    assert_eq!(stand.stored_texts("codex", CODEX_ID), ["codex old"]);
+}
+
+#[test]
+fn a_file_that_can_only_be_read_while_off_is_dropped_as_under_the_plain_rule() {
+    use std::os::unix::fs::PermissionsExt;
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    let locked = stand.home.join(".claude/projects/project/locked.jsonl");
+    append(&locked, &format!("{}\n", claude_user("locked")));
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    stand.erase_command();
+    stand.switch_on();
+    follower.pass().unwrap();
+    // The tool was read while on: it no longer waits.
+    assert!(!stand.data.join("erase-settling").exists());
+
+    // The tool is switched off, and only then can the file be read: it is read and dropped.
+    stand
+        .settings
+        .apply(Update::parse(r#"{"collection":{"enabled":false}}"#).unwrap())
+        .unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
+    follower.pass().unwrap();
+    stand.switch_on();
+    follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+}
+
+#[test]
+fn a_file_that_stays_unreadable_does_not_change_what_a_plain_switch_off_drops() {
+    use std::os::unix::fs::PermissionsExt;
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    let locked = stand.home.join(".claude/projects/project/locked.jsonl");
+    append(&locked, &format!("{}\n", claude_user("locked")));
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    stand.erase_command();
+    stand.switch_on();
+    follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+
+    // Collection goes off and the tool writes meanwhile: the readable files are read and dropped.
+    stand
+        .settings
+        .apply(Update::parse(r#"{"collection":{"enabled":false}}"#).unwrap())
+        .unwrap();
+    append(&stand.claude(), &format!("{}\n", claude_user("while off")));
+    follower.pass().unwrap();
+    stand.switch_on();
+    follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+}
+
+#[test]
+fn a_marker_that_cannot_be_updated_is_shown_in_status_and_tried_again() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    stand.erase_command();
+    // The marker cannot be removed: a directory stands in its place.
+    let marker = stand.data.join("erase-settling");
+    fs::remove_file(&marker).unwrap();
+    fs::create_dir(&marker).unwrap();
+    stand.switch_on();
+    follower.pass().unwrap();
+    let status = stand.stats.to_json()["claude-code"].clone();
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot update the erasure note"),
+        "{status}"
+    );
+
+    // Still blocked: the next pass tries again and the error is still shown.
+    follower.pass().unwrap();
+    assert!(
+        stand.stats.to_json()["claude-code"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot update the erasure note")
+    );
+
+    // Once the blocker is gone the same marker is removed by the retry, not by the test.
+    fs::remove_dir(&marker).unwrap();
+    fs::write(&marker, "claude-code\ncodex").unwrap();
+    follower.pass().unwrap();
+    assert!(stand.stats.to_json()["claude-code"].get("error").is_none());
+    assert!(!marker.exists());
+}
+
+#[test]
+fn a_plain_switch_off_and_on_still_drops_what_the_tools_wrote_meanwhile() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill(&mut follower, false);
+    stand
+        .settings
+        .apply(Update::parse(r#"{"collection":{"enabled":false}}"#).unwrap())
+        .unwrap();
+    append(&stand.claude(), &format!("{}\n", claude_user("while off")));
+    follower.pass().unwrap();
+    stand.switch_on();
+    follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
 }
 
 #[test]
@@ -483,7 +745,7 @@ fn a_record_stored_by_a_follower_that_ran_before_is_not_dropped_as_a_replay_afte
 }
 
 #[test]
-fn an_old_file_that_is_written_to_after_the_erasure_gives_only_the_new_line() {
+fn an_old_file_is_left_alone_after_the_erasure_until_it_is_written_to() {
     let stand = Stand::new("http://127.0.0.1:9/v1");
     let mut follower = stand.follower();
     // A session file nobody touched for 31 days, which no pass has read.
@@ -507,17 +769,20 @@ fn an_old_file_that_is_written_to_after_the_erasure_gives_only_the_new_line() {
     follower.pass().unwrap();
     assert!(
         stand.records().is_empty(),
-        "an old session file was collected"
+        "a file older than 30 days was collected"
     );
 
-    // The session is resumed: its change time is new now.
+    // The session is resumed: its change time is new now, and it is read as a new file.
     append(&stand.claude(), &format!("{}\n", claude_user("new line")));
     follower.pass().unwrap();
-    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["new line"]);
+    assert_eq!(
+        stand.stored_texts("claude-code", "sess-1"),
+        ["new line", "old one", "old two"]
+    );
 }
 
 #[test]
-fn an_agent_restarted_before_the_first_pass_after_the_erasure_still_collects_no_old_history() {
+fn an_agent_restarted_before_the_first_pass_after_the_erasure_collects_the_last_30_days_only() {
     let stand = Stand::new("http://127.0.0.1:9/v1");
     let mut follower = stand.follower();
     stand.fill(&mut follower, false);
@@ -534,30 +799,16 @@ fn an_agent_restarted_before_the_first_pass_after_the_erasure_still_collects_no_
     drop(follower);
 
     // A new process knows nothing of the erasure but what is on the disk.
-    let settings = stand.settings.clone();
-    let mut restarted = Follower::new(
-        registry(),
-        &stand.home,
-        FileSink::new(&stand.data),
-        Stats::default(),
-    )
-    .unwrap()
-    .with_switch(Arc::new(move |tool| settings.collects(tool)))
-    .with_erase(Erase::new(&stand.data, &["claude-code", "codex"]));
+    let mut restarted = stand.restarted();
     stand.switch_on();
     restarted.pass().unwrap();
-    assert!(
-        stand.records().is_empty(),
-        "an old session file was collected"
-    );
-    append(&old, &format!("{}\n", claude_user("new line")));
-    restarted.pass().unwrap();
-    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["new line"]);
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+    assert_eq!(stand.stored_texts("codex", CODEX_ID), ["codex old"]);
     assert!(!stand.data.join("erase-settling").exists());
 }
 
 #[test]
-fn a_file_that_cannot_be_read_holds_the_tool_read_only_and_status_says_so() {
+fn a_file_that_cannot_be_read_does_not_hold_the_others_and_is_collected_once_it_can_be() {
     use std::os::unix::fs::PermissionsExt;
     let stand = Stand::new("http://127.0.0.1:9/v1");
     let mut follower = stand.follower();
@@ -569,26 +820,15 @@ fn a_file_that_cannot_be_read_holds_the_tool_read_only_and_status_says_so() {
     stand.switch_on();
     follower.pass().unwrap();
 
-    append(&stand.claude(), &format!("{}\n", claude_user("lost line")));
-    follower.pass().unwrap();
-    assert!(stand.records().is_empty());
-    let status = stand.stats.to_json()["claude-code"].clone();
-    assert!(
-        status["error"]
-            .as_str()
-            .unwrap()
-            .contains("collection waits"),
-        "{status}"
-    );
-    assert_eq!(status["unreadable"], 1);
+    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["claude old"]);
+    assert_eq!(stand.stats.to_json()["claude-code"]["unreadable"], 1);
 
-    // Once the file can be read it is read without storing, and the tool collects again.
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
     follower.pass().unwrap();
-    assert!(stand.records().is_empty());
-    append(&stand.claude(), &format!("{}\n", claude_user("kept line")));
-    follower.pass().unwrap();
-    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["kept line"]);
+    assert_eq!(
+        stand.stored_texts("claude-code", "sess-1"),
+        ["claude old", "locked"]
+    );
 }
 
 #[test]
@@ -607,34 +847,57 @@ fn the_follower_erase_leaves_a_source_it_does_not_follow() {
 }
 
 #[test]
-fn a_folder_that_cannot_be_listed_holds_the_tool_read_only_and_status_says_so() {
-    use std::os::unix::fs::PermissionsExt;
+fn a_dashboard_setup_run_reads_every_recent_session_again_once_collection_is_switched_on() {
     let stand = Stand::new("http://127.0.0.1:9/v1");
     let mut follower = stand.follower();
-    stand.fill(&mut follower, false);
-    let locked = stand.home.join(".claude/projects/locked-folder");
-    fs::create_dir_all(&locked).unwrap();
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    for n in 1..=3_i64 {
+        append(
+            &stand
+                .home
+                .join(format!(".claude/projects/project/sess-{n}.jsonl")),
+            &format!(
+                "{}\n",
+                recent_claude(&format!("sess-{n}"), "claude work", n)
+            ),
+        );
+        let id = format!("01a0bee2-6260-73a3-b389-43c86bb8930{n}");
+        append(
+            &stand.home.join(format!(
+                ".codex/sessions/2026/11/11/rollout-2026-11-11T10-15-00-{id}.jsonl"
+            )),
+            &format!("{}\n{}\n", codex_meta(&id), recent_codex("codex work", n)),
+        );
+    }
+    follower.pass().unwrap();
+    assert_eq!(stand.records().len(), 6);
+    let workspace = Arc::new(Workspace::open(&stand.data).unwrap());
+    let setup = SetupJob::open(
+        stand.settings.clone(),
+        stand.chat.clone(),
+        workspace,
+        &stand.data,
+    );
+    let sessions_read = |setup: &SetupJob| -> Value {
+        let _ = setup.start(r#"{"days":30}"#);
+        let mut status = Value::Null;
+        wait_for("the run to end", || {
+            status = serde_json::from_str(&setup.status_line()).unwrap();
+            status["state"] == "failed"
+        });
+        status["sessions"].clone()
+    };
+
     stand.erase_command();
+    follower.pass().unwrap();
+    // Collection is off: the run is refused, and nothing was stored or noted.
+    assert!(setup.start(r#"{"days":30}"#).contains("error"));
+    assert!(stand.records().is_empty());
+    assert!(!stand.progress_file().exists());
+
     stand.switch_on();
     follower.pass().unwrap();
-
-    append(&stand.claude(), &format!("{}\n", claude_user("lost line")));
-    follower.pass().unwrap();
-    assert!(stand.records().is_empty());
-    let status = stand.stats.to_json()["claude-code"].clone();
-    assert!(
-        status["error"]
-            .as_str()
-            .unwrap()
-            .contains("collection waits"),
-        "{status}"
-    );
-
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
-    follower.pass().unwrap();
-    assert!(stand.records().is_empty());
-    append(&stand.claude(), &format!("{}\n", claude_user("kept line")));
-    follower.pass().unwrap();
-    assert_eq!(stand.stored_texts("claude-code", "sess-1"), ["kept line"]);
+    assert_eq!(stand.records().len(), 6);
+    // The model is not reachable, so the run fails after it has written the session files:
+    // all six sessions were there to read.
+    assert_eq!(sessions_read(&setup), 6);
 }

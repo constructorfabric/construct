@@ -508,7 +508,7 @@ async fn a_failed_write_is_counted_and_retried_and_a_record_that_keeps_failing_m
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "starts PostgreSQL; run with --ignored"]
-async fn the_erasure_leaves_no_activity_row_and_the_store_goes_on_with_what_is_written_after() {
+async fn the_erasure_leaves_no_activity_row_and_the_store_is_built_again_from_the_old_log() {
     let stand = Stand::new("follow-erase").await;
     let feed = Feed::new();
     let store = Arc::new(stand.store().await);
@@ -548,18 +548,21 @@ async fn the_erasure_leaves_no_activity_row_and_the_store_goes_on_with_what_is_w
     assert!(store.minutes().await.unwrap().is_empty());
     assert!(store.is_empty().await.unwrap());
 
-    // The store is built again from the files, which are gone, so it stays empty; the old log is
-    // read once without storing, and a line written after that is stored.
+    // The records are gone, and the old log is read again from the start: its sessions are in
+    // the store once more, and a line written after that is added once.
     wait_phase(&feed, "ready", true, Duration::from_secs(60)).await;
     follower.pass().unwrap();
-    assert!(store.sessions().await.unwrap().is_empty());
+    wait_for(&store, Duration::from_secs(10), |s| {
+        s.len() == 1 && s[0].turns == 2
+    })
+    .await;
     append(
         &stand.log("s1"),
         "2026-11-11T11:00:05Z person /work/x main\n",
     );
     follower.pass().unwrap();
     let took = wait_for(&store, Duration::from_secs(10), |s| {
-        s.len() == 1 && s[0].turns == 1
+        s.len() == 1 && s[0].turns == 3
     })
     .await;
     assert!(took < Duration::from_secs(10));

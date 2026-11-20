@@ -50,7 +50,8 @@ pub struct ToolStatus {
     /// Files that could not be read in the last pass.
     pub unreadable: u64,
     /// The user has this tool, or all collection, switched off: its files are followed so the
-    /// saved position moves on, and nothing is stored. As of the last pass.
+    /// saved position moves on, and nothing is stored. After an erasure nothing is read from
+    /// the tool at all until it is switched on. As of the last pass.
     pub off: bool,
     /// Why this tool is not followed fully: its files cannot be listed (or some directories
     /// cannot), the records cannot be written, the progress cannot be saved, the follower did
@@ -172,10 +173,11 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
 /// the handle ([`Follower::with_erase`], [`spawn_observed`]).
 ///
 /// The erasure waits for the pass that runs, removes the files, and tells the follower to forget
-/// its positions before its next pass. Until that pass has been through the files of a tool, the
-/// tool is read and nothing is stored, whatever the switch says: the session files the tool
-/// still has in its own folders are then never collected, not even when collection is switched
-/// on again at once. A line written after that pass is.
+/// its positions before its next pass. From then on the files of a tool are not read at all
+/// while it is switched off: nothing is stored and no position is set. Once it is switched on,
+/// its files are read from nothing, as on a fresh install, so the sessions of the last 30 days
+/// the tool still has in its own folders are collected again and the dashboard and the memory
+/// can be built from scratch.
 #[derive(Clone)]
 pub struct Erase(Arc<EraseShared>);
 
@@ -209,14 +211,50 @@ impl Erase {
         self.0.data_dir.join("erase-settling")
     }
 
-    /// Makes the marker, and the entry in the directory, durable.
-    fn write_marker(&self) -> std::io::Result<()> {
-        std::fs::File::create(self.marker())?.sync_all()?;
+    /// Makes the marker, and the entry in the directory, durable. It names, one per line, the
+    /// tools that have not been read while switched on since the erasure.
+    fn write_marker(&self, waiting: &[String]) -> std::io::Result<()> {
+        let temp = self.0.data_dir.join("erase-settling.tmp");
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(waiting.join("\n").as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp, self.marker())?;
         std::fs::File::open(&self.0.data_dir)?.sync_all()
     }
 
-    fn clear_marker(&self) {
-        let _ = std::fs::remove_file(self.marker());
+    /// The tools the marker names, or none when there is no marker.
+    fn waiting(&self, all: &[&'static str]) -> HashSet<&'static str> {
+        let text = std::fs::read_to_string(self.marker()).unwrap_or_default();
+        all.iter()
+            .copied()
+            .filter(|tool| text.lines().any(|line| line == *tool))
+            .collect()
+    }
+
+    /// Notes which tools still wait, once the positions of the others are on the disk; the
+    /// marker goes when none does.
+    ///
+    /// # Errors
+    /// The marker could not be written or removed: it keeps naming a tool that no longer
+    /// waits, and the next pass tries again.
+    fn settle(&self, waiting: &HashSet<&'static str>) -> std::io::Result<()> {
+        if waiting.is_empty() {
+            return self.clear_marker();
+        }
+        let mut names: Vec<String> = waiting.iter().map(|t| (*t).to_owned()).collect();
+        names.sort();
+        let known = std::fs::read_to_string(self.marker()).unwrap_or_default();
+        if known.lines().map(str::to_owned).collect::<Vec<_>>() == names {
+            return Ok(());
+        }
+        self.write_marker(&names)
+    }
+
+    fn clear_marker(&self) -> std::io::Result<()> {
+        match std::fs::remove_file(self.marker()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -228,9 +266,9 @@ impl OwnStore for Erase {
     fn erase(&self) -> Result<(), String> {
         let _pass = crate::sync::lock(&self.0.pass);
         // The marker goes first and is made durable: a crash after the files are gone must not
-        // leave a restart with neither positions nor marker. At worst a stale marker is left,
-        // which only makes the follower read once more without storing.
-        match self.write_marker() {
+        // leave a restart with neither positions nor marker. The restart drops the positions of
+        // the tools the marker names, so what a crash left of them does not hide the sessions.
+        match self.write_marker(&self.0.tools) {
             Ok(()) => {}
             // No data directory: there was nothing collected.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -250,6 +288,11 @@ impl OwnStore for Erase {
 /// before each file is read, so a change of the switch applies from the next file on, not
 /// only from the next pass.
 pub type Switch = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Whether the switch, when there is one, lets `tool` be stored.
+fn is_on(switch: Option<&Switch>, tool: &str) -> bool {
+    switch.is_none_or(|on| on(tool))
+}
 
 /// Called with every user turn a sink stored for the first time, on the writer's thread, after the
 /// turn is in the sink. It must not block.
@@ -341,8 +384,8 @@ pub struct Follower<S: Sink> {
     switch: Option<Switch>,
     /// The person's erasure, when the follower is given one.
     erase: Option<Erase>,
-    /// The tools whose files have not been through a pass since an erasure: nothing is stored
-    /// from them.
+    /// The tools that have not been read while switched on since an erasure: while one is off,
+    /// its files are not read, so no position is saved for it.
     unsettled: HashSet<&'static str>,
 }
 
@@ -378,16 +421,29 @@ impl<S: Sink> Follower<S> {
     /// from nothing read.
     #[must_use]
     pub fn with_erase(mut self, erase: Erase) -> Self {
-        // An erasure that no pass has settled yet, before a restart: read once more, store nothing.
-        if erase.marker().exists() {
-            self.unsettled = self.tools.iter().map(Tool::name).collect();
-        }
+        // An erasure that no pass has settled yet, before a restart: a tool that still waits is
+        // not read while it is off, and the positions it may have left (a crash in the middle of
+        // the erasure, or before they were all saved) are dropped: its files are read from nothing,
+        // and a record already in the files is dropped as a replay.
+        let names: Vec<&'static str> = self.tools.iter().map(Tool::name).collect();
+        self.unsettled = erase.waiting(&names);
+        let roots: Vec<PathBuf> = self
+            .tools
+            .iter()
+            .filter(|tool| self.unsettled.contains(tool.name()))
+            .map(|tool| tool.root(&self.home))
+            .collect();
+        let before = self.progress.files.len();
+        self.progress
+            .files
+            .retain(|path, _| !roots.iter().any(|root| Path::new(path).starts_with(root)));
+        self.saver.dirty = self.progress.files.len() != before;
         self.erase = Some(erase);
         self
     }
 
-    /// Forgets every position, if an erasure said so, and notes that every tool is to be read
-    /// once without storing anything.
+    /// Forgets every position, if an erasure said so, and notes that a tool that is off is not
+    /// to be read until it is switched on.
     fn forget_if_erased(&mut self) {
         let erased = self
             .erase
@@ -405,7 +461,9 @@ impl<S: Sink> Follower<S> {
 
     /// Store a tool's sessions only while `switch` says so. A tool that is off is still read,
     /// so its saved position moves on and nothing from the time it was off is stored when it
-    /// is switched on again; the records of that time are dropped, not kept for later.
+    /// is switched on again; the records of that time are dropped, not kept for later. The one
+    /// exception is a tool that is off after an erasure: it is not read, so it is collected
+    /// from the start when it is switched on.
     #[must_use]
     pub fn with_switch(mut self, switch: Switch) -> Self {
         self.switch = Some(switch);
@@ -440,7 +498,7 @@ impl<S: Sink> Follower<S> {
         } = self;
         let mut failure = None;
         for tool in tools.iter() {
-            let off = !switch.as_ref().is_none_or(|on| on(tool.name()));
+            let off = !is_on(switch.as_ref(), tool.name());
             stats.update(tool.name(), |s| s.off = off);
             let root = tool.root(home);
             let listing = match tool.find_files(&root) {
@@ -463,7 +521,6 @@ impl<S: Sink> Follower<S> {
                     format!("{first} (and {} more)", rest.len())
                 }
             });
-            let listed_fully = problem.is_none();
             if stats.set_error(tool.name(), problem.clone())
                 && let Some(message) = problem
             {
@@ -504,16 +561,13 @@ impl<S: Sink> Follower<S> {
             if failure.is_some() {
                 break;
             }
-            // A file that could not be read, or in a directory that could not be listed, has no
-            // position yet: until every file can be read the tool stays read-only, and `status`
-            // says so.
-            if unreadable == 0 && listed_fully {
+            // A tool read while it is on has its positions saved from nothing: it is no longer
+            // waiting for the switch. One that is off, or was switched off during the pass, keeps
+            // waiting. A file that could not be read or listed in that pass has no position, so
+            // if it turns readable only while the tool is off it is read and dropped, as under
+            // the plain rule.
+            if !off && is_on(switch.as_ref(), tool.name()) {
                 unsettled.remove(tool.name());
-            } else if unsettled.contains(tool.name()) {
-                stats.add_error(
-                    tool.name(),
-                    "collection waits until every file can be read after the erasure",
-                );
             }
             stats.update(tool.name(), |s| s.scanning = false);
         }
@@ -524,13 +578,15 @@ impl<S: Sink> Follower<S> {
                 stats.add_error(tool.name(), &format!("cannot save progress: {e}"));
             }
         }
-        // Every tool was read, and the positions are on the disk: the erasure is settled.
-        if unsettled.is_empty()
-            && flushed.is_ok()
+        // The positions of the tools read while on are on the disk: only the others still wait.
+        if flushed.is_ok()
             && failure.is_none()
             && let Some(erase) = &erase
+            && let Err(e) = erase.settle(unsettled)
         {
-            erase.clear_marker();
+            for tool in tools.iter() {
+                stats.add_error(tool.name(), &format!("cannot update the erasure note: {e}"));
+            }
         }
         failure.map_or(flushed, Err)
     }
@@ -607,14 +663,20 @@ struct Ctx<'a, S: Sink> {
     /// Asked before each file is read: while the user has the tool switched off, lines are
     /// read and nothing is stored.
     switch: Option<&'a Switch>,
-    /// This tool was not read since an erasure: lines are read and nothing is stored.
+    /// This tool was not read while on since an erasure: while it is off, nothing is read, so
+    /// no position is set.
     unsettled: bool,
 }
 
 impl<S: Sink> Ctx<'_, S> {
     fn follow(&mut self, path: &Path) -> Result<(), Failure> {
-        let meta = std::fs::metadata(path).map_err(Failure::File)?;
+        // Asked once per file: the answer decides both whether it is read and whether it is stored.
+        let on = is_on(self.switch, self.tool.name());
         let key = path.to_string_lossy().into_owned();
+        if !on && self.unsettled {
+            return Ok(());
+        }
+        let meta = std::fs::metadata(path).map_err(Failure::File)?;
         let seen = (meta.len(), meta.modified().ok());
         if self.checked.get(&key) == Some(&seen) {
             return Ok(());
@@ -637,15 +699,13 @@ impl<S: Sink> Ctx<'_, S> {
                     .map_err(Failure::Sink)?;
                 (0, state)
             }
-            // After an erasure every file is read once, an old one too, so that its position is
-            // saved and a later line in it is the only thing collected.
-            None if meta.len() == 0 || (!self.unsettled && Self::too_old(&meta)) => {
+            None if meta.len() == 0 || Self::too_old(&meta) => {
                 self.checked.insert(key, seen);
                 return Ok(());
             }
             None => (0, self.tool.open_file(path)),
         };
-        let collect = !self.unsettled && self.switch.is_none_or(|on| on(self.tool.name()));
+        let collect = on;
         let start = offset;
         let mut sink_error = None;
         let read = for_each_line(path, offset, |line, end| {
