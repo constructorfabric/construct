@@ -84,7 +84,7 @@ impl ToolStatus {
 }
 
 /// A time as UTC in RFC 3339, or none when it cannot be written.
-fn rfc3339(at: SystemTime) -> Option<String> {
+pub(crate) fn rfc3339(at: SystemTime) -> Option<String> {
     OffsetDateTime::from(at).format(&Rfc3339).ok()
 }
 

@@ -227,6 +227,7 @@ fn a_name_the_user_gave_still_holds_when_the_findings_name_the_project() {
                     .iter()
                     .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
                     .collect(),
+                ..Spec::default()
             },
         )
         .unwrap()
@@ -320,10 +321,13 @@ fn a_widget_that_groups_by_collection_is_answered_through_the_page_request() {
         "days": [{ "label": "2026-11-10", "start": "2026-11-10T00:00:00Z", "end": "2026-11-11T00:00:00Z" }],
     })
     .to_string();
-    let reply: Value = serde_json::from_str(&respond(&request, Some(&document), || {
-        Ok(sessions.clone().into())
-    }))
-    .unwrap();
+    let reply: Value =
+        serde_json::from_str(&respond(
+            &request,
+            Some(&document),
+            |_| Ok(sessions.clone()),
+        ))
+        .unwrap();
     let keys: Vec<&str> = reply["groups"]
         .as_array()
         .unwrap_or_else(|| panic!("no groups in {reply}"))

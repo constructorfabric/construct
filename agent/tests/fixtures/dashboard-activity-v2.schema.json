@@ -1,0 +1,330 @@
+{
+  "$id": "gts://gts.cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v2~",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "allOf": [
+    {
+      "$ref": "gts://gts.cf.construct.core.dashboard.v1~"
+    },
+    {
+      "properties": {
+        "payload": {
+          "additionalProperties": false,
+          "properties": {
+            "hidden_projects": {
+              "description": "Projects the page leaves out.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "period": {
+              "description": "The period of every widget that has none of its own.",
+              "enum": [
+                "today",
+                "this_week",
+                "last_week",
+                "this_month",
+                "last_month",
+                "last_7_days",
+                "last_30_days"
+              ],
+              "type": "string"
+            },
+            "project_names": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "The name the page shows for a project, by the project's own name.",
+              "type": "object"
+            },
+            "sessions": {
+              "description": "The sessions of every widget that has none of its own.",
+              "oneOf": [
+                {
+                  "const": "own",
+                  "description": "Sessions the user wrote the prompts of.",
+                  "type": "string"
+                },
+                {
+                  "const": "unattended",
+                  "description": "Sessions of scripts and unattended runs.",
+                  "type": "string"
+                },
+                {
+                  "const": "all",
+                  "description": "Both.",
+                  "type": "string"
+                }
+              ]
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "description": "What a widget counts the time of.",
+                  "oneOf": [
+                    {
+                      "const": "ai_sessions",
+                      "description": "The time of the sessions of the AI tools. What a document with no source reads as.",
+                      "type": "string"
+                    },
+                    {
+                      "const": "on_screen",
+                      "description": "The time each application and site was in front on this computer.",
+                      "type": "string"
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The source of every widget that has none of its own; AI sessions when left out."
+            },
+            "widgets": {
+              "description": "The widgets, in no order: the grid places them.",
+              "items": {
+                "additionalProperties": false,
+                "description": "One widget of the page.",
+                "properties": {
+                  "filter": {
+                    "additionalProperties": false,
+                    "description": "What a widget keeps: a name left out means no limit on it.",
+                    "properties": {
+                      "projects": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "array",
+                          "null"
+                        ]
+                      },
+                      "tickets": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "array",
+                          "null"
+                        ]
+                      },
+                      "tools": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "array",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "group_by": {
+                    "anyOf": [
+                      {
+                        "description": "What a table groups the time by.",
+                        "oneOf": [
+                          {
+                            "enum": [
+                              "project",
+                              "ticket",
+                              "day"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "const": "tool",
+                            "description": "AI sessions only: the tool that wrote the session.",
+                            "type": "string"
+                          },
+                          {
+                            "const": "collection",
+                            "description": "AI sessions only: the grouping the setup found for the user's work: clients, courses,\ntopics.",
+                            "type": "string"
+                          },
+                          {
+                            "const": "app",
+                            "description": "On screen only: the application in front.",
+                            "type": "string"
+                          },
+                          {
+                            "const": "site",
+                            "description": "On screen only: the site in front, the host of the address of the tab.",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "What a table groups by; a table has it and no other widget does."
+                  },
+                  "id": {
+                    "description": "Names the widget in the document; unique in it.",
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9_-]+$",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "What a widget draws.",
+                    "oneOf": [
+                      {
+                        "const": "total",
+                        "description": "One number: the time of the period.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "bars_per_day",
+                        "description": "The time of each day of the period as a bar.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "table",
+                        "description": "A table of time, grouped by what `group_by` names.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "day_summary",
+                        "description": "The summary of the end of the day.",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "period": {
+                    "description": "The widget's own period; the dashboard's when left out.",
+                    "enum": [
+                      "today",
+                      "this_week",
+                      "last_week",
+                      "this_month",
+                      "last_month",
+                      "last_7_days",
+                      "last_30_days",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "position": {
+                    "additionalProperties": false,
+                    "description": "Where a widget sits on the grid. Columns and rows count from 0.",
+                    "properties": {
+                      "column": {
+                        "format": "uint32",
+                        "maximum": 11,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "height": {
+                        "format": "uint32",
+                        "maximum": 100,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "row": {
+                        "format": "uint32",
+                        "maximum": 10000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "width": {
+                        "format": "uint32",
+                        "maximum": 12,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "column",
+                      "row",
+                      "width",
+                      "height"
+                    ],
+                    "type": "object"
+                  },
+                  "sessions": {
+                    "anyOf": [
+                      {
+                        "description": "Whose sessions a widget counts.",
+                        "oneOf": [
+                          {
+                            "const": "own",
+                            "description": "Sessions the user wrote the prompts of.",
+                            "type": "string"
+                          },
+                          {
+                            "const": "unattended",
+                            "description": "Sessions of scripts and unattended runs.",
+                            "type": "string"
+                          },
+                          {
+                            "const": "all",
+                            "description": "Both.",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The widget's own sessions; the dashboard's when left out. Only AI sessions have it."
+                  },
+                  "source": {
+                    "anyOf": [
+                      {
+                        "description": "What a widget counts the time of.",
+                        "oneOf": [
+                          {
+                            "const": "ai_sessions",
+                            "description": "The time of the sessions of the AI tools. What a document with no source reads as.",
+                            "type": "string"
+                          },
+                          {
+                            "const": "on_screen",
+                            "description": "The time each application and site was in front on this computer.",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "What the widget counts the time of; the dashboard's when left out."
+                  }
+                },
+                "required": [
+                  "id",
+                  "kind",
+                  "position"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "period",
+            "sessions",
+            "widgets",
+            "hidden_projects",
+            "project_names"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  ],
+  "description": "The activity dashboard: a developer's time by project and ticket. It lists the widgets of the page, each with a kind, a place on a grid of 12 columns and optionally its own period, sessions, source and filter, and holds the projects the page hides and the names it shows for projects. The source of time is AI sessions or On screen, and a document with none reads as AI sessions.",
+  "type": "object"
+}

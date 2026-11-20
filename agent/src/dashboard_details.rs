@@ -14,11 +14,13 @@
 //! * `dashboard-summary`: the request of `dashboard-numbers` with one `day` in place of `days`,
 //!   and no `group_by`. The answer is one text line for each ticket and, for time with no ticket,
 //!   one line for each project.
+//!   For a request of the On screen source the group opens the blocks of time on screen behind it
+//!   (see [`crate::dashboard_screen`]) and the answer lists `blocks` in place of `sessions`: each
+//!   has its start and end, its `seconds`, the app, the site, the project and the ticket, and
+//!   never a title or an address. The `seconds` of the blocks of a group add up to its number.
 //! * `dashboard-state`: no argument. `reading` while the store is built, with the records read,
 //!   `empty` when it holds nothing, `ready` otherwise, or `unavailable`; `tools_off` names the tools
 //!   whose collection is switched off.
-
-use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use time::format_description::well_known::Rfc3339;
@@ -29,8 +31,10 @@ use crate::activity::rules::{
     Day, Grouping, Kind, PARTS_PER_MINUTE, SessionMinutes, Span, calculate_spans, check_days,
 };
 use crate::activity::{Feed, Readiness};
+use crate::dashboard::Source;
 use crate::dashboard_document::Dashboard;
-use crate::dashboard_numbers::{Request, read_request, select};
+use crate::dashboard_numbers::{Data, Request, read_data, read_request, select};
+use crate::dashboard_screen::{self, BlockRow};
 use crate::ipc::error_response;
 use crate::settings::Settings;
 
@@ -99,10 +103,79 @@ impl SessionsPage {
 
 /// A minute since the epoch as a time at `offset`.
 fn clock(minute: i64, offset: UtcOffset) -> String {
-    OffsetDateTime::from_unix_timestamp(minute.saturating_mul(60))
+    clock_at(minute.saturating_mul(60), offset)
+}
+
+/// A second since the epoch as a time at `offset`.
+fn clock_at(second: i64, offset: UtcOffset) -> String {
+    OffsetDateTime::from_unix_timestamp(second)
         .ok()
         .and_then(|time| time.to_offset(offset).format(&Rfc3339).ok())
         .unwrap_or_default()
+}
+
+/// One page of the blocks of time on screen behind a group, in the shape of [`SessionsPage`]
+/// with `blocks` in place of `sessions`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlocksPage {
+    /// The blocks of the group, all pages together; it is the `sessions` of the group in the
+    /// numbers.
+    pub total: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub rows: Vec<BlockRow>,
+    /// The offset from UTC the times are shown in.
+    pub zone: UtcOffset,
+}
+
+impl BlocksPage {
+    /// The JSON line the socket sends. A block holds no title and no address: only the
+    /// application, the site, the project and the ticket, each empty when the block has none.
+    #[must_use]
+    pub fn to_json(&self, group: &str) -> Value {
+        let end = self.offset + self.rows.len();
+        json!({
+            "source": Source::OnScreen,
+            "group": group,
+            "total": self.total,
+            "offset": self.offset,
+            "limit": self.limit,
+            "next_offset": (end < self.total).then_some(end),
+            "blocks": self.rows.iter().map(|r| json!({
+                "start": clock_at(r.start, self.zone),
+                "end": clock_at(r.end, self.zone),
+                "seconds": r.seconds,
+                "app": r.app,
+                "site": r.site,
+                "project": r.project,
+                "ticket": r.ticket,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// The blocks of time on screen that have time in `group`, one page of them, as the numbers of
+/// `spec` counted.
+///
+/// # Errors
+/// Fails when `spec` has no grouping, or the days or the offset are not usable.
+pub fn blocks_page(
+    data: &Data,
+    days: &[Day],
+    spec: &crate::dashboard_numbers::Spec,
+    group: &str,
+    utc_offset_minutes: i32,
+    (offset, limit): (usize, usize),
+) -> Result<BlocksPage, String> {
+    let zone = offset_of(utc_offset_minutes)?;
+    let all = dashboard_screen::blocks_of(&data.sessions, &data.blocks, days, spec, group)?;
+    Ok(BlocksPage {
+        total: all.len(),
+        offset,
+        limit,
+        rows: all.into_iter().skip(offset).take(limit).collect(),
+        zone,
+    })
 }
 
 fn offset_of(minutes: i32) -> Result<UtcOffset, String> {
@@ -325,10 +398,10 @@ fn read_sessions_request(
 /// The JSON line for a `dashboard-sessions` request, given the dashboard `document` and a way to
 /// read the sessions, which runs only for a request that is fine.
 #[must_use]
-pub fn respond_sessions(
+pub fn respond_sessions<D: Into<Data>>(
     argument: &str,
     document: Option<&Value>,
-    load: impl FnOnce() -> Result<Arc<[SessionMinutes]>, &'static str>,
+    load: impl FnOnce(Source) -> Result<D, &'static str>,
 ) -> String {
     let read = match read_sessions_request(argument, document) {
         Ok(read) => read,
@@ -338,12 +411,25 @@ pub fn respond_sessions(
     if let Err(e) = check_days(&read.request.days) {
         return error_response(&e.to_string());
     }
-    let sessions = match load() {
-        Ok(sessions) => sessions,
+    let data: Data = match load(read.request.spec.source) {
+        Ok(data) => data.into(),
         Err(message) => return error_response(message),
     };
+    if read.request.spec.source == Source::OnScreen {
+        return match blocks_page(
+            &data,
+            &read.request.days,
+            &read.request.spec,
+            &read.group,
+            read.utc_offset_minutes,
+            read.page,
+        ) {
+            Ok(page) => page.to_json(&read.group).to_string(),
+            Err(message) => error_response(&message),
+        };
+    }
     match sessions_of(
-        &sessions,
+        &data.sessions,
         &read.request.days,
         &read.request.spec,
         &read.group,
@@ -357,10 +443,10 @@ pub fn respond_sessions(
 
 /// The JSON line for a `dashboard-summary` request.
 #[must_use]
-pub fn respond_summary(
+pub fn respond_summary<D: Into<Data>>(
     argument: &str,
     document: Option<&Value>,
-    load: impl FnOnce() -> Result<Arc<[SessionMinutes]>, &'static str>,
+    load: impl FnOnce(Source) -> Result<D, &'static str>,
 ) -> String {
     let read = || -> Result<Request, String> {
         let mut object = object_of(argument)?;
@@ -375,12 +461,15 @@ pub fn respond_summary(
         Ok(request) => request,
         Err(message) => return error_response(&message),
     };
+    if request.spec.source == Source::OnScreen {
+        return error_response("the summary of a day is of AI sessions only");
+    }
     // The days are checked before the store is read: a bad set costs nothing.
     if let Err(e) = check_days(&request.days) {
         return error_response(&e.to_string());
     }
-    let sessions = match load() {
-        Ok(sessions) => sessions,
+    let sessions = match load(Source::AiSessions) {
+        Ok(data) => data.into().sessions,
         Err(message) => return error_response(message),
     };
     match summary_of(&sessions, &request.days[0], &request.spec) {
@@ -427,24 +516,24 @@ impl Details {
         (!document.is_null()).then_some(document)
     }
 
-    fn load(&self) -> Result<Arc<[SessionMinutes]>, &'static str> {
-        let store = self.feed.readable_store()?;
-        self.runtime.block_on(store.session_minutes()).map_err(|e| {
-            eprintln!("dashboard details: {e}");
-            "the activity time could not be read"
-        })
+    fn load(&self, source: Source) -> Result<Data, &'static str> {
+        read_data(&self.feed, &self.runtime, source)
     }
 
     /// The JSON line for `dashboard-sessions`.
     #[must_use]
     pub fn sessions(&self, argument: &str) -> String {
-        respond_sessions(argument, self.document().as_ref(), || self.load())
+        respond_sessions(argument, self.document().as_ref(), |source| {
+            self.load(source)
+        })
     }
 
     /// The JSON line for `dashboard-summary`.
     #[must_use]
     pub fn summary(&self, argument: &str) -> String {
-        respond_summary(argument, self.document().as_ref(), || self.load())
+        respond_summary(argument, self.document().as_ref(), |source| {
+            self.load(source)
+        })
     }
 
     /// The JSON line for `dashboard-state`.

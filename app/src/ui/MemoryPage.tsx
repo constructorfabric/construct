@@ -23,7 +23,6 @@ import {
   ItemDescription,
   ItemGroup,
   ItemTitle,
-  Spinner,
   Text,
 } from '@gears-frontx/ui-kit';
 import { format } from 'date-fns';
@@ -33,6 +32,7 @@ import type { ReactNode } from 'react';
 import { isDeletableFactId, reasonAgentNotRunning, reasonNotReady } from '../memory-protocol';
 import { t } from '../translation';
 import styles from './app.module.css';
+import { DelayedLoader } from './components/DelayedLoader';
 import { buildTree, firstText } from './memory-tree';
 import type { TreeFact, TreeField, TreeKind, TreeProperty, TreeValue } from './memory-tree';
 import { useMemory } from './useMemory';
@@ -336,44 +336,50 @@ export function MemoryPage({ onOpenSettings }: { readonly onOpenSettings: () => 
       <Heading typography="display" render={<h1 />}>
         {t('MemoryPage.Title')}
       </Heading>
-      {state.kind === 'reading' ? (
-        <Spinner id="memory-reading" label={t('MemoryPage.Reading')} />
-      ) : state.kind === 'failed' ? (
+      {state.kind === 'failed' ? (
         <Alert id="memory-failed" variant="destructive">
           {unavailableText(state.reason)}
         </Alert>
       ) : (
-        <>
-          <CollectionLine collecting={state.collecting} onOpenSettings={onOpenSettings} />
-          {notice !== null && <DeleteLine notice={notice} />}
-          {state.facts.length === 0 ? (
-            <Empty id="memory-empty">
-              <EmptyHeader>
-                <EmptyTitle render={<h2 />}>{t('MemoryPage.Empty.Title')}</EmptyTitle>
-                <EmptyDescription>
-                  {state.collecting === false
-                    ? t('MemoryPage.Empty.Off')
-                    : state.collecting === true
-                      ? t('MemoryPage.Empty.On')
-                      : t('MemoryPage.Empty.Unknown')}
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : (
-            <div id="memory-tree">
-              {buildTree(state.facts).map((group) => (
-                <Kind
-                  key={group.kind}
-                  group={group}
-                  deleting={deleting}
-                  onDelete={(factId, name) => {
-                    void remove(factId, name);
-                  }}
-                />
-              ))}
-            </div>
+        <DelayedLoader
+          waiting={state.kind === 'reading'}
+          id="memory-reading"
+          label={t('MemoryPage.Reading')}
+        >
+          {state.kind === 'ready' && (
+            <>
+              <CollectionLine collecting={state.collecting} onOpenSettings={onOpenSettings} />
+              {notice !== null && <DeleteLine notice={notice} />}
+              {state.facts.length === 0 ? (
+                <Empty id="memory-empty">
+                  <EmptyHeader>
+                    <EmptyTitle render={<h2 />}>{t('MemoryPage.Empty.Title')}</EmptyTitle>
+                    <EmptyDescription>
+                      {state.collecting === false
+                        ? t('MemoryPage.Empty.Off')
+                        : state.collecting === true
+                          ? t('MemoryPage.Empty.On')
+                          : t('MemoryPage.Empty.Unknown')}
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              ) : (
+                <div id="memory-tree">
+                  {buildTree(state.facts).map((group) => (
+                    <Kind
+                      key={group.kind}
+                      group={group}
+                      deleting={deleting}
+                      onDelete={(factId, name) => {
+                        void remove(factId, name);
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
           )}
-        </>
+        </DelayedLoader>
       )}
     </>
   );

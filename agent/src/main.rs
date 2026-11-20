@@ -21,7 +21,7 @@ fn main() -> ExitCode {
         Some("uninstall-service") => uninstall(),
         Some("status") => return status(),
         Some("backfill") => return backfill(&std::env::args().skip(2).collect::<Vec<_>>()),
-        Some("run") => run(),
+        Some("run") => run_in_foreground(),
         Some("-h" | "--help" | "help") => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -38,6 +38,23 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Run the agent. On a Mac the agent runs on a thread of its own and the main thread keeps the
+/// system's run loop going, which is how the program is told what application is in front.
+#[cfg(target_os = "macos")]
+fn run_in_foreground() -> std::io::Result<()> {
+    // The main thread's stack size, which the agent was written for.
+    let worker = std::thread::Builder::new().stack_size(8 << 20).spawn(run)?;
+    construct_agent::mac_signals::run_main_loop_until(|| worker.is_finished());
+    worker
+        .join()
+        .unwrap_or_else(|_| Err(std::io::Error::other("the agent stopped unexpectedly")))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_in_foreground() -> std::io::Result<()> {
+    run()
 }
 
 /// The path of this binary, which the service file must be able to hold.
@@ -91,7 +108,7 @@ fn run() -> std::io::Result<()> {
     let activity = construct_agent::activity::Feed::new();
     let model_state = construct_agent::model::ModelState::default();
     let settings = open_settings();
-    let dashboard = open_dashboard();
+    let dashboard = open_dashboard(settings.clone());
     // Built before the socket server: a chat answer runs on this runtime, driven by the
     // thread of its connection.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -116,7 +133,7 @@ fn run() -> std::io::Result<()> {
             let read = numbers.clone();
             let tool = construct_agent::chat::dashboard_view::tool(
                 dashboard.clone(),
-                std::sync::Arc::new(move || read.read_sessions()),
+                std::sync::Arc::new(move |source| read.read_data(source)),
                 construct_agent::chat::dashboard_view::Calendar::default(),
             );
             let server = server
@@ -141,6 +158,25 @@ fn run() -> std::io::Result<()> {
         &activity,
         render_tool,
     );
+    // The screen samples: the sampler runs on a thread of its own and takes none until the person
+    // switches them on. Only a Mac gives the signals yet; any other computer reads as unsupported.
+    let screen = settings.as_ref().and_then(|settings| {
+        construct_agent::records::data_dir().ok().map(|dir| {
+            construct_agent::screen::Screen::new(
+                settings.clone(),
+                &dir,
+                construct_agent::screen::platform_signals(),
+            )
+        })
+    });
+    if let Some(screen) = &screen {
+        screen.set_observer(activity.screen_observer());
+    }
+    let server = match &screen {
+        Some(screen) => server.with_screen(screen.clone()),
+        None => server,
+    };
+    let screen_alive = screen.as_ref().map(construct_agent::screen::Screen::spawn);
     // What `memory-erase` clears besides the host's copy; the follower is given the handle below.
     let follow_erase = construct_agent::records::data_dir().ok().map(|dir| {
         let tools = connectors::Registry::builtin();
@@ -154,6 +190,7 @@ fn run() -> std::io::Result<()> {
             manage,
             &activity,
             setup.as_ref(),
+            screen.as_ref(),
             rt.handle(),
         ));
     }
@@ -272,6 +309,7 @@ fn run() -> std::io::Result<()> {
     });
     // Only now may the follower stop: it is the last thing running besides the exit.
     drop(follow_alive);
+    drop(screen_alive);
     result
 }
 
@@ -307,7 +345,9 @@ fn open_settings() -> Option<construct_agent::settings::Settings> {
 /// logged: the dashboard is a document the app can do without, and the guide files are text the
 /// dashboard can do without too.
 #[cfg(unix)]
-fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
+fn open_dashboard(
+    settings: Option<construct_agent::settings::Settings>,
+) -> Option<construct_agent::dashboard_document::Dashboard> {
     use construct_agent::{
         dashboard, dashboard_document::Dashboard, dashboard_guide, records, workspace::Workspace,
     };
@@ -316,7 +356,10 @@ fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
         .map_err(construct_agent::workspace::Error::from)
         .and_then(|dir| Workspace::open(&dir))
         .and_then(|workspace| {
-            let written = dashboard::ensure_default(&workspace)?;
+            let screen = settings
+                .as_ref()
+                .is_some_and(|settings| settings.collects(construct_agent::screen::SOURCE));
+            let written = dashboard::ensure_default_for(&workspace, screen)?;
             Ok((workspace, written))
         });
     match opened {
@@ -327,7 +370,12 @@ fn open_dashboard() -> Option<construct_agent::dashboard_document::Dashboard> {
             if let Err(e) = dashboard_guide::write(&workspace) {
                 eprintln!("the dashboard guide files are not written: {e}");
             }
-            let dashboard = Dashboard::open(std::sync::Arc::new(workspace));
+            let switch = settings.map(
+                |settings| -> construct_agent::dashboard_document::ScreenSwitch {
+                    std::sync::Arc::new(move || settings.collects(construct_agent::screen::SOURCE))
+                },
+            );
+            let dashboard = Dashboard::open_with(std::sync::Arc::new(workspace), switch);
             dashboard.watch();
             Some(dashboard)
         }

@@ -42,8 +42,8 @@ import {
   SETUP_START_CHANNEL,
   SETUP_STATUS_CHANNEL,
 } from './dashboard-setup-protocol';
-import { createCopyHandler, createLinkHandler } from './external-calls';
-import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL } from './external';
+import { createCopyHandler, createLinkHandler, createPaneHandler } from './external-calls';
+import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL, OPEN_PANE_CHANNEL } from './external';
 import { createMemoryHandlers } from './memory-calls';
 import {
   MEMORY_DELETE_CHANNEL,
@@ -221,6 +221,9 @@ function startApp(): void {
     // goes on to the system browser.
     const openLink = createLinkHandler((address) => shell.openExternal(address));
     ipcMain.handle(OPEN_LINK_CHANNEL, (_event, url: unknown) => openLink(url));
+    // A pane of System Settings is asked for by name; the address is made here, from a fixed list.
+    const openPane = createPaneHandler((address) => shell.openExternal(address));
+    ipcMain.handle(OPEN_PANE_CHANNEL, (_event, pane: unknown) => openPane(pane));
     // The window never touches the clipboard itself: the main process writes plain text for it.
     const copyText = createCopyHandler((text) => {
       clipboard.writeText(text);

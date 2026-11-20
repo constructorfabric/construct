@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { SettingsResult } from '../agent-settings';
 import type {
   DashboardDocument,
   DashboardResult,
@@ -7,6 +8,7 @@ import type {
   SummaryResult,
   Widget,
 } from '../dashboard-protocol';
+import { sourceOf } from './dashboard-source';
 import { dayBounds, dayLabel, periodAnchor, periodDays } from './dashboard-period';
 import { lostAgent } from './lost-agent';
 
@@ -39,6 +41,19 @@ export type WidgetNumbers =
   | { readonly ok: true; readonly summary: Summary }
   | { readonly ok: false; readonly error: string; readonly reading?: true };
 
+export type ScreenState = 'on' | 'off' | 'unsupported';
+
+/** What the settings say of the time in apps and websites; a computer that cannot has no switch. */
+function screenStateOf(settings: SettingsResult): ScreenState {
+  if (!settings.ok) {
+    return 'on';
+  }
+  if (!settings.supportsScreen) {
+    return 'unsupported';
+  }
+  return settings.collection.enabled && settings.collection.screen ? 'on' : 'off';
+}
+
 /** What the page knows of the dashboard it shows. */
 export type DashboardState =
   | { readonly kind: 'reading' }
@@ -53,6 +68,11 @@ export type DashboardState =
       readonly numbers: ReadonlyMap<string, WidgetNumbers>;
       /** Whether the agent collects the user's work; `true` when it did not say. */
       readonly collecting: boolean;
+      /**
+       * The time in apps and websites: `unsupported` when this computer cannot collect it, whatever
+       * the stored switch says, else `on` or `off`. `on` when the agent did not say.
+       */
+      readonly screen: ScreenState;
     };
 
 type File = {
@@ -77,7 +97,12 @@ async function widgetNumbers(
   if (!all.ok) {
     return all;
   }
-  if (widget.kind !== 'bars_per_day' || (widget.sessions ?? document.sessions) !== 'all') {
+  // The time on screen has no sessions, so there is no own and unattended time to tell apart.
+  if (
+    widget.kind !== 'bars_per_day' ||
+    sourceOf(document, widget) === 'on_screen' ||
+    (widget.sessions ?? document.sessions) !== 'all'
+  ) {
     return { ok: true, numbers: all, split: null };
   }
   // The user's own time is counted on its own; the rest of the time of both is the unattended.
@@ -212,6 +237,7 @@ export function useDashboard(day: Date): DashboardControls {
     shape: string;
     numbers: ReadonlyMap<string, WidgetNumbers>;
     collecting: boolean;
+    screen: ScreenState;
     failure: string | null;
   } | null>(null);
   useEffect(() => {
@@ -260,6 +286,7 @@ export function useDashboard(day: Date): DashboardControls {
             shape,
             numbers: new Map(entries),
             collecting: settings.ok && settings.collection.enabled,
+            screen: screenStateOf(settings),
             failure: settings.ok ? null : settings.error,
           });
         },
@@ -273,6 +300,7 @@ export function useDashboard(day: Date): DashboardControls {
               shape,
               numbers: new Map(),
               collecting: true,
+              screen: 'on',
               failure: lostAgent(error),
             });
           }
@@ -301,6 +329,7 @@ export function useDashboard(day: Date): DashboardControls {
         problem: file.problem,
         numbers: new Map(),
         collecting: true,
+        screen: 'on',
       };
     }
     // Numbers of the same page, counted before a project was hidden or renamed, stay on show
@@ -317,6 +346,7 @@ export function useDashboard(day: Date): DashboardControls {
       problem: file.problem,
       numbers: loaded.numbers,
       collecting: loaded.collecting,
+      screen: loaded.screen,
     };
   })();
   return { state, document, change, failure, dismissFailure };

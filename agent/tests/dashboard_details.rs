@@ -89,24 +89,24 @@ fn fixture() -> Vec<SessionMinutes> {
 
 fn ask_sessions(request: &Value, sessions: &[SessionMinutes]) -> Value {
     let document = default_activity();
-    let line = respond_sessions(&request.to_string(), Some(&document), || {
-        Ok(sessions.to_vec().into())
+    let line = respond_sessions(&request.to_string(), Some(&document), |_| {
+        Ok(sessions.to_vec())
     });
     serde_json::from_str(&line).unwrap()
 }
 
 fn ask_summary(request: &Value, sessions: &[SessionMinutes]) -> Value {
     let document = default_activity();
-    let line = respond_summary(&request.to_string(), Some(&document), || {
-        Ok(sessions.to_vec().into())
+    let line = respond_summary(&request.to_string(), Some(&document), |_| {
+        Ok(sessions.to_vec())
     });
     serde_json::from_str(&line).unwrap()
 }
 
 fn numbers(request: &Value, sessions: &[SessionMinutes]) -> Value {
     let document = default_activity();
-    let line = respond(&request.to_string(), Some(&document), || {
-        Ok(sessions.to_vec().into())
+    let line = respond(&request.to_string(), Some(&document), |_| {
+        Ok(sessions.to_vec())
     });
     serde_json::from_str(&line).unwrap()
 }
@@ -257,7 +257,7 @@ fn a_hidden_project_has_no_sessions_to_open() {
     let line = respond_sessions(
         &json!({ "group_by": "project", "group": "blog", "days": days() }).to_string(),
         Some(&document),
-        || Ok(fixture().into()),
+        |_| Ok(fixture()),
     );
     let page: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(page["total"], 0);
@@ -324,14 +324,14 @@ fn the_summary_of_a_widget_counts_its_sessions() {
         })
         .to_string(),
         Some(&document),
-        || Ok(fixture().into()),
+        |_| Ok(fixture()),
     ))
     .unwrap();
     assert_eq!(summary["total_minutes"], 40.0);
     let refused: Value = serde_json::from_str(&respond_summary(
         &json!({ "days": days() }).to_string(),
         Some(&document),
-        || Ok(fixture().into()),
+        |_| Ok(fixture()),
     ))
     .unwrap();
     assert_eq!(

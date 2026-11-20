@@ -4,11 +4,14 @@
 //! [`numbers`] is a plain function of its input and is the one place that applies the settings of
 //! the page to the time rules of [`crate::activity::rules`]: it never counts a minute itself. The
 //! socket command `dashboard-numbers` ([`Numbers`]) calls it through [`respond`]; a chat tool that
-//! answers the same question calls `numbers` too, so the two cannot differ.
+//! answers the same question calls [`count`], which calls `numbers` for AI sessions and
+//! [`crate::dashboard_screen`] for the time on screen, so the two cannot differ.
 //!
 //! The answer holds groups with minutes, shares and session counts (`session_count`), the total,
 //! the minutes of each day, and `hidden_project_count`: the hidden folders that have time in the
-//! days, of any kind of session. It holds no text of a message.
+//! days, of any kind of session. It holds no text of a message. For the time on screen the same
+//! names hold: `session_count` counts blocks of time on screen, and the answer also has
+//! `"source": "on_screen"`, which the answer for AI sessions does not have.
 //!
 //! * Sessions of a hidden project, and sessions the filter does not keep, are left out before the
 //!   rules run, as if they were not there: a minute they shared goes whole to the sessions that
@@ -22,13 +25,11 @@
 //!
 //! A request is a JSON object: `days` (needed), and either `widget` (the id of a widget of the
 //! document; its own sessions, filter and grouping count) or `sessions` (`own`, `unattended`,
-//! `all`; `own` when left out), `filter` and `group_by`. The settings of the page (hidden projects
-//! and names) come from the document, so a request is refused while there is none that is usable.
-//! The only things of a request an error repeats are a short widget id and the label of a day.
+//! `all`; `own` when left out), `source` (`ai_sessions` when left out), `filter` and `group_by`.
+//! The settings of the page (hidden projects and names) come from the document, so a request is
+//! refused while there is none that is usable. The only things of a request an error repeats are a short widget id and the label of a day.
 
 use std::collections::{BTreeMap, BTreeSet};
-
-use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -40,22 +41,46 @@ use crate::activity::rules::{
     self, Day, DaysError, Group, Grouping, Kind, PARTS_PER_MINUTE, REACH, SessionMinutes,
     calculate_named, check_days, minute_number,
 };
+use crate::activity::screen_time::Block;
 use crate::dashboard::{
-    ActivityDashboardV1, DashboardV1, Filter, GroupBy, Sessions, Widget, WidgetKind,
+    ActivityDashboardV2, DashboardV1, Filter, GroupBy, Sessions, Source, Widget, WidgetKind,
 };
 use crate::dashboard_document::Dashboard;
+use crate::dashboard_screen::{self, ScreenGrouping};
 
 /// The most days one request may ask for: a month and a half is more than any period of a page.
 pub const MAX_DAYS: usize = 62;
 /// The longest a widget id in a request may be before it is not repeated in an error.
 const MAX_ECHO: usize = 64;
 
+/// What the numbers are counted from: the sessions of the AI tools and the time on screen. The
+/// time rules take the first and [`crate::dashboard_screen`] the second; a request counts the
+/// one its [`Spec::source`] names.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Data {
+    pub sessions: Vec<SessionMinutes>,
+    pub blocks: Vec<Block>,
+}
+
+impl From<Vec<SessionMinutes>> for Data {
+    fn from(sessions: Vec<SessionMinutes>) -> Self {
+        Self {
+            sessions,
+            blocks: Vec::new(),
+        }
+    }
+}
+
 /// What to count, apart from the days.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Spec {
+    /// What the time is of; the sessions of the AI tools when left out.
+    pub source: Source,
     pub kind: Option<Kind>,
-    /// What to split by; none gives the total and the days only.
+    /// What to split by, for the AI sessions; none gives the total and the days only.
     pub grouping: Option<Grouping>,
+    /// What to split by, for the time on screen.
+    pub screen_grouping: Option<ScreenGrouping>,
     pub filter: Filter,
     /// The projects the page leaves out.
     pub hidden_projects: Vec<String>,
@@ -131,12 +156,34 @@ pub(crate) struct Selection {
     pub hidden_projects: usize,
 }
 
-/// Leaves out the sessions of hidden projects and those the filter of `spec` does not keep.
-pub(crate) fn select(sessions: &[SessionMinutes], days: &[Day], spec: &Spec) -> Selection {
-    // Projects are named over all the sessions, so that a name does not depend on what is left.
-    // `plain` is the name from the folder alone, `labels` the one the setup findings give where
-    // they tie the folder to a project. A name the user gave, or a folder they hid, may use any
-    // of the three spellings, so a correction made before the findings came still holds.
+/// What the projects are called: the folder's own name, the one the setup findings give and the
+/// one the page shows.
+pub(crate) struct Names {
+    /// The name from the folder alone.
+    pub plain: BTreeMap<String, String>,
+    /// The one the setup findings give where they tie the folder to a project.
+    pub labels: BTreeMap<String, String>,
+    /// The name the page shows for each project the store keeps.
+    pub shown: BTreeMap<String, String>,
+}
+
+impl Names {
+    /// Whether `list` names `project` (a folder): by the folder, by any of its two names or by
+    /// the name the page shows. A name the user gave, or a folder they hid, may use any of the
+    /// spellings, so a correction made before the findings came still holds.
+    pub(crate) fn named(&self, list: &[String], project: &str) -> bool {
+        list.iter().any(|n| {
+            n == project
+                || *n == self.labels[project]
+                || *n == self.plain[project]
+                || *n == self.shown[project]
+        })
+    }
+}
+
+/// Names the projects of `sessions` as the page does. Projects are named over all the sessions,
+/// so that a name does not depend on what is left.
+pub(crate) fn names_of(sessions: &[SessionMinutes], spec: &Spec) -> Names {
     let plain = assign::project_labels(sessions.iter().map(|s| s.project.as_str()));
     let labels = rules::with_areas(plain.clone(), sessions);
     let shown: BTreeMap<String, String> = labels
@@ -151,11 +198,17 @@ pub(crate) fn select(sessions: &[SessionMinutes], days: &[Day], spec: &Spec) -> 
             (project.clone(), name.clone())
         })
         .collect();
-    let named = |list: &[String], project: &str| {
-        list.iter().any(|n| {
-            n == project || *n == labels[project] || *n == plain[project] || *n == shown[project]
-        })
-    };
+    Names {
+        plain,
+        labels,
+        shown,
+    }
+}
+
+/// Leaves out the sessions of hidden projects and those the filter of `spec` does not keep.
+pub(crate) fn select(sessions: &[SessionMinutes], days: &[Day], spec: &Spec) -> Selection {
+    let projects = names_of(sessions, spec);
+    let named = |list: &[String], project: &str| projects.named(list, project);
     let (low, high) = (
         days.iter().map(|d| d.start).min().unwrap_or(0) - REACH,
         days.iter().map(|d| d.end).max().unwrap_or(0) + REACH,
@@ -202,7 +255,11 @@ pub(crate) fn select(sessions: &[SessionMinutes], days: &[Day], spec: &Spec) -> 
     // A hidden folder counts when the time rules give it time in the days, whatever the kind of
     // session: each folder is asked on its own, so the count does not depend on which other
     // folders are hidden.
-    let folders: BTreeMap<String, String> = labels.keys().map(|p| (p.clone(), p.clone())).collect();
+    let folders: BTreeMap<String, String> = projects
+        .labels
+        .keys()
+        .map(|p| (p.clone(), p.clone()))
+        .collect();
     let hidden = hidden_sessions
         .iter()
         .map(|s| s.project.as_str())
@@ -222,7 +279,7 @@ pub(crate) fn select(sessions: &[SessionMinutes], days: &[Day], spec: &Spec) -> 
 
     Selection {
         kept,
-        shown,
+        shown: projects.shown,
         hidden_projects: hidden,
     }
 }
@@ -263,6 +320,18 @@ pub fn numbers(
     })
 }
 
+/// The time of `data` in `days` as the page shows it, of the source `spec` names. The page's
+/// command and the chat's tool both count through this one function.
+///
+/// # Errors
+/// Fails when a day is empty or two days overlap.
+pub fn count(data: &Data, days: &[Day], spec: &Spec) -> Result<Answer, DaysError> {
+    match spec.source {
+        Source::AiSessions => numbers(&data.sessions, days, spec),
+        Source::OnScreen => dashboard_screen::numbers(&data.sessions, &data.blocks, days, spec),
+    }
+}
+
 /// A request line, read.
 pub(crate) struct Request {
     pub spec: Spec,
@@ -284,6 +353,7 @@ pub(crate) struct RawDay {
 struct RawRequest {
     days: Vec<RawDay>,
     widget: Option<String>,
+    source: Option<Source>,
     sessions: Option<Sessions>,
     filter: Option<Filter>,
     group_by: Option<GroupBy>,
@@ -297,13 +367,64 @@ pub(crate) fn kind_of(sessions: Sessions) -> Kind {
     }
 }
 
-pub(crate) fn grouping_of(group_by: GroupBy) -> Grouping {
+/// The grouping of the time rules for `group_by`; none for one that only the time on screen has.
+pub(crate) fn grouping_of(group_by: GroupBy) -> Option<Grouping> {
     match group_by {
-        GroupBy::Project => Grouping::Project,
-        GroupBy::Ticket => Grouping::Ticket,
-        GroupBy::Tool => Grouping::Tool,
-        GroupBy::Collection => Grouping::Collection,
-        GroupBy::Day => Grouping::Day,
+        GroupBy::Project => Some(Grouping::Project),
+        GroupBy::Ticket => Some(Grouping::Ticket),
+        GroupBy::Tool => Some(Grouping::Tool),
+        GroupBy::Collection => Some(Grouping::Collection),
+        GroupBy::Day => Some(Grouping::Day),
+        GroupBy::App | GroupBy::Site => None,
+    }
+}
+
+/// The grouping of the time on screen for `group_by`; none for one that only the AI sessions have.
+pub(crate) fn screen_grouping_of(group_by: GroupBy) -> Option<ScreenGrouping> {
+    match group_by {
+        GroupBy::Project => Some(ScreenGrouping::Project),
+        GroupBy::Ticket => Some(ScreenGrouping::Ticket),
+        GroupBy::App => Some(ScreenGrouping::App),
+        GroupBy::Site => Some(ScreenGrouping::Site),
+        GroupBy::Day => Some(ScreenGrouping::Day),
+        GroupBy::Tool | GroupBy::Collection => None,
+    }
+}
+
+/// Refuses what the source cannot answer, in plain words: a grouping it does not have, and for
+/// the time on screen the sessions and the tools of a filter, which it has no use for.
+pub(crate) fn check_counting(
+    source: Source,
+    group_by: Option<GroupBy>,
+    filter: &Filter,
+    sessions_given: bool,
+) -> Result<(), String> {
+    if let Some(group_by) = group_by.filter(|g| !g.fits(source)) {
+        return Err(match (source, group_by) {
+            (Source::OnScreen, _) => {
+                "the time on screen is grouped by project, ticket, app, site or day".to_owned()
+            }
+            (_, _) => {
+                "AI sessions are grouped by project, ticket, tool, collection or day".to_owned()
+            }
+        });
+    }
+    if source == Source::OnScreen {
+        if sessions_given {
+            return Err("sessions is of AI sessions: the time on screen has none".to_owned());
+        }
+        if filter.tools.is_some() {
+            return Err("tools is of AI sessions: the time on screen has no tools".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// Sets what `spec` splits by, in the way its source has.
+fn group(spec: &mut Spec, group_by: Option<GroupBy>) {
+    match spec.source {
+        Source::AiSessions => spec.grouping = group_by.and_then(grouping_of),
+        Source::OnScreen => spec.screen_grouping = group_by.and_then(screen_grouping_of),
     }
 }
 
@@ -344,47 +465,60 @@ fn read_days(raw: Vec<RawDay>) -> Result<Vec<Day>, String> {
 
 /// The payload of the dashboard document, read once and typed. The document passed its type, so
 /// a payload that does not read is a fault of the agent, and the request is refused.
-pub(crate) type Payload = ActivityDashboardV1;
+pub(crate) type Payload = ActivityDashboardV2;
 
 pub(crate) fn payload_of(document: Option<&Value>) -> Result<Payload, String> {
-    let document = document.ok_or("the dashboard document is not available")?;
-    serde_json::from_value::<DashboardV1<Payload>>(document.clone())
+    let mut document = document
+        .ok_or("the dashboard document is not available")?
+        .clone();
+    // A document written before the source was added leaves it out, and reads as AI sessions.
+    if let Some(payload) = document.get_mut("payload").and_then(Value::as_object_mut) {
+        payload.entry("source").or_insert(Value::Null);
+    }
+    serde_json::from_value::<DashboardV1<Payload>>(document)
         .map(|typed| typed.payload)
         .map_err(|_| "the settings of the dashboard cannot be read".to_owned())
 }
 
-/// What a widget of the document counts: its own sessions or the page's, its filter and, for a
-/// table, what it groups by; the summary of the day groups by project.
+/// What a widget of the document counts: its own source, sessions or the page's, its filter and,
+/// for a table, what it groups by; the summary of the day groups by project.
 pub(crate) fn spec_of(widget: &Widget, payload: &Payload) -> Spec {
-    let grouping = match widget.kind {
-        WidgetKind::Table => widget.group_by.map(grouping_of),
-        WidgetKind::DaySummary => Some(Grouping::Project),
+    let by = match widget.kind {
+        WidgetKind::Table => widget.group_by,
+        WidgetKind::DaySummary => Some(GroupBy::Project),
         WidgetKind::Total | WidgetKind::BarsPerDay => None,
     };
-    Spec {
+    let mut spec = Spec {
+        source: widget.source.or(payload.source).unwrap_or_default(),
         kind: Some(kind_of(widget.sessions.unwrap_or(payload.sessions))),
-        grouping,
         filter: widget.filter.clone().unwrap_or_default(),
         hidden_projects: payload.hidden_projects.clone(),
         project_names: payload.project_names.clone(),
-    }
+        ..Spec::default()
+    };
+    group(&mut spec, by);
+    spec
 }
 
 /// The counting the page applies to a period asked for without a widget: the hidden projects and
 /// the names are the page's, whatever is counted.
 pub(crate) fn spec_without_widget(
     payload: &Payload,
+    source: Source,
     sessions: Sessions,
     grouping: Option<GroupBy>,
     filter: Filter,
 ) -> Spec {
-    Spec {
+    let mut spec = Spec {
+        source,
         kind: Some(kind_of(sessions)),
-        grouping: grouping.map(grouping_of),
         filter,
         hidden_projects: payload.hidden_projects.clone(),
         project_names: payload.project_names.clone(),
-    }
+        ..Spec::default()
+    };
+    group(&mut spec, grouping);
+    spec
 }
 
 fn widget_spec(payload: &Payload, id: &str) -> Result<(Spec, WidgetKind), String> {
@@ -405,7 +539,11 @@ pub(crate) fn read_request(argument: &str, document: Option<&Value>) -> Result<R
     let days = read_days(raw.days)?;
     let payload = payload_of(document)?;
     if let Some(id) = raw.widget {
-        if raw.sessions.is_some() || raw.filter.is_some() || raw.group_by.is_some() {
+        if raw.source.is_some()
+            || raw.sessions.is_some()
+            || raw.filter.is_some()
+            || raw.group_by.is_some()
+        {
             return Err("a request names a widget or the counting, not both".to_owned());
         }
         let (spec, kind) = widget_spec(&payload, &id)?;
@@ -415,11 +553,15 @@ pub(crate) fn read_request(argument: &str, document: Option<&Value>) -> Result<R
             widget: Some((id, kind)),
         });
     }
+    let source = raw.source.unwrap_or_default();
+    let filter = raw.filter.unwrap_or_default();
+    check_counting(source, raw.group_by, &filter, raw.sessions.is_some())?;
     let spec = spec_without_widget(
         &payload,
+        source,
         raw.sessions.unwrap_or(Sessions::Own),
         raw.group_by,
-        raw.filter.unwrap_or_default(),
+        filter,
     );
     Ok(Request {
         spec,
@@ -451,33 +593,62 @@ impl Numbers {
     #[must_use]
     pub fn answer(&self, argument: &str) -> String {
         let document = self.dashboard.to_json()["document"].clone();
-        respond(argument, (!document.is_null()).then_some(&document), || {
-            self.read_sessions()
-        })
+        respond(
+            argument,
+            (!document.is_null()).then_some(&document),
+            |source| self.read_data(source),
+        )
     }
 
-    /// The sessions of the activity store, as the time rules take them.
+    /// What a request of `source` counts, read from the activity store.
     ///
     /// # Errors
     /// With a plain reason when the store is not ready or cannot be read.
-    pub fn read_sessions(&self) -> Result<Arc<[SessionMinutes]>, &'static str> {
-        let store = self.feed.readable_store()?;
-        self.runtime.block_on(store.session_minutes()).map_err(|e| {
+    pub fn read_data(&self, source: Source) -> Result<Data, &'static str> {
+        read_data(&self.feed, &self.runtime, source)
+    }
+}
+
+/// What a request of `source` counts, read from the store of `feed` on `runtime`: the sessions
+/// (the time on screen needs them to name its projects) and, for the time on screen only, its
+/// blocks, so a request of AI sessions never reads the screen. The one reader of the page's
+/// numbers and of its details.
+///
+/// # Errors
+/// With a plain reason when the store is not ready or cannot be read.
+pub(crate) fn read_data(
+    feed: &Feed,
+    runtime: &Handle,
+    source: Source,
+) -> Result<Data, &'static str> {
+    let store = feed.readable_store()?;
+    runtime
+        .block_on(async {
+            Ok(Data {
+                // The read of the store is shared by the asks that come together; each takes its copy.
+                sessions: store.session_minutes().await?.to_vec(),
+                blocks: match source {
+                    Source::AiSessions => Vec::new(),
+                    Source::OnScreen => store.screen_blocks().await?,
+                },
+            })
+        })
+        .map_err(|e: crate::database::Error| {
             // The reason stays in the agent's log, as the activity store's own failures do.
             eprintln!("dashboard numbers: {e}");
             "the activity time could not be read"
         })
-    }
 }
 
 /// The JSON line for a request `argument`, given the dashboard `document` (none when there is
-/// no good one) and a way to read the sessions, which runs only for a request that is fine.
-/// [`Numbers::answer`] is this with the live store.
+/// no good one) and a way to read the data of the source the request counts, which runs only for
+/// a request that is fine. The data is the sessions, or [`Data`] when the time on screen is wanted
+/// too. [`Numbers::answer`] is this with the live store.
 #[must_use]
-pub fn respond(
+pub fn respond<D: Into<Data>>(
     argument: &str,
     document: Option<&Value>,
-    sessions: impl FnOnce() -> Result<Arc<[SessionMinutes]>, &'static str>,
+    load: impl FnOnce(Source) -> Result<D, &'static str>,
 ) -> String {
     let request = match read_request(argument, document) {
         Ok(request) => request,
@@ -487,13 +658,16 @@ pub fn respond(
     if let Err(e) = check_days(&request.days) {
         return crate::ipc::error_response(&e.to_string());
     }
-    let sessions = match sessions() {
-        Ok(sessions) => sessions,
+    let data = match load(request.spec.source) {
+        Ok(data) => data.into(),
         Err(message) => return crate::ipc::error_response(message),
     };
-    match numbers(&sessions, &request.days, &request.spec) {
+    match count(&data, &request.days, &request.spec) {
         Ok(answer) => {
             let mut reply = answer.to_json();
+            if request.spec.source == Source::OnScreen {
+                reply["source"] = json!(Source::OnScreen);
+            }
             if let Some((id, kind)) = request.widget {
                 reply["widget"] = json!({ "id": id, "kind": kind });
             }

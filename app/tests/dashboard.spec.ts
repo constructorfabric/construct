@@ -4,7 +4,8 @@ import type { Whose } from '../src/dashboard-protocol';
 import { dayLabel, formatMinutes, mondayOf } from '../src/ui/dashboard-period';
 import { expect, test, withStandIn } from './fixtures';
 import type { Session } from './fixtures';
-import { firstCells, now, settingsReply } from './dashboard-shared';
+import { firstCells, gridPlaces, now, settingsReply, widget } from './dashboard-shared';
+import type { StandInWidget } from './dashboard-shared';
 import { screenshotBothThemes } from './screenshots';
 
 interface Request {
@@ -12,15 +13,6 @@ interface Request {
   readonly widget?: string;
   readonly sessions?: Whose;
   readonly filter?: Record<string, string[]>;
-}
-
-interface StandInWidget {
-  readonly id: string;
-  readonly kind: string;
-  readonly group_by?: string;
-  readonly period?: string;
-  readonly sessions?: Whose;
-  readonly position: { column: number; row: number; width: number; height: number };
 }
 
 type Document = {
@@ -65,30 +57,6 @@ interface Agent {
   failed: number;
   readonly requests: Request[];
 }
-
-const gridPlaces = (widgets: readonly StandInWidget[]): Document => ({
-  type: 'a dashboard type',
-  title: 'Activity',
-  payload: {
-    period: 'this_week',
-    sessions: 'own',
-    widgets,
-    hidden_projects: [],
-    project_names: {},
-  },
-});
-
-const widget = (
-  id: string,
-  kind: string,
-  at: [number, number, number, number],
-  more: Partial<StandInWidget> = {},
-): StandInWidget => ({
-  id,
-  kind,
-  position: { column: at[0], row: at[1], width: at[2], height: at[3] },
-  ...more,
-});
 
 /** The dashboard the agent writes when there is none. */
 const defaultDocument = gridPlaces([

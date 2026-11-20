@@ -1,14 +1,15 @@
-import { copyableText, webAddress } from './external';
+import { copyableText, systemPaneAddress, webAddress } from './external';
 
 /**
- * The handler of `openLink`: it opens a web address with `open` and refuses anything else, whoever
- * asks. A browser that cannot be started is a refusal too, not an error the window has to catch.
+ * A handler that opens what `gate` lets through with `open` and refuses anything else, whoever
+ * asks. A target that cannot be opened is a refusal too, not an error the window has to catch.
  */
-export function createLinkHandler(
+function createOpener(
+  gate: (raw: unknown) => string | null,
   open: (address: string) => Promise<void>,
-): (url: unknown) => Promise<boolean> {
-  return async (url) => {
-    const address = webAddress(url);
+): (raw: unknown) => Promise<boolean> {
+  return async (raw) => {
+    const address = gate(raw);
     if (address === null) {
       return false;
     }
@@ -20,6 +21,20 @@ export function createLinkHandler(
     }
     return true;
   };
+}
+
+/** The handler of `openLink`: only a web address is opened. */
+export function createLinkHandler(
+  open: (address: string) => Promise<void>,
+): (url: unknown) => Promise<boolean> {
+  return createOpener(webAddress, open);
+}
+
+/** The handler of `openPane`: only a pane of System Settings from the fixed list is opened. */
+export function createPaneHandler(
+  open: (address: string) => Promise<void>,
+): (pane: unknown) => Promise<boolean> {
+  return createOpener(systemPaneAddress, open);
 }
 
 /**

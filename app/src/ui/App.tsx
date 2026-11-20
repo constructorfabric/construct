@@ -5,24 +5,24 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarInset,
   SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
   SidebarProvider,
-  StatusDot,
 } from '@gears-frontx/ui-kit';
 import { Activity, Brain, ChartColumn, MessageSquare, Settings } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { t } from '../translation';
-import styles from './app.module.css';
 import { ChatPage } from './ChatPage';
+import type { ThreadPosition } from './ChatPage';
+import { AgentStatusLine } from './components/AgentStatusLine';
+import { ConnectorIndicators } from './components/ConnectorIndicators';
+import { MenuItem } from './components/MenuItem';
+import { PageFrame } from './components/PageFrame';
 import { ConversationList } from './ConversationList';
 import { DashboardPage } from './DashboardPage';
 import { MemoryPage } from './MemoryPage';
 import { SettingsPage } from './SettingsPage';
-import { tones } from './state-tones';
 import { StatusPage } from './StatusPage';
 import { useAgentStatus } from './useAgentStatus';
 import { useChat } from './useChat';
@@ -30,12 +30,22 @@ import { useErasing } from './useErasing';
 
 type Page = 'chat' | 'dashboard' | 'memory' | 'status' | 'settings';
 
+const pages = [
+  { page: 'chat', icon: MessageSquare, label: 'App.Chat' },
+  { page: 'dashboard', icon: ChartColumn, label: 'App.Dashboard' },
+  { page: 'memory', icon: Brain, label: 'App.Memory' },
+  { page: 'status', icon: Activity, label: 'App.Status' },
+  { page: 'settings', icon: Settings, label: 'App.Settings' },
+] as const satisfies readonly { page: Page; icon: LucideIcon; label: string }[];
+
 export function App(): ReactNode {
   // A page is a piece of state: the app has no addresses to navigate to.
   const [page, setPage] = useState<Page>('chat');
   const { status, refresh } = useAgentStatus();
   const state = status?.state ?? 'unknown';
-  const chat = useChat(page === 'chat');
+  const chat = useChat();
+  // Where the thread was scrolled to, kept here because the chat page is gone on other pages.
+  const threadPosition = useRef<ThreadPosition>({ atBottom: true, top: 0 });
   const erasing = useErasing(chat.reload);
   // The model may have been set in Settings a moment ago; the chat page must not say otherwise.
   useEffect(() => {
@@ -50,6 +60,8 @@ export function App(): ReactNode {
     status?.state !== 'running' ||
     status.construct === undefined ||
     status.construct.state === 'ready';
+  // Kept here: a poll that fails drops the group, and it must come back as the person left it.
+  const [collectionOpen, setCollectionOpen] = useState(true);
   const [needsMove, setNeedsMove] = useState(false);
   useEffect(() => {
     void window.constructAgent.getNeedsMove().then(setNeedsMove);
@@ -64,135 +76,68 @@ export function App(): ReactNode {
           <SidebarGroup>
             <SidebarGroupContent>
               <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'chat'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'chat' ? 'page' : undefined}
-                        onClick={() => setPage('chat')}
-                      />
-                    }
-                  >
-                    <MessageSquare aria-hidden />
-                    <span>{t('App.Chat')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'dashboard'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'dashboard' ? 'page' : undefined}
-                        onClick={() => setPage('dashboard')}
-                      />
-                    }
-                  >
-                    <ChartColumn aria-hidden />
-                    <span>{t('App.Dashboard')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'memory'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'memory' ? 'page' : undefined}
-                        onClick={() => setPage('memory')}
-                      />
-                    }
-                  >
-                    <Brain aria-hidden />
-                    <span>{t('App.Memory')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'status'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'status' ? 'page' : undefined}
-                        onClick={() => setPage('status')}
-                      />
-                    }
-                  >
-                    <Activity aria-hidden />
-                    <span>{t('App.Status')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    isActive={page === 'settings'}
-                    render={
-                      <button
-                        type="button"
-                        aria-current={page === 'settings' ? 'page' : undefined}
-                        onClick={() => setPage('settings')}
-                      />
-                    }
-                  >
-                    <Settings aria-hidden />
-                    <span>{t('App.Settings')}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
+                {pages.map(({ page: target, icon: Icon, label }) => (
+                  <MenuItem
+                    key={target}
+                    icon={<Icon aria-hidden />}
+                    label={t(label)}
+                    active={page === target}
+                    onSelect={() => setPage(target)}
+                  />
+                ))}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
           {page === 'chat' ? <ConversationList chat={chat} /> : null}
         </SidebarContent>
         <SidebarFooter>
-          <StatusDot
-            id="sidebar-agent-state"
-            data-state={state}
-            tone={tones[state]}
-            label={
-              <>
-                <span>{t('App.AgentState')}</span>{' '}
-                <span id="sidebar-agent-state-word">{state}</span>
-              </>
-            }
-          />
+          <AgentStatusLine state={state} />
+          {status?.state === 'running' &&
+          (status.connectors !== undefined || status.screen !== undefined) ? (
+            <ConnectorIndicators
+              connectors={status.connectors ?? []}
+              screen={status.screen}
+              open={collectionOpen}
+              onOpenChange={setCollectionOpen}
+            />
+          ) : null}
         </SidebarFooter>
       </Sidebar>
-      <SidebarInset
-        render={<main className={page === 'chat' ? styles.contentChat : styles.content} />}
+      <PageFrame
+        layout={page === 'chat' ? 'chat' : 'page'}
+        banner={
+          needsMove ? (
+            <Alert id="needs-move" role="alert">
+              {t('App.NeedsMove')}
+            </Alert>
+          ) : null
+        }
       >
-        {needsMove ? (
-          <Alert id="needs-move" role="alert">
-            {t('App.NeedsMove')}
-          </Alert>
-        ) : null}
         {page === 'chat' ? (
           <ChatPage
             chat={chat}
+            position={threadPosition.current}
             modelSet={modelSet}
             profileAvailable={profileAvailable}
             onOpenSettings={() => {
               setPage('settings');
             }}
           />
+        ) : page === 'status' ? (
+          <StatusPage status={status} />
+        ) : page === 'dashboard' ? (
+          <DashboardPage status={status} onOpenSettings={() => setPage('settings')} />
+        ) : page === 'memory' ? (
+          <MemoryPage onOpenSettings={() => setPage('settings')} />
         ) : (
-          <div className={styles.column}>
-            {page === 'status' ? (
-              <StatusPage status={status} />
-            ) : page === 'dashboard' ? (
-              <DashboardPage onOpenSettings={() => setPage('settings')} />
-            ) : page === 'memory' ? (
-              <MemoryPage onOpenSettings={() => setPage('settings')} />
-            ) : (
-              <SettingsPage
-                chat={chat}
-                erasing={erasing}
-                onOpenDashboard={() => setPage('dashboard')}
-              />
-            )}
-          </div>
+          <SettingsPage
+            chat={chat}
+            erasing={erasing}
+            status={status}
+            onOpenDashboard={() => setPage('dashboard')}
+          />
         )}
-      </SidebarInset>
+      </PageFrame>
     </SidebarProvider>
   );
 }

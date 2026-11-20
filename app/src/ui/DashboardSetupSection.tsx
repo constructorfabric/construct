@@ -5,10 +5,10 @@ import { isRunning, setupDays } from '../dashboard-setup-protocol';
 import type { SetupStatus } from '../dashboard-setup-protocol';
 import { t } from '../translation';
 import styles from './app.module.css';
+import { ButtonRow } from './components/ButtonRow';
 import { Markdown } from './markdown';
 import { formatSize } from './setup-text';
-import { useDashboardSetup } from './useDashboardSetup';
-import type { SetupView } from './useDashboardSetup';
+import type { DashboardSetup, SetupView } from './useDashboardSetup';
 
 type ReadyView = Extract<SetupView, { kind: 'ready' }>;
 
@@ -91,7 +91,7 @@ function Progress({
           received: formatSize(status.received),
         })}
       </p>
-      <div className={styles.actions}>
+      <ButtonRow>
         <Button
           id="setup-cancel"
           type="button"
@@ -101,7 +101,7 @@ function Progress({
         >
           {cancelling ? t('DashboardSetup.Cancelling') : t('DashboardSetup.Cancel')}
         </Button>
-      </div>
+      </ButtonRow>
     </>
   );
 }
@@ -133,11 +133,11 @@ function Report({
           />
         )}
       </div>
-      <div className={styles.actions}>
+      <ButtonRow>
         <Button id="setup-open-dashboard" type="button" variant="link" onClick={onOpenDashboard}>
           {t('DashboardSetup.OpenDashboard')}
         </Button>
-      </div>
+      </ButtonRow>
     </>
   );
 }
@@ -185,7 +185,7 @@ function Starter({
           {t('DashboardSetup.CollectionOff')}
         </Alert>
       )}
-      <div className={styles.actions}>
+      <ButtonRow>
         <Button
           id="setup-start"
           type="button"
@@ -202,7 +202,7 @@ function Starter({
         >
           {label}
         </Button>
-      </div>
+      </ButtonRow>
     </>
   );
 }
@@ -222,9 +222,6 @@ function Body({
   readonly onCancel: () => void;
   readonly onOpenDashboard: () => void;
 }): ReactNode {
-  if (view.kind === 'loading') {
-    return <Spinner id="setup-loading" label={t('DashboardSetup.Loading')} />;
-  }
   if (view.kind === 'unavailable') {
     return (
       <Alert id="setup-unavailable" variant="destructive">
@@ -232,6 +229,38 @@ function Body({
       </Alert>
     );
   }
+  // The Settings page waits for the state of the setup together with its own settings, so the
+  // section is drawn once the state is there.
+  if (view.kind === 'loading') {
+    return null;
+  }
+  return (
+    <ReadyBody
+      view={view}
+      modelSet={modelSet}
+      collecting={collecting}
+      onStart={onStart}
+      onCancel={onCancel}
+      onOpenDashboard={onOpenDashboard}
+    />
+  );
+}
+
+function ReadyBody({
+  view,
+  modelSet,
+  collecting,
+  onStart,
+  onCancel,
+  onOpenDashboard,
+}: {
+  readonly view: ReadyView;
+  readonly modelSet: boolean;
+  readonly collecting: boolean;
+  readonly onStart: () => void;
+  readonly onCancel: () => void;
+  readonly onOpenDashboard: () => void;
+}): ReactNode {
   const { status } = view;
   if (isRunning(status.state)) {
     return (
@@ -286,15 +315,16 @@ function Hint({ view }: { readonly view: ReadyView }): ReactNode {
 
 /** The Dashboard section of the Settings page: the button that sets the dashboard up, and the run. */
 export function DashboardSetupSection({
+  setup: { view, start, cancel },
   modelSet,
   collecting,
   onOpenDashboard,
 }: {
+  readonly setup: DashboardSetup;
   readonly modelSet: boolean;
   readonly collecting: boolean;
   readonly onOpenDashboard: () => void;
 }): ReactNode {
-  const { view, start, cancel } = useDashboardSetup();
   return (
     <section aria-labelledby="setup-section-title" className={styles.setup}>
       <Heading id="setup-section-title" typography="heading-1" render={<h2 />}>

@@ -6,7 +6,17 @@
 //! files stay the single source, and [`Store::rebuild`] makes the whole store from them. No
 //! message text is stored, only counts, times, a hash that tells a replayed turn from a new one,
 //! and the ticket ids the user names with how often (the text rule for a ticket). Applying a record is idempotent and the result does not depend on the order records
-//! arrive in, so a step-by-step store equals a rebuilt one.
+//! arrive in, so a step-by-step store equals a rebuilt one (for the time on screen see below).
+//!
+//! The time on screen is kept beside it, as blocks of one application in front with the site, the
+//! project and the ticket the rules in [`screen_time`] give: never a title or an address. A run
+//! of screen samples is one block, keyed by its first sample, and the same run again, or a shorter
+//! earlier state of it, changes nothing. A block names the project the sessions of the store
+//! know when it is stored, and the title it was read from is not kept, so a block cannot be
+//! named again later. When a record changes the projects the store knows, [`Store::apply`] says
+//! so, and the caller builds the store again from the files (the feed does): a rebuild reads
+//! the sessions first, so every block is named by all of them. The project of a session is its
+//! folder alone, so the setup findings never change it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -19,6 +29,7 @@ use sqlx::{PgConnection, PgPool, Row};
 
 use crate::database::{Error, SOCKET_PORT, SUPERUSER, err};
 use crate::records::{FileSink, read_records, turn_key};
+use crate::screen::{self, Line};
 use crate::sync::lock;
 use findings::Findings;
 
@@ -27,19 +38,20 @@ pub use feed::{ActivityStore, FINDINGS_POLL, Feed, Readiness};
 pub mod assign;
 pub mod findings;
 pub mod rules;
+pub mod screen_time;
 
 /// The database the store lives in; the agent creates it when it is missing.
 pub const DBNAME: &str = "activity";
 /// The version of the rules that turn records into rows. Change it when a rule changes: the
 /// next start drops the store and it is rebuilt.
-pub const RULES_VERSION: i32 = 4;
+pub const RULES_VERSION: i32 = 5;
 
 /// The advisory lock `apply` and `rebuild` take for their transaction, so that no two writers
 /// overlap: a record applied while the store is being cleared would be lost, and `touch` reads a
 /// row and writes it back.
 pub const LOCK_KEY: i64 = 0x6163_7469_7669_7479;
 
-const SCHEMA: [&str; 5] = [
+const SCHEMA: [&str; 6] = [
     "create table activity.rules (version int not null)",
     "create table activity.sessions (
         tool text not null,
@@ -75,6 +87,15 @@ const SCHEMA: [&str; 5] = [
         session text not null,
         minute text not null,
         primary key (tool, session, minute))",
+    // The time one application was in front. The key is the first sample of the run; there is no
+    // title and no address.
+    "create table activity.screen (
+        start text primary key,
+        seconds bigint not null,
+        app text not null,
+        site text not null,
+        project text not null,
+        ticket text not null)",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,17 +223,67 @@ impl Store {
     /// Applies one record. The same record twice changes nothing. Records that carry no
     /// activity (tool calls and results, and the turns and marks of the app's own chat) and
     /// records without a usable time are ignored.
+    /// Returns true when the record changed the projects the store knows while it holds blocks of
+    /// the time on screen: they were named without it, and only [`Store::rebuild`] names them
+    /// again.
     ///
     /// # Errors
     /// Fails when a statement is refused.
-    pub async fn apply(&self, record: &Record) -> Result<(), Error> {
+    pub async fn apply(&self, record: &Record) -> Result<bool, Error> {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
         lock_store(&mut tx).await?;
         let findings = self.findings();
+        // Only blocks that were named can be named wrong: a store with none needs no build.
+        let watching = has_blocks(&mut tx).await?;
+        let before = if watching {
+            project_folders(&mut tx).await?
+        } else {
+            Vec::new()
+        };
         apply_in(&mut tx, record, &findings).await?;
+        let changed = watching && project_folders(&mut tx).await? != before;
         tx.commit().await.map_err(|e| err("commit", e))?;
         self.changed();
-        Ok(())
+        Ok(changed)
+    }
+
+    /// Applies one run of screen samples. The same run twice changes nothing.
+    ///
+    /// # Errors
+    /// Fails when a statement is refused.
+    pub async fn apply_screen(&self, line: &Line) -> Result<(), Error> {
+        let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
+        lock_store(&mut tx).await?;
+        apply_screen_in(&mut tx, line).await?;
+        tx.commit().await.map_err(|e| err("commit", e))
+    }
+
+    /// The time on screen, in order of time, with no overlap (see [`screen_time::without_overlap`]).
+    ///
+    /// # Errors
+    /// Fails when the query is refused.
+    pub async fn screen_blocks(&self) -> Result<Vec<screen_time::Block>, Error> {
+        let rows = sqlx::query(
+            "select start, seconds, app, site, project, ticket from activity.screen order by start",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| err("read the screen blocks", e))?;
+        let blocks = rows
+            .iter()
+            .map(|r| {
+                Ok(screen_time::Block {
+                    start: r.try_get("start")?,
+                    seconds: u64::try_from(r.try_get::<i64, _>("seconds")?).unwrap_or(0),
+                    app: r.try_get("app")?,
+                    site: r.try_get("site")?,
+                    project: r.try_get("project")?,
+                    ticket: r.try_get("ticket")?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(|e| err("read a screen block", e))?;
+        Ok(screen_time::without_overlap(blocks))
     }
 
     /// Makes the whole store again from the record files, in one transaction: a reader never
@@ -246,6 +317,14 @@ impl Store {
             for record in read_records(&file).map_err(|e| err("read a record file", e))? {
                 applied += usize::from(apply_in(&mut tx, &record, &findings).await?);
                 done.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let screens = sink
+            .screen_files()
+            .map_err(|e| err("list the screen files", e))?;
+        for file in screens {
+            for line in screen::read_file(&file).map_err(|e| err("read a screen file", e))? {
+                apply_screen_in(&mut tx, &line).await?;
             }
         }
         tx.commit().await.map_err(|e| err("commit", e))?;
@@ -521,6 +600,7 @@ async fn clear_in(conn: &mut PgConnection) -> Result<(), Error> {
         "delete from activity.minutes",
         "delete from activity.turns",
         "delete from activity.mentions",
+        "delete from activity.screen",
         "delete from activity.sessions",
     ] {
         sqlx::query(statement)
@@ -663,6 +743,52 @@ async fn apply_in(
         Record::ToolCall(_) | Record::ToolResult(_) => return Ok(false),
     }
     Ok(true)
+}
+
+async fn has_blocks(conn: &mut PgConnection) -> Result<bool, Error> {
+    sqlx::query_scalar("select exists(select 1 from activity.screen)")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| err("look for screen blocks", e))
+}
+
+/// The project of every session, each once, in order.
+async fn project_folders(conn: &mut PgConnection) -> Result<Vec<String>, Error> {
+    sqlx::query_scalar("select distinct project from activity.sessions order by project")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| err("read the projects", e))
+}
+
+/// Stores the block of a run of screen samples. A run that counts nothing is not stored. A run
+/// seen again keeps the most time any state of it had, and the rest of the block is the same.
+async fn apply_screen_in(conn: &mut PgConnection, line: &Line) -> Result<(), Error> {
+    let folders = project_folders(conn).await?;
+    let mut names: Vec<String> = folders
+        .iter()
+        .map(|f| screen_time::project_name(f).to_owned())
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    let Some(block) = screen_time::block_of(line, &names) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "insert into activity.screen (start, seconds, app, site, project, ticket)
+         values ($1, $2, $3, $4, $5, $6)
+         on conflict (start) do update set seconds = greatest(activity.screen.seconds, excluded.seconds)",
+    )
+    .bind(block.start)
+    .bind(i64::try_from(block.seconds).unwrap_or(i64::MAX))
+    .bind(block.app)
+    .bind(block.site)
+    .bind(block.project)
+    .bind(block.ticket)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| err("store a screen block", e))?;
+    Ok(())
 }
 
 /// Adds the ids a message of the user names to the counts of the session. Only the ids are

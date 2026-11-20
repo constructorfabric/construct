@@ -19,10 +19,11 @@ use serde_json::Value;
 use time::{Date, Duration, Month};
 
 use super::tool::ChatTool;
-use crate::activity::rules::{Day, SessionMinutes};
-use crate::dashboard::{Filter, GroupBy, Period, Sessions, WidgetKind};
+use crate::activity::rules::Day;
+use crate::dashboard::{Filter, GroupBy, Period, Sessions, Source, WidgetKind};
 use crate::dashboard_numbers::{
-    Answer, Payload, Spec, numbers, payload_of, spec_of, spec_without_widget, whole_minute,
+    Answer, Data, Payload, Spec, check_counting, count, payload_of, spec_of, spec_without_widget,
+    whole_minute,
 };
 
 /// The name the model calls the tool by.
@@ -30,14 +31,16 @@ pub const NAME: &str = "render_dashboard";
 
 const BAD_ARGUMENTS: &str = "the arguments are not valid for this tool: give period and group_by \
 together, or neither; period is one of today, this_week, last_week, this_month, last_month, \
-last_7_days, last_30_days; sessions is one of own, unattended, all; group_by is one of project, \
-ticket, tool, day; filter has projects, tickets and tools, each a list of names";
+last_7_days, last_30_days; source is one of ai_sessions, on_screen; sessions is one of own, \
+unattended, all, for ai_sessions only; group_by is one of project, ticket, tool, collection, day \
+for ai_sessions, and project, ticket, app, site, day for on_screen; filter has projects, tickets \
+and tools, each a list of names, and tools is for ai_sessions only";
 
 const NO_CALENDAR: &str = "the days of the periods cannot be worked out from the clock and the \
 time zone of this computer, so the numbers cannot be counted";
 
-/// How the tool reads the sessions of the activity store.
-pub type SessionSource = Arc<dyn Fn() -> Result<Arc<[SessionMinutes]>, &'static str> + Send + Sync>;
+/// How the tool reads the activity store, for the source a request counts.
+pub type ActivitySource = Arc<dyn Fn(Source) -> Result<Data, &'static str> + Send + Sync>;
 
 /// The days of the periods, in the time zone of this computer.
 #[derive(Clone)]
@@ -181,6 +184,16 @@ const fn group_name(group: GroupBy) -> &'static str {
         GroupBy::Tool => "tool",
         GroupBy::Collection => "collection",
         GroupBy::Day => "day",
+        GroupBy::App => "app",
+        GroupBy::Site => "site",
+    }
+}
+
+/// What a widget counts, as the text says it: the sessions of a kind, or the time on screen.
+const fn counted_name(source: Source, sessions: Sessions) -> &'static str {
+    match source {
+        Source::AiSessions => sessions_name(sessions),
+        Source::OnScreen => "on screen",
     }
 }
 
@@ -212,14 +225,20 @@ fn minutes(value: f64) -> String {
     }
 }
 
-fn sessions_count(count: usize) -> String {
-    format!("{count} session{}", if count == 1 { "" } else { "s" })
+/// A count of what the numbers are made of: sessions, or blocks of time on screen.
+fn parts_count(source: Source, count: usize) -> String {
+    let noun = match source {
+        Source::AiSessions => "session",
+        Source::OnScreen => "block",
+    };
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Arguments {
     period: Option<Period>,
+    source: Option<Source>,
     sessions: Option<Sessions>,
     group_by: Option<GroupBy>,
     filter: Option<Filter>,
@@ -232,7 +251,8 @@ enum Ask {
     /// One table for a period.
     Table {
         period: Period,
-        sessions: Sessions,
+        source: Source,
+        sessions: Option<Sessions>,
         group_by: GroupBy,
         filter: Filter,
     },
@@ -248,6 +268,7 @@ fn read(arguments: &str) -> Result<Ask, String> {
     match raw {
         Arguments {
             period: None,
+            source: None,
             sessions: None,
             group_by: None,
             filter: None,
@@ -255,25 +276,38 @@ fn read(arguments: &str) -> Result<Ask, String> {
         Arguments {
             period: Some(period),
             group_by: Some(group_by),
+            source,
             sessions,
             filter,
-        } => Ok(Ask::Table {
-            period,
-            sessions: sessions.unwrap_or(Sessions::Own),
-            group_by,
-            filter: filter.unwrap_or_default(),
-        }),
+        } => {
+            let source = source.unwrap_or_default();
+            let filter = filter.unwrap_or_default();
+            check_counting(source, Some(group_by), &filter, sessions.is_some())?;
+            Ok(Ask::Table {
+                period,
+                source,
+                sessions,
+                group_by,
+                filter,
+            })
+        }
         _ => Err(BAD_ARGUMENTS.to_owned()),
     }
 }
 
 /// The lines for an answer: the total, the groups and, for the days, one line each.
-fn write_answer(text: &mut String, answer: &Answer, kind: Option<WidgetKind>, by: &str) {
+fn write_answer(
+    text: &mut String,
+    answer: &Answer,
+    source: Source,
+    kind: Option<WidgetKind>,
+    by: &str,
+) {
     let _ = writeln!(
         text,
         "  Total: {} ({})",
         minutes(answer.total_minutes),
-        sessions_count(answer.sessions)
+        parts_count(source, answer.sessions)
     );
     if matches!(kind, Some(WidgetKind::BarsPerDay)) {
         for (label, value) in &answer.days {
@@ -281,7 +315,11 @@ fn write_answer(text: &mut String, answer: &Answer, kind: Option<WidgetKind>, by
         }
     }
     if !answer.groups.is_empty() {
-        let _ = writeln!(text, "  By {by}: time, share, sessions");
+        let noun = match source {
+            Source::AiSessions => "sessions",
+            Source::OnScreen => "blocks",
+        };
+        let _ = writeln!(text, "  By {by}: time, share, {noun}");
         for row in &answer.groups {
             let _ = writeln!(
                 text,
@@ -321,7 +359,7 @@ fn errors_text(error: &Value) -> String {
 
 struct RenderDashboard {
     dashboard: crate::dashboard_document::Dashboard,
-    sessions: SessionSource,
+    activity: ActivitySource,
     calendar: Calendar,
 }
 
@@ -343,21 +381,28 @@ impl RenderDashboard {
             }
             Ask::Table {
                 period,
+                source,
                 sessions,
                 group_by,
                 filter,
             } => {
-                let spec =
-                    spec_without_widget(&payload, *sessions, Some(*group_by), filter.clone());
+                let sessions = sessions.unwrap_or(Sessions::Own);
+                let spec = spec_without_widget(
+                    &payload,
+                    *source,
+                    sessions,
+                    Some(*group_by),
+                    filter.clone(),
+                );
                 let _ = writeln!(
                     text,
                     "Table for {}, {}, by {}",
                     period_name(*period),
-                    sessions_name(*sessions),
+                    counted_name(*source, sessions),
                     group_name(*group_by)
                 );
                 let answer = self.count(*period, &spec)?;
-                write_answer(&mut text, &answer, None, group_name(*group_by));
+                write_answer(&mut text, &answer, *source, None, group_name(*group_by));
             }
         }
         Ok(text.trim_end().to_owned())
@@ -369,29 +414,38 @@ impl RenderDashboard {
             let period = widget.period.unwrap_or(payload.period);
             // Only a table names what it groups by (the document refuses one without), and a day
             // summary is counted by project.
-            let by = spec.grouping.and(match widget.kind {
-                WidgetKind::DaySummary => Some(GroupBy::Project),
-                _ => widget.group_by,
-            });
+            let grouped = spec.grouping.is_some() || spec.screen_grouping.is_some();
+            let by = grouped
+                .then_some(match widget.kind {
+                    WidgetKind::DaySummary => Some(GroupBy::Project),
+                    _ => widget.group_by,
+                })
+                .flatten();
             let _ = writeln!(
                 text,
                 "Widget {} ({}, {}, {}{})",
                 widget.id,
                 kind_name(widget.kind),
                 period_name(period),
-                sessions_name(widget.sessions.unwrap_or(payload.sessions)),
+                counted_name(spec.source, widget.sessions.unwrap_or(payload.sessions)),
                 by.map_or(String::new(), |g| format!(", by {}", group_name(g)))
             );
             let answer = self.count(period, &spec)?;
-            write_answer(text, &answer, Some(widget.kind), by.map_or("", group_name));
+            write_answer(
+                text,
+                &answer,
+                spec.source,
+                Some(widget.kind),
+                by.map_or("", group_name),
+            );
         }
         Ok(())
     }
 
     fn count(&self, period: Period, spec: &Spec) -> Result<Answer, String> {
         let days = self.calendar.days_of(period)?;
-        let sessions = (self.sessions)().map_err(str::to_owned)?;
-        numbers(&sessions, &days, spec).map_err(|e| e.to_string())
+        let data = (self.activity)(spec.source).map_err(str::to_owned)?;
+        count(&data, &days, spec).map_err(|e| e.to_string())
     }
 }
 
@@ -404,7 +458,7 @@ impl ChatTool for RenderDashboard {
         "Looks at the person's dashboard as text and changes nothing. With no arguments it gives \
 every widget of the dashboard with its id, kind, period and sessions and the numbers the page shows: a \
 total, a table of groups with time, share and sessions, the time of each day. With period and \
-group_by (and optionally sessions and filter) it gives only that table, for a question the \
+group_by (and optionally source, sessions and filter) it gives only that table, for a question the \
 dashboard does not show. When the dashboard file has errors it gives them with their places and \
 says that the page keeps the last good version: call it after every edit of the file. The schema \
 of the dashboard file is in dashboard.schema.json and a guide to editing it, with examples, is in \
@@ -412,7 +466,7 @@ dashboard.md, both in the workspace."
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"period":{"type":"string","enum":["today","this_week","last_week","this_month","last_month","last_7_days","last_30_days"],"description":"The period of the table. Give it with group_by."},"sessions":{"type":"string","enum":["own","unattended","all"],"description":"Whose sessions to count; own when left out."},"group_by":{"type":"string","enum":["project","ticket","tool","collection","day"],"description":"What the table groups by. Give it with period."},"filter":{"type":"object","properties":{"projects":{"type":"array","items":{"type":"string"}},"tickets":{"type":"array","items":{"type":"string"}},"tools":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"Keeps only what it lists; a list left out means no limit."}},"additionalProperties":false}"#
+        r#"{"type":"object","properties":{"period":{"type":"string","enum":["today","this_week","last_week","this_month","last_month","last_7_days","last_30_days"],"description":"The period of the table. Give it with group_by."},"source":{"type":"string","enum":["ai_sessions","on_screen"],"description":"What the time is of: the sessions of the AI tools, or the time each application and site was in front. ai_sessions when left out."},"sessions":{"type":"string","enum":["own","unattended","all"],"description":"Whose sessions to count; own when left out. For ai_sessions only."},"group_by":{"type":"string","enum":["project","ticket","tool","collection","day","app","site"],"description":"What the table groups by. Give it with period. tool and collection are for ai_sessions, app and site for on_screen."},"filter":{"type":"object","properties":{"projects":{"type":"array","items":{"type":"string"}},"tickets":{"type":"array","items":{"type":"string"}},"tools":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"Keeps only what it lists; a list left out means no limit."}},"additionalProperties":false}"#
     }
 
     fn line(&self, arguments: &str) -> String {
@@ -442,12 +496,12 @@ dashboard.md, both in the workspace."
 #[must_use]
 pub fn tool(
     dashboard: crate::dashboard_document::Dashboard,
-    sessions: SessionSource,
+    activity: ActivitySource,
     calendar: Calendar,
 ) -> Arc<dyn ChatTool> {
     Arc::new(RenderDashboard {
         dashboard,
-        sessions,
+        activity,
         calendar,
     })
 }

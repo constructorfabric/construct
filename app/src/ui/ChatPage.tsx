@@ -25,12 +25,13 @@ import {
   useMessageScrollerScrollable,
 } from '@gears-frontx/ui-kit';
 import { ArrowUp, Square } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode, RefObject } from 'react';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { reasonText } from './chat-reasons';
 import type { Failure } from './chat-state';
+import { useDelayedLoader } from './components/useDelayedLoader';
 import { Markdown } from './markdown';
 import type { Chat } from './useChat';
 
@@ -42,6 +43,15 @@ function openLink(address: string): void {
 /** How far from the bottom the thread still counts as "at the bottom", in pixels. */
 const bottomSlackPx = 48;
 
+/**
+ * Where the reader left the thread. It is kept above the page, which is gone while the person is on
+ * another page, so that coming back finds the thread where it was.
+ */
+export interface ThreadPosition {
+  atBottom: boolean;
+  top: number;
+}
+
 const exampleKeys = ['EmptyChat.ExampleKnow', 'EmptyChat.ExampleRust'] as const;
 
 export function ChatPage({
@@ -49,8 +59,10 @@ export function ChatPage({
   modelSet,
   profileAvailable,
   onOpenSettings,
+  position,
 }: {
   readonly chat: Chat;
+  readonly position: ThreadPosition;
   /** Whether the agent has a model; `false` only when it says so. */
   readonly modelSet: boolean;
   /** Whether the Construct gear can give the profile; `false` only when the agent says so. */
@@ -58,6 +70,11 @@ export function ChatPage({
   readonly onOpenSettings: () => void;
 }): ReactNode {
   const { messages, running, streaming, failure, loading, loadError, active } = chat.state;
+  // A conversation that reads quickly shows no loader. Each conversation has its own wait, so
+  // opening the next one never takes over the loader of the last. The messages are never held
+  // back for the loader; a read that failed or an answer that is on its way ends it.
+  const delayed = useDelayedLoader(loading, active);
+  const showLoader = delayed && loadError === null && !running;
   const last = messages.at(-1);
   const noModelFailure = failure?.kind === 'reason' && failure.reason === 'no model';
   const empty = messages.length === 0 && !loading && loadError === null && failure === null;
@@ -70,8 +87,11 @@ export function ChatPage({
       node: <Spinner id="chat-waiting" aria-label={t('Thread.Waiting')} />,
     });
   }
-  if (loading) {
-    trailing.push({ id: 'loading', node: <Spinner aria-label={t('ChatPage.Loading')} /> });
+  if (showLoader) {
+    trailing.push({
+      id: 'loading',
+      node: <Spinner id="chat-loading" aria-label={t('ChatPage.Loading')} />,
+    });
   }
   if (loadError !== null) {
     trailing.push({
@@ -89,7 +109,22 @@ export function ChatPage({
   }
   const lastId = trailing.at(-1)?.id ?? `message-${messages.length - 1}`;
   // Whether the reader is at the bottom: only then does a growing answer pull the thread down.
-  const atBottom = useRef(true);
+  // A conversation has its own place in the thread: what was kept belongs to the one before.
+  const shownConversation = useRef(active);
+  if (shownConversation.current !== active) {
+    shownConversation.current = active;
+    position.atBottom = true;
+    position.top = 0;
+  }
+  const atBottom = useRef(position.atBottom);
+  // What the thread was scrolled to when the page came back; used once, by the first thing shown.
+  const returnedTo = useRef<number | null>(position.atBottom ? null : position.top);
+  const viewport = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (returnedTo.current !== null && viewport.current !== null) {
+      viewport.current.scrollTop = returnedTo.current;
+    }
+  }, []);
 
   return (
     <div className={styles.chat}>
@@ -97,6 +132,7 @@ export function ChatPage({
       <MessageScrollerProvider key={active} scrollEdgeThreshold={bottomSlackPx}>
         <MessageScroller className={styles.thread}>
           <MessageScrollerViewport
+            ref={viewport}
             id="chat-thread"
             role="log"
             aria-label={t('Thread.Label')}
@@ -104,6 +140,8 @@ export function ChatPage({
               const element = event.currentTarget;
               atBottom.current =
                 element.scrollHeight - element.scrollTop - element.clientHeight <= bottomSlackPx;
+              position.atBottom = atBottom.current;
+              position.top = element.scrollTop;
             }}
           >
             <MessageScrollerContent className={styles.threadContent}>
@@ -168,6 +206,7 @@ export function ChatPage({
             size={last?.text.length ?? 0}
             lastIsUser={last?.role === 'user'}
             atBottom={atBottom}
+            returnedTo={returnedTo}
           />
         </MessageScroller>
       </MessageScrollerProvider>
@@ -224,12 +263,15 @@ function FollowNewest({
   size,
   lastIsUser,
   atBottom,
+  returnedTo,
 }: {
   readonly lastId: string;
   /** The length of the last message: it changes as the answer grows. */
   readonly size: number;
   readonly lastIsUser: boolean;
   readonly atBottom: RefObject<boolean>;
+  /** Set while the page has just come back to a thread the reader had scrolled up in. */
+  readonly returnedTo: RefObject<number | null>;
 }): ReactNode {
   const { scrollToEnd } = useMessageScroller();
   const previous = useRef<string | null>(null);
@@ -237,9 +279,10 @@ function FollowNewest({
     const newMessage = lastId !== previous.current;
     if (newMessage) {
       // A question the user has just sent is always shown, and so is a thread that was just opened.
-      if (previous.current === null || lastIsUser) {
+      if (lastIsUser || (previous.current === null && returnedTo.current === null)) {
         atBottom.current = true;
       }
+      returnedTo.current = null;
       previous.current = lastId;
     }
     if (!atBottom.current) {

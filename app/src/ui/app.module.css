@@ -3,19 +3,11 @@
   margin: 0;
 }
 
-.content {
-  box-sizing: border-box;
-  overflow: auto;
-  padding: var(--space-6);
-}
-
-.column {
-  width: 100%;
-  max-width: 38rem;
-  margin: 0 auto;
-}
-
 .card {
+  margin-top: var(--space-4);
+}
+
+.section {
   margin-top: var(--space-4);
 }
 
@@ -34,20 +26,14 @@
   height: var(--space-4);
 }
 
+/* Two skeleton lines and the gap between them: what the card keeps while the skeleton waits. */
+.skeletonSpace {
+  min-height: calc(var(--space-4) * 2 + var(--space-2));
+}
+
 .detail {
   margin: 0;
   overflow-wrap: anywhere;
-}
-
-.section {
-  margin-top: var(--space-4);
-}
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
 }
 
 .checks {
@@ -103,19 +89,6 @@
   overflow-wrap: anywhere;
 }
 
-.form {
-  margin-top: var(--space-3);
-}
-
-.contentChat {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  min-height: 0;
-  overflow: hidden;
-}
-
 .chat {
   display: flex;
   flex: 1;
@@ -135,7 +108,7 @@
   gap: var(--space-6);
   max-width: 48rem;
   margin: 0 auto;
-  padding: var(--space-8) var(--space-6);
+  padding: var(--page-padding) var(--page-padding) var(--space-8);
 }
 
 .messageText {
@@ -159,7 +132,7 @@
   width: 100%;
   max-width: 48rem;
   margin: 0 auto;
-  padding: var(--space-2) var(--space-6) var(--space-6);
+  padding: var(--space-2) var(--page-padding) var(--page-padding);
 }
 
 .composerInput {
@@ -183,48 +156,15 @@
 }
 
 .conversations {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
 }
 
-.conversationItems {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-1);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.conversationRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.conversationItem {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  justify-content: flex-start;
-}
-
-.conversationTitle {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .notice {
-  margin: 0;
+  margin: var(--space-2) 0 0;
+  padding-inline: var(--space-2);
   overflow-wrap: anywhere;
-}
-
-.collection {
-  margin-top: var(--space-8);
 }
 
 .tools {
@@ -232,6 +172,33 @@
   flex-direction: column;
   gap: var(--space-4);
   padding-left: var(--space-6);
+}
+
+.grants {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.grant {
+  align-items: center;
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr) 10rem auto;
+}
+
+.grantName {
+  font-weight: 600;
+  margin: 0;
+}
+
+.grantText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .toolbar {

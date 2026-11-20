@@ -18,6 +18,8 @@ pub mod dashboard_guide;
 pub mod dashboard_numbers;
 pub mod dashboard_projects;
 #[cfg(unix)]
+pub mod dashboard_screen;
+#[cfg(unix)]
 pub mod dashboard_setup;
 #[cfg(unix)]
 pub mod database;
@@ -26,6 +28,8 @@ pub mod follow;
 #[cfg(unix)]
 pub mod host;
 pub mod ipc;
+#[cfg(target_os = "macos")]
+pub mod mac_signals;
 #[cfg(unix)]
 pub mod manage;
 #[cfg(unix)]
@@ -35,6 +39,8 @@ pub mod model_test;
 #[cfg(unix)]
 pub mod pgvector;
 pub mod records;
+#[cfg(unix)]
+pub mod screen;
 #[cfg(unix)]
 pub mod session_files;
 #[cfg(unix)]

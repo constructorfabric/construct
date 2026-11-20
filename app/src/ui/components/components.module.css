@@ -1,0 +1,113 @@
+/*
+ * The status line keeps the menu's grid: a column as wide as an icon, then the words. The
+ * attribute makes the rule outrank the kit's own status dot class, whatever order they load in.
+ */
+.statusLine[data-state],
+.collectionTrigger.collectionTrigger {
+  display: grid;
+  grid-template-columns: var(--icon-size-sm) auto;
+  column-gap: var(--space-2);
+  align-items: center;
+  min-height: var(--control-height-sm);
+  padding-inline: var(--space-2);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line-height);
+  font-weight: var(--text-body-weight);
+}
+
+/*
+ * The kit turns the pointer off on a switched-off item with `._menuButton[aria-disabled=true]`;
+ * the doubled class outranks it whatever order the two sheets load in. The tooltip with the whole label needs the pointer.
+ */
+.row.row[aria-disabled='true'] {
+  pointer-events: auto;
+  cursor: default;
+}
+
+/*
+ * A switched-off item takes none of the kit's fills (hover, press, focus, open tooltip), which
+ * would read as an item that answers; the open item keeps its own. The focus ring is then the
+ * only sign of the focus, so a focused item is not dimmed with the rest.
+ */
+.row.row[aria-disabled='true']:not([data-active]) {
+  background-color: transparent;
+  color: inherit;
+}
+
+/* The ring is part of the item, so the kit's dimming would dim it too. */
+.row.row[aria-disabled='true']:focus-visible {
+  opacity: 1;
+}
+
+.action:disabled,
+.action:disabled:hover {
+  opacity: var(--opacity-disabled);
+  cursor: default;
+  background-color: transparent;
+  color: inherit;
+}
+
+.collectionTrigger.collectionTrigger {
+  justify-content: start;
+  width: 100%;
+}
+
+.collectionTrigger svg {
+  height: var(--icon-size-sm);
+  width: var(--icon-size-sm);
+}
+
+.collectionFailed {
+  color: var(--danger-foreground);
+}
+
+/* The one padding of a page; a chat page's own scrolling area reads it as well. */
+.frame {
+  --page-padding: var(--space-6);
+  box-sizing: border-box;
+  overflow: auto;
+  padding: var(--page-padding);
+}
+
+.frameChat {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.column {
+  width: 100%;
+  max-width: 38rem;
+  margin: 0 auto;
+}
+
+.banner {
+  margin-bottom: var(--space-4);
+}
+
+.frameChat > .banner {
+  margin: 0;
+  padding: var(--page-padding) var(--page-padding) 0;
+}
+
+.section {
+  margin-top: var(--space-8);
+}
+
+.fields {
+  margin-top: var(--space-3);
+}
+
+.notice {
+  margin-top: var(--space-2);
+}
+
+.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}

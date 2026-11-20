@@ -13,7 +13,8 @@ function agentAnswer(host: Host): (line: string) => string {
       : line.startsWith('settings-get')
         ? JSON.stringify({
             model: { base_url: '', model: '', api_key_set: false },
-            collection: { enabled: host.collecting, claude_code: true, codex: true },
+            collection: { enabled: host.collecting, claude_code: true, codex: true, screen: false },
+            supports: { screen: false },
           })
         : JSON.stringify({ status: 'running', version: '0.1.0', pid: 42 });
 }

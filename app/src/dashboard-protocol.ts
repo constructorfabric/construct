@@ -5,6 +5,11 @@ export type Whose = 'own' | 'unattended' | 'all';
 
 export const whoseValues: readonly Whose[] = ['own', 'unattended', 'all'];
 
+/** What a widget counts the time of: the AI sessions, or the time each app and site was in front. */
+export type Source = 'ai_sessions' | 'on_screen';
+
+export const sourceValues: readonly Source[] = ['ai_sessions', 'on_screen'];
+
 /** One day as the window counts it: its label and its start and end in UTC, whole minutes. */
 export interface DayBounds {
   readonly label: string;
@@ -67,7 +72,7 @@ export type DashboardResult =
 export type WidgetKind = 'total' | 'bars_per_day' | 'table' | 'day_summary';
 
 /** What a table groups the time by. */
-export type GroupBy = 'project' | 'ticket' | 'tool' | 'collection' | 'day';
+export type GroupBy = 'project' | 'ticket' | 'tool' | 'collection' | 'day' | 'app' | 'site';
 
 /** The period a widget covers. */
 export type Period =
@@ -93,6 +98,7 @@ export interface Widget {
   readonly groupBy?: GroupBy;
   readonly period?: Period;
   readonly sessions?: Whose;
+  readonly source?: Source;
   readonly filter?: Filter;
   readonly position: Position;
 }
@@ -103,6 +109,8 @@ export interface DashboardDocument {
   /** The period and the sessions of every widget that has none of its own. */
   readonly period: Period;
   readonly sessions: Whose;
+  /** What every widget that has none of its own counts; AI sessions when the document has none. */
+  readonly source: Source;
   readonly widgets: readonly Widget[];
   /** The projects the page leaves out, as the document names them. */
   readonly hiddenProjects: readonly string[];
@@ -159,17 +167,44 @@ export type SessionsInput = {
       readonly filter?: Filter;
       readonly groupBy: GroupBy;
     }
+  | {
+      /** The time on screen has no sessions to choose between. */
+      readonly source: 'on_screen';
+      readonly filter?: Filter;
+      readonly groupBy: GroupBy;
+    }
 );
 
-/** One page of the sessions of a group; the pages together add up to `total`. */
+/**
+ * One block of time on screen behind a group: its times are in the user's time, as the window
+ * asked. It holds no title and no address.
+ */
+export interface BlockRow {
+  readonly start: string;
+  readonly end: string;
+  readonly seconds: number;
+  readonly app: string;
+  readonly site: string;
+  readonly project: string;
+  readonly ticket: string;
+}
+
+/** The rows of one page: the sessions of a group, or the blocks of the time on screen. */
+export type Rows =
+  | { readonly kind: 'sessions'; readonly rows: readonly SessionRow[] }
+  | { readonly kind: 'blocks'; readonly rows: readonly BlockRow[] };
+
+/**
+ * One page of the sessions of a group, or of the blocks of time on screen for a group of that
+ * source; the pages together add up to `total`.
+ */
 export type SessionsResult =
-  | {
+  | ({
       readonly ok: true;
       readonly total: number;
       /** Where the next page starts; none after the last one. */
       readonly nextOffset: number | null;
-      readonly sessions: readonly SessionRow[];
-    }
+    } & Rows)
   | { readonly ok: false; readonly error: string; readonly reading?: true };
 
 /** The summary of one day, by a widget's own counting. */
@@ -353,7 +388,17 @@ export function parseSessionsInput(value: unknown): SessionsInput | null {
       : null;
   }
   const groupBy = groupings.find((candidate) => candidate === value.groupBy);
-  if (!isWhose(value.sessions) || groupBy === undefined) {
+  if (value.source === 'on_screen') {
+    if (groupBy === undefined || value.sessions !== undefined) {
+      return null;
+    }
+    if (value.filter === undefined) {
+      return { ...page, source: 'on_screen', groupBy };
+    }
+    const filter = parseFilter(value.filter);
+    return filter === null ? null : { ...page, source: 'on_screen', groupBy, filter };
+  }
+  if (value.source !== undefined || !isWhose(value.sessions) || groupBy === undefined) {
     return null;
   }
   if (value.filter === undefined) {
@@ -372,7 +417,9 @@ export function dashboardSessionsLine(input: SessionsInput): string {
     limit: input.limit,
     ...('widget' in input
       ? { widget: input.widget }
-      : { sessions: input.sessions, filter: input.filter, group_by: input.groupBy }),
+      : 'source' in input
+        ? { source: input.source, filter: input.filter, group_by: input.groupBy }
+        : { sessions: input.sessions, filter: input.filter, group_by: input.groupBy }),
   };
   return `dashboard-sessions ${JSON.stringify(request)}`;
 }
@@ -500,7 +547,15 @@ const periods: readonly Period[] = [
   'last_30_days',
 ];
 const kinds: readonly WidgetKind[] = ['total', 'bars_per_day', 'table', 'day_summary'];
-const groupings: readonly GroupBy[] = ['project', 'ticket', 'tool', 'collection', 'day'];
+const groupings: readonly GroupBy[] = [
+  'project',
+  'ticket',
+  'tool',
+  'collection',
+  'day',
+  'app',
+  'site',
+];
 
 function oneOf<T extends string>(values: readonly T[], value: unknown, what: string): T {
   const found = values.find((candidate) => candidate === value);
@@ -535,6 +590,7 @@ function parseWidget(value: unknown): Widget {
     ...(value.sessions == null
       ? {}
       : { sessions: oneOf(whoseValues, value.sessions, 'a choice of sessions') }),
+    ...(value.source == null ? {} : { source: oneOf(sourceValues, value.source, 'a source') }),
     ...(filter === undefined ? {} : { filter }),
     position: {
       column: parseNumber(at.column, 'a column'),
@@ -558,6 +614,9 @@ function parseDocument(value: unknown): DashboardDocument {
     title: value.title,
     period: oneOf(periods, payload.period, 'a period'),
     sessions: oneOf(whoseValues, payload.sessions, 'a choice of sessions'),
+    // A document written before the source was added leaves it out.
+    source:
+      payload.source == null ? 'ai_sessions' : oneOf(sourceValues, payload.source, 'a source'),
     widgets: widgets.map(parseWidget),
   };
   const hidden: unknown = payload.hidden_projects;
@@ -627,6 +686,30 @@ function parseSessionRow(value: unknown): SessionRow {
   };
 }
 
+function parseBlockRow(value: unknown): BlockRow {
+  if (
+    !isRecord(value) ||
+    typeof value.start !== 'string' ||
+    typeof value.end !== 'string' ||
+    !isNumber(value.seconds) ||
+    typeof value.app !== 'string' ||
+    typeof value.site !== 'string' ||
+    typeof value.project !== 'string' ||
+    typeof value.ticket !== 'string'
+  ) {
+    throw new Error('the agent reply has a block that is not times with an app and a site');
+  }
+  return {
+    start: value.start,
+    end: value.end,
+    seconds: value.seconds,
+    app: value.app,
+    site: value.site,
+    project: value.project,
+    ticket: value.ticket,
+  };
+}
+
 function failure(
   line: string,
 ): { error: string; reading?: true } | { reply: Record<string, unknown> } {
@@ -645,19 +728,23 @@ export function parseSessionsReply(line: string): SessionsResult {
     return { ok: false, ...read };
   }
   const { reply } = read;
+  // A page of the time on screen lists `blocks` in place of `sessions`.
+  const listed = reply.blocks === undefined ? reply.sessions : reply.blocks;
   if (
     !isNumber(reply.total) ||
-    !Array.isArray(reply.sessions) ||
+    !Array.isArray(listed) ||
     (reply.next_offset !== null && !isNumber(reply.next_offset))
   ) {
     throw new Error('the agent reply has no page of sessions');
   }
-  const sessions: unknown[] = reply.sessions;
+  const list: unknown[] = listed;
   return {
     ok: true,
     total: reply.total,
     nextOffset: reply.next_offset,
-    sessions: sessions.map(parseSessionRow),
+    ...(reply.blocks === undefined
+      ? { kind: 'sessions' as const, rows: list.map(parseSessionRow) }
+      : { kind: 'blocks' as const, rows: list.map(parseBlockRow) }),
   };
 }
 

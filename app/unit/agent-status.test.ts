@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePart, parseStatusReply } from '../src/agent-status';
+import { parsePart, parseScreen, parseStatusReply } from '../src/agent-status';
 
 describe('parseStatusReply', () => {
   it('turns a running reply into a running status and drops unknown fields', () => {
@@ -114,6 +114,41 @@ describe('parseStatusReply', () => {
     },
   );
 
+  it('reads the grants of the screen row and skips what it does not know', () => {
+    const line = JSON.stringify({
+      status: 'running',
+      version: '0.1.0',
+      pid: 1,
+      screen: {
+        state: 'needs_permission',
+        grants: [
+          { name: 'accessibility', state: 'granted' },
+          { name: 'automation', state: 'browser_not_running' },
+          { name: 'screen_recording', state: 'not_asked' },
+          { name: 'something_new', state: 'granted' },
+          { name: 'input_monitoring', state: 'maybe' },
+          'junk',
+        ],
+      },
+    });
+    expect(parseStatusReply(line)).toMatchObject({
+      grants: [
+        { name: 'accessibility', state: 'granted' },
+        { name: 'automation', state: 'browser_not_running' },
+        { name: 'screen_recording', state: 'not_asked' },
+      ],
+    });
+  });
+
+  it.each([
+    ['no screen row', ''],
+    ['a screen row with no grants', ',"screen":{"state":"off"}'],
+    ['a screen row that is not an object', ',"screen":3'],
+  ])('has no grants with %s', (_name, extra) => {
+    const line = `{"status":"running","version":"0.1.0","pid":1${extra}}`;
+    expect(parseStatusReply(line)).not.toHaveProperty('grants');
+  });
+
   it.each([
     ['not JSON', 'running', /JSON/],
     ['not an object', '"running"', /not a JSON object/],
@@ -139,5 +174,213 @@ describe('parseStatusReply', () => {
     ['a pid that is not a number', '{"status":"running","version":"0.1.0","pid":"1"}', /no pid/],
   ])('rejects a reply with %s', (_name, line, message) => {
     expect(() => parseStatusReply(line)).toThrow(message);
+  });
+});
+
+const base = { status: 'running', version: '0.1.0', pid: 42 };
+
+describe('the connectors of a status reply', () => {
+  const at = '2026-01-02T03:04:05Z';
+
+  it('keeps the other fields and reads each tool', () => {
+    const status = parseStatusReply(
+      JSON.stringify({
+        ...base,
+        model: 'example-model',
+        connectors: {
+          'claude-code': { turns: 7, skipped: 1, scanning: false, last_turn: at },
+          codex: { turns: 0, skipped: 0, scanning: true },
+        },
+      }),
+    );
+    expect(status).toEqual({
+      state: 'running',
+      version: '0.1.0',
+      pid: 42,
+      model: 'example-model',
+      startAtLogin: 'unknown',
+      connectors: [
+        {
+          name: 'claude-code',
+          state: 'collecting',
+          turns: 7,
+          skipped: 1,
+          unreadable: 0,
+          lastTurnAt: Date.parse(at),
+        },
+        { name: 'codex', state: 'scanning', turns: 0, skipped: 0, unreadable: 0 },
+      ],
+    });
+  });
+
+  it('reads an off tool and a failed one with its reason, a failure outranking the rest', () => {
+    const status = parseStatusReply(
+      JSON.stringify({
+        ...base,
+        connectors: {
+          'claude-code': {
+            turns: 3,
+            skipped: 0,
+            scanning: true,
+            off: true,
+            unreadable: 2,
+            error: ' the session files cannot be listed ',
+          },
+          codex: { turns: 0, skipped: 0, scanning: false, off: true },
+        },
+      }),
+    );
+    expect(status).toMatchObject({
+      connectors: [
+        {
+          name: 'claude-code',
+          state: 'failed',
+          reason: 'the session files cannot be listed',
+          unreadable: 2,
+        },
+        { name: 'codex', state: 'off' },
+      ],
+    });
+  });
+
+  it('reads an error that is not a text, or is empty, as a failed tool with no reason', () => {
+    const status = parseStatusReply(
+      JSON.stringify({
+        ...base,
+        connectors: {
+          a: { turns: 1, error: true },
+          b: { turns: 1, error: '  ' },
+          c: { turns: 1, error: null },
+          d: [],
+        },
+      }),
+    );
+    expect(status).toMatchObject({
+      connectors: [
+        { name: 'a', state: 'failed' },
+        { name: 'b', state: 'failed' },
+        { name: 'c', state: 'collecting' },
+      ],
+    });
+    expect(status).not.toHaveProperty('connectors.0.reason');
+    expect(status).not.toHaveProperty('connectors.1.reason');
+    expect(status).not.toHaveProperty('connectors.3');
+  });
+
+  it('parses a reply with no connectors, or with a shape or a field it does not know', () => {
+    expect(parseStatusReply(JSON.stringify(base))).not.toHaveProperty('connectors');
+    expect(parseStatusReply(JSON.stringify({ ...base, connectors: [1] }))).not.toHaveProperty(
+      'connectors',
+    );
+    const status = parseStatusReply(
+      JSON.stringify({
+        ...base,
+        connectors: {
+          a: 'broken',
+          b: { turns: 'many', last_turn: 'yesterday', future: true, scanning: false },
+        },
+      }),
+    );
+    expect(status).toMatchObject({
+      connectors: [{ name: 'b', state: 'collecting', turns: 0, skipped: 0 }],
+    });
+    expect(status).not.toHaveProperty('connectors.0.lastTurnAt');
+  });
+});
+
+describe('the screen row of a status reply', () => {
+  const at = '2026-01-02T03:04:05Z';
+  const grants = [
+    { name: 'accessibility', state: 'granted' },
+    { name: 'screen_recording', state: 'denied' },
+    { name: 'automation', state: 'not_asked' },
+    { name: 'input_monitoring', state: 'browser_not_running' },
+  ];
+
+  it('reads a collecting row with its samples and the time of the last', () => {
+    expect(
+      parseScreen({ state: 'collecting', samples_today: 12, last_sample: at, grants }),
+    ).toEqual({ state: 'collecting', samplesToday: 12, lastSampleAt: Date.parse(at), missing: [] });
+  });
+
+  it('drops a reason on a collecting row: there is nothing to explain', () => {
+    expect(parseScreen({ state: 'collecting', reason: 'stale', samples_today: 1 })).toEqual({
+      state: 'collecting',
+      samplesToday: 1,
+      missing: [],
+    });
+  });
+
+  it('names the permissions that are missing and keeps the reason when it needs one', () => {
+    expect(
+      parseScreen({
+        state: 'needs_permission',
+        reason: 'a permission is missing',
+        samples_today: 0,
+        grants,
+      }),
+    ).toEqual({
+      state: 'needs_permission',
+      reason: 'a permission is missing',
+      samplesToday: 0,
+      missing: ['screen_recording', 'automation'],
+    });
+  });
+
+  it('names no permission when only a browser that is not running is not allowed, or none came', () => {
+    const row = { state: 'needs_permission', samples_today: 0 };
+    expect(
+      parseScreen({ ...row, grants: [{ name: 'automation', state: 'browser_not_running' }] }),
+    ).toEqual({ state: 'needs_permission', samplesToday: 0, missing: [] });
+    expect(parseScreen(row)).toEqual({ state: 'needs_permission', samplesToday: 0, missing: [] });
+  });
+
+  it('keeps the reason of an off row and of a failed one, trimmed', () => {
+    expect(parseScreen({ state: 'off', reason: ' switched off ', samples_today: 0 })).toEqual({
+      state: 'off',
+      reason: 'switched off',
+      samplesToday: 0,
+      missing: [],
+    });
+    expect(parseScreen({ state: 'failed', reason: 'broken', samples_today: 2 })).toEqual({
+      state: 'failed',
+      reason: 'broken',
+      samplesToday: 2,
+      missing: [],
+    });
+  });
+
+  it('shows nothing for a computer that cannot collect, an unknown state or another shape', () => {
+    expect(
+      parseScreen({ state: 'off', reason: 'not supported on this computer', samples_today: 0 }),
+    ).toBeUndefined();
+    expect(parseScreen({ state: 'sleeping' })).toBeUndefined();
+    expect(parseScreen('collecting')).toBeUndefined();
+    expect(parseScreen(null)).toBeUndefined();
+  });
+
+  it('leaves out a field of another type instead of failing', () => {
+    const row = parseScreen({ state: 'collecting', samples_today: 'many', last_sample: 'soon' });
+    expect(row).toEqual({ state: 'collecting', samplesToday: 0, missing: [] });
+    expect(parseScreen({ state: 'collecting', samples_today: -1 })).toEqual({
+      state: 'collecting',
+      samplesToday: 0,
+      missing: [],
+    });
+  });
+
+  it('is part of a running status, and a reply with none still parses as before', () => {
+    const base = { status: 'running', version: '0.1.0', pid: 42 };
+    expect(
+      parseStatusReply(JSON.stringify({ ...base, screen: { state: 'off', samples_today: 0 } })),
+    ).toEqual({
+      state: 'running',
+      version: '0.1.0',
+      pid: 42,
+      startAtLogin: 'unknown',
+      screen: { state: 'off', samplesToday: 0, missing: [] },
+    });
+    expect(parseStatusReply(JSON.stringify(base))).not.toHaveProperty('screen');
+    expect(parseStatusReply(JSON.stringify({ ...base, screen: 7 }))).not.toHaveProperty('screen');
   });
 });

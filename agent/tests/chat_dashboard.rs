@@ -157,8 +157,8 @@ fn week() -> Value {
 
 /// What the page's command answers for `request` over the fixture.
 fn command(document: &Value, request: &Value) -> Value {
-    serde_json::from_str(&respond(&request.to_string(), Some(document), || {
-        Ok(fixture().into())
+    serde_json::from_str(&respond(&request.to_string(), Some(document), |_| {
+        Ok(fixture())
     }))
     .unwrap()
 }

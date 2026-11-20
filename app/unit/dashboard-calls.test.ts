@@ -129,6 +129,7 @@ describe('the dashboard handlers', () => {
           title: 'Activity',
           period: 'today',
           sessions: 'own',
+          source: 'ai_sessions',
           widgets: [],
           hiddenProjects: ['billing'],
           projectNames: {},

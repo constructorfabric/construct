@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SessionRow, SessionsInput } from '../dashboard-protocol';
+import type { Rows, SessionsInput } from '../dashboard-protocol';
 import { lostAgent } from './lost-agent';
 
 /** Sessions on a page of the drill-down. */
@@ -10,8 +10,11 @@ type Without<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 export type SessionsSource = Without<SessionsInput, 'offset' | 'limit'>;
 
 export interface SessionsList {
-  /** The sessions loaded so far, the earliest first. */
-  readonly rows: readonly SessionRow[];
+  /**
+   * The rows loaded so far, the earliest first: sessions, or the blocks of the time on screen,
+   * as the agent answered; `null` until the first page is in.
+   */
+  readonly list: Rows | null;
   /** All the sessions of the group, every page together; `null` until the first page is in. */
   readonly total: number | null;
   readonly loading: boolean;
@@ -23,7 +26,7 @@ export interface SessionsList {
 
 /** The sessions of one group, a page at a time, as the agent counted them. */
 export function useSessions(source: SessionsSource): SessionsList {
-  const [rows, setRows] = useState<readonly SessionRow[]>([]);
+  const [list, setList] = useState<Rows | null>(null);
   const [total, setTotal] = useState<number | null>(null);
   const [next, setNext] = useState<number | null>(0);
   const [loading, setLoading] = useState(false);
@@ -53,7 +56,17 @@ export function useSessions(source: SessionsSource): SessionsList {
               return;
             }
             if (result.ok) {
-              setRows((current) => [...current, ...result.sessions]);
+              if (result.kind === 'blocks') {
+                setList((current) => ({
+                  kind: 'blocks',
+                  rows: [...(current?.kind === 'blocks' ? current.rows : []), ...result.rows],
+                }));
+              } else {
+                setList((current) => ({
+                  kind: 'sessions',
+                  rows: [...(current?.kind === 'sessions' ? current.rows : []), ...result.rows],
+                }));
+              }
               setTotal(result.total);
               setNext(result.nextOffset);
             } else {
@@ -80,7 +93,7 @@ export function useSessions(source: SessionsSource): SessionsList {
     load(0);
   }, [load]);
   return {
-    rows,
+    list,
     total,
     loading,
     error,

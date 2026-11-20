@@ -18,6 +18,15 @@ import type { ElectronApplication, Page } from '@playwright/test';
 
 export { expect };
 
+/** A promise that waits until `release` is called. */
+export function gate(): { readonly promise: Promise<void>; readonly release: () => void } {
+  let release = (): void => undefined;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 export const appDir = path.resolve(__dirname, '..');
 export const agentBinary = path.resolve(appDir, '..', 'target', 'release', 'construct-agent');
 
@@ -331,3 +340,18 @@ export const test = base.extend<{ session: Session; app: ElectronApplication; pa
     await expectNoPolicyViolations(page);
   },
 });
+
+/** Replaces `shell.openExternal` in the main process with a recorder, and returns what it saw: links and panes of System Settings alike. */
+export async function recordOpenedLinks(
+  app: ElectronApplication,
+): Promise<() => Promise<string[]>> {
+  await app.evaluate(({ shell }) => {
+    const opened: string[] = [];
+    Object.assign(globalThis, { openedLinks: opened });
+    shell.openExternal = (address: string) => {
+      opened.push(address);
+      return Promise.resolve();
+    };
+  });
+  return () => app.evaluate(() => Reflect.get(globalThis, 'openedLinks') as string[]);
+}
