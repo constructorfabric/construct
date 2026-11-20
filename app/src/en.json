@@ -338,5 +338,18 @@
   "DashboardSetup.Failed": "The setup failed: {{reason}}",
   "DashboardSetup.Refused": "The setup did not start: {{reason}}",
   "DashboardSetup.Unreachable": "The agent cannot be asked how the run goes: {{reason}}. The run goes on in the agent, and this page asks again.",
-  "DashboardSetup.Cancelled": "The setup was cancelled. The dashboard is as it was before."
+  "DashboardSetup.Cancelled": "The setup was cancelled. The dashboard is as it was before.",
+  "App.Glasshouse": "Glasshouse",
+  "Glasshouse.Back": "Back",
+  "Glasshouse.Forward": "Forward",
+  "Glasshouse.Reload": "Reload",
+  "Glasshouse.Address": "Address",
+  "Glasshouse.Refused": "Only http and https addresses open here.",
+  "Glasshouse.NoStartAddress": "No start address is set. Type an address above to open a page.",
+  "Glasshouse.Problem.NotFound": "The page cannot open: no site was found at this address.",
+  "Glasshouse.Problem.Refused": "The page cannot open: the site refused the connection.",
+  "Glasshouse.Problem.Offline": "The page cannot open: there is no network connection.",
+  "Glasshouse.Problem.Certificate": "The page cannot open: the site's certificate is not trusted.",
+  "Glasshouse.Problem.Crashed": "The page stopped working.",
+  "Glasshouse.Problem.Other": "The page cannot open."
 }

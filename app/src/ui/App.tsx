@@ -8,7 +8,7 @@ import {
   SidebarMenu,
   SidebarProvider,
 } from '@gears-frontx/ui-kit';
-import { Activity, Brain, ChartColumn, MessageSquare, Settings } from 'lucide-react';
+import { Activity, Brain, ChartColumn, Globe, MessageSquare, Settings } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
@@ -21,6 +21,7 @@ import { MenuItem } from './components/MenuItem';
 import { PageFrame } from './components/PageFrame';
 import { ConversationList } from './ConversationList';
 import { DashboardPage } from './DashboardPage';
+import { GlasshousePage } from './GlasshousePage';
 import { MemoryPage } from './MemoryPage';
 import { SettingsPage } from './SettingsPage';
 import { StatusPage } from './StatusPage';
@@ -28,12 +29,13 @@ import { useAgentStatus } from './useAgentStatus';
 import { useChat } from './useChat';
 import { useErasing } from './useErasing';
 
-type Page = 'chat' | 'dashboard' | 'memory' | 'status' | 'settings';
+type Page = 'chat' | 'dashboard' | 'memory' | 'glasshouse' | 'status' | 'settings';
 
 const pages = [
   { page: 'chat', icon: MessageSquare, label: 'App.Chat' },
   { page: 'dashboard', icon: ChartColumn, label: 'App.Dashboard' },
   { page: 'memory', icon: Brain, label: 'App.Memory' },
+  { page: 'glasshouse', icon: Globe, label: 'App.Glasshouse' },
   { page: 'status', icon: Activity, label: 'App.Status' },
   { page: 'settings', icon: Settings, label: 'App.Settings' },
 ] as const satisfies readonly { page: Page; icon: LucideIcon; label: string }[];
@@ -104,7 +106,7 @@ export function App(): ReactNode {
         </SidebarFooter>
       </Sidebar>
       <PageFrame
-        layout={page === 'chat' ? 'chat' : 'page'}
+        layout={page === 'chat' || page === 'glasshouse' ? 'chat' : 'page'}
         banner={
           needsMove ? (
             <Alert id="needs-move" role="alert">
@@ -127,6 +129,8 @@ export function App(): ReactNode {
           <StatusPage status={status} />
         ) : page === 'dashboard' ? (
           <DashboardPage status={status} onOpenSettings={() => setPage('settings')} />
+        ) : page === 'glasshouse' ? (
+          <GlasshousePage />
         ) : page === 'memory' ? (
           <MemoryPage onOpenSettings={() => setPage('settings')} />
         ) : (

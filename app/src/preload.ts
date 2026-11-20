@@ -30,6 +30,14 @@ import {
 import type { SetupResult } from './dashboard-setup-protocol';
 import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL, OPEN_PANE_CHANNEL } from './external';
 import {
+  GLASSHOUSE_GO_CHANNEL,
+  GLASSHOUSE_HIDE_CHANNEL,
+  GLASSHOUSE_SHOW_CHANNEL,
+  GLASSHOUSE_STATE_CHANNEL,
+  GLASSHOUSE_STEP_CHANNEL,
+} from './glasshouse';
+import type { Bounds, GlasshouseState, GoResult } from './glasshouse';
+import {
   MEMORY_DELETE_CHANNEL,
   MEMORY_ERASE_CHANNEL,
   MEMORY_ERASING_CHANNEL,
@@ -102,6 +110,22 @@ const api: ConstructAgentApi = {
   openLink: (url) => ipcRenderer.invoke(OPEN_LINK_CHANNEL, url) as Promise<boolean>,
   openPane: (pane) => ipcRenderer.invoke(OPEN_PANE_CHANNEL, pane) as Promise<boolean>,
   copyText: (text) => ipcRenderer.invoke(COPY_TEXT_CHANNEL, text) as Promise<boolean>,
+  showGlasshouse: (bounds: Bounds) =>
+    ipcRenderer.invoke(GLASSHOUSE_SHOW_CHANNEL, bounds) as Promise<GlasshouseState>,
+  hideGlasshouse: () => ipcRenderer.invoke(GLASSHOUSE_HIDE_CHANNEL) as Promise<void>,
+  goGlasshouse: (address: string) =>
+    ipcRenderer.invoke(GLASSHOUSE_GO_CHANNEL, address) as Promise<GoResult>,
+  stepGlasshouse: (step) => ipcRenderer.invoke(GLASSHOUSE_STEP_CHANNEL, step) as Promise<void>,
+  onGlasshouseState: (listener) => {
+    // Only the state goes through, never Electron's own event object.
+    const handler = (_event: IpcRendererEvent, state: GlasshouseState): void => {
+      listener(state);
+    };
+    ipcRenderer.on(GLASSHOUSE_STATE_CHANNEL, handler);
+    return () => {
+      ipcRenderer.removeListener(GLASSHOUSE_STATE_CHANNEL, handler);
+    };
+  },
   onChatEvent: (listener) => {
     // Only the event goes through, never Electron's own event object.
     const handler = (_event: IpcRendererEvent, chatEvent: ChatEvent): void => {

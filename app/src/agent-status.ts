@@ -2,6 +2,7 @@ import { isCount, isRecord } from './agent-json';
 import type { ModelSettingsApi } from './agent-settings';
 import type { ChatApi } from './chat-protocol';
 import type { DashboardApi } from './dashboard-protocol';
+import type { GlasshouseApi } from './glasshouse';
 import type { DashboardSetupApi } from './dashboard-setup-protocol';
 import type { ExternalApi } from './external';
 import type { MemoryApi } from './memory-protocol';
@@ -99,6 +100,7 @@ export type ConstructAgentApi = ModelSettingsApi &
   DashboardApi &
   DashboardSetupApi &
   ExternalApi &
+  GlasshouseApi &
   MemoryApi & {
     readonly getStatus: () => Promise<AgentStatus>;
     /** `true` when the app runs from a place macOS will remove, so no login service was set up. */
