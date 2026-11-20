@@ -15,6 +15,11 @@
   font-weight: var(--text-body-weight);
 }
 
+/* A row of a group stands one step in: its dot is under the group's name, right of the caret. */
+.statusNested[data-state] {
+  padding-inline-start: calc(var(--space-2) + var(--icon-size-sm) + var(--space-2));
+}
+
 /*
  * The kit turns the pointer off on a switched-off item with `._menuButton[aria-disabled=true]`;
  * the doubled class outranks it whatever order the two sheets load in. The tooltip with the whole label needs the pointer.

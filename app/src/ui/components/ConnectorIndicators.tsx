@@ -49,6 +49,7 @@ export function ConnectorIndicators({
       <CollapsibleContent>
         {connectors.map((connector) => (
           <StatusRow
+            nested
             key={connector.name}
             id={`sidebar-connector-${connector.name}`}
             state={connector.state}
@@ -59,6 +60,7 @@ export function ConnectorIndicators({
         ))}
         {screen === undefined ? null : (
           <StatusRow
+            nested
             id="sidebar-screen"
             state={screen.state}
             tone={screenTones[screen.state]}

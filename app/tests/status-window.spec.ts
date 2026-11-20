@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
-import { appDir, expect, test as base, withStandIn } from './fixtures';
+import { appDir, expect, runningReply, secondsAgo, test as base, withStandIn } from './fixtures';
 import type { Session } from './fixtures';
 import { screenshotBothThemes, screenshotInTheme } from './screenshots';
 
@@ -75,16 +75,6 @@ test('the Status page shows stopped, with its reason, when no agent runs', async
   await expect(page.locator('#agent-detail')).toContainText(/ENOENT|ECONNREFUSED/);
   await expect(page.locator('#agent-model')).toHaveCount(0);
 });
-
-function runningReply(fields: Record<string, unknown>): string {
-  return JSON.stringify({
-    status: 'running',
-    version: '0.1.0',
-    pid: 42,
-    model: 'example-model',
-    ...fields,
-  });
-}
 
 test('the Status page shows unknown, with its reason, when the agent answers wrongly', async ({
   session,
@@ -393,10 +383,6 @@ test('the window tells the user to move the app only when the app asks for it', 
   await expect(notice).toHaveAttribute('id', 'needs-move');
   await screenshotBothThemes(page, 'needs-move');
 });
-
-function secondsAgo(seconds: number): string {
-  return new Date(Date.now() - seconds * 1000).toISOString();
-}
 
 test('a turn stored a few seconds ago shows collecting for the tool in the sidebar and on the page', async ({
   session,

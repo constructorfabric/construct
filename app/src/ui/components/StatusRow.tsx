@@ -9,17 +9,20 @@ export function StatusRow({
   tone,
   name,
   word,
+  nested = false,
 }: {
   readonly id: string;
   readonly state: string;
   readonly tone: ComponentProps<typeof StatusDot>['tone'];
   readonly name: string;
   readonly word: string;
+  /** The row belongs to a group above it: it is indented one step, under the group's name. */
+  readonly nested?: boolean;
 }): ReactNode {
   return (
     <StatusDot
       id={id}
-      className={styles.statusLine}
+      className={nested ? `${styles.statusLine} ${styles.statusNested}` : styles.statusLine}
       data-state={state}
       tone={tone}
       label={

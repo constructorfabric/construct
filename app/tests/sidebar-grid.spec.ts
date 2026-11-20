@@ -1,6 +1,6 @@
 import type { Locator } from '@playwright/test';
 import { ask, assistant, configure, rows, test } from './chat-helpers';
-import { expect } from './fixtures';
+import { expect, runningReply, secondsAgo, withStandIn } from './fixtures';
 import { screenshotBothThemes } from './screenshots';
 
 // The agent lists a conversation under its first message cut to 60 characters.
@@ -190,4 +190,78 @@ test('the sidebar in both themes at the smallest, the initial and a full-screen 
     await page.waitForFunction((w) => window.innerWidth === w, width);
     await screenshotBothThemes(page, `sidebar-${name}`);
   }
+});
+
+test('the rows of the open Collection group stand under the group name, right of its caret, and show whole', async ({
+  session,
+}) => {
+  const reply = runningReply({
+    connectors: {
+      'claude-code': { turns: 1, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
+      codex: { turns: 0, skipped: 0, scanning: false },
+    },
+    screen: { state: 'collecting', samples_today: 42, last_sample: secondsAgo(5), grants: [] },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    const trigger = page.getByRole('button', { name: /^Collection/ });
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+
+    const menuRow = page.getByRole('button', { name: 'Chat', exact: true });
+    const agentRow = page.locator('#sidebar-agent-state');
+    const menu = await look(menuRow, menuRow.locator('span'));
+    const agent = await look(agentRow, agentRow.getByText('Agent', { exact: true }));
+    const group = await look(trigger, trigger.locator('span').first());
+
+    for (const id of [
+      'sidebar-connector-claude-code',
+      'sidebar-connector-codex',
+      'sidebar-screen',
+    ]) {
+      const row = page.locator(`#${id}`);
+      const nested = await look(row, row.locator('span').first());
+      // The dot is right of the group's caret, in line with the group's name.
+      expect(nested.markLeft).toBeGreaterThan(group.markLeft + (group.iconWidth ?? 0));
+      expect(nested.markLeft).toBeCloseTo(group.textLeft, 1);
+    }
+    // The Agent line is not a row of the group: it stays on the menu's grid, on the caret's edge.
+    expect(agent.markLeft).toBeCloseTo(menu.markLeft, 1);
+    expect(agent.markLeft).toBeCloseTo(group.markLeft, 1);
+
+    // The longest label wraps in the narrow sidebar, and every line of it is inside its row.
+    const oneLine = (await page.locator('#sidebar-connector-codex').boundingBox())?.height ?? 0;
+    const screen = page.locator('#sidebar-screen');
+    await expect(screen).toContainText('Apps and websites');
+    await expect(page.locator('#sidebar-screen-word')).toHaveText('collecting');
+    const box = await screen.boundingBox();
+    expect(box?.height).toBeGreaterThan(oneLine);
+    // The name and the state word are spans inside the row, and each one's own box lies in the
+    // row's box, so a part pushed or cut out of the row turns this red. The row itself is a block,
+    // so it also holds all of its content.
+    const name = screen.getByText('Apps and websites', { exact: true });
+    expect(
+      await screen.evaluate((row) => ({
+        height: row.scrollHeight <= row.clientHeight,
+        width: row.scrollWidth <= row.clientWidth,
+      })),
+    ).toEqual({ height: true, width: true });
+    for (const part of [name, page.locator('#sidebar-screen-word')]) {
+      const within = await part.evaluate(
+        (element, rowElement) => {
+          const own = element.getBoundingClientRect();
+          const outer = (rowElement as Element).getBoundingClientRect();
+          return (
+            own.width > 0 &&
+            own.left >= outer.left &&
+            own.right <= outer.right &&
+            own.top >= outer.top &&
+            own.bottom <= outer.bottom
+          );
+        },
+        await screen.elementHandle(),
+      );
+      expect(within).toBe(true);
+    }
+    await screenshotBothThemes(page, 'sidebar-collection-nested');
+  });
 });
