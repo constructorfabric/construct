@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { expect, test, windowText } from './fixtures';
 import type { Session } from './fixtures';
 import { newHost, openMemory, token, withHostAndAgent } from './memory-host';
@@ -116,6 +116,90 @@ test('a list and a value with fields of its own start closed, and open and close
     await expect(tree.getByText('Sat', { exact: true })).toHaveCount(0);
     await schedule.click();
     await expect(tree.getByText('Days', { exact: true })).toHaveCount(0);
+  });
+});
+
+/** The box of the first element the locator finds. */
+async function boxOf(locator: Locator) {
+  const box = await locator.first().boundingBox();
+  expect(box).not.toBeNull();
+  return box as NonNullable<typeof box>;
+}
+
+test('a short fact is one row: its name, its value and the time it was stored share a line', async ({
+  session,
+}) => {
+  const host = newHost(session);
+  host.facts = profile.slice(0, 2);
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const row = page.locator('#memory-tree').getByRole('listitem').filter({ hasText: 'Full name' });
+    const name = await boxOf(row.getByText('Full name', { exact: true }));
+    const value = await boxOf(row.getByText('Ada Lovelace', { exact: true }));
+    const stored = await boxOf(row.getByText(/^Stored /));
+    // The name and the time start within a line of the value: none is on a line of its own.
+    expect(Math.abs(value.y - name.y)).toBeLessThan(value.height);
+    expect(Math.abs(stored.y - name.y)).toBeLessThan(value.height);
+    // The time is at the end of the row, after the value.
+    expect(stored.x).toBeGreaterThan(value.x + value.width);
+    // The row is one line with a little padding, not three lines.
+    const rowBox = await boxOf(row);
+    expect(rowBox.height).toBeLessThan(value.height * 2.5);
+  });
+});
+
+test('ten facts of one group take little room', async ({ session }) => {
+  const host = newHost(session);
+  host.facts = Array.from({ length: 10 }, (_, index) => ({
+    entity_kind: 'preference',
+    property: `property_${String(index + 1)}`,
+    value: `Value ${String(index + 1)}`,
+  }));
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const tree = page.locator('#memory-tree');
+    await expect(tree.getByText('Property 10', { exact: true })).toBeVisible();
+    const first = await boxOf(tree.getByText('Property 1', { exact: true }));
+    const last = await boxOf(tree.getByText('Property 10', { exact: true }));
+    const windowHeight = await page.evaluate(() => window.innerHeight);
+    // The ten rows fit in the part of the window under the heading, without scrolling.
+    expect(last.y + last.height).toBeLessThan(windowHeight);
+    expect((last.y - first.y) / 9).toBeLessThan(40);
+    await screenshotBothThemes(page, 'memory-ten-facts');
+  });
+});
+
+test('a long value wraps and shows whole', async ({ session }) => {
+  const host = newHost(session);
+  const long = Array.from({ length: 60 }, (_, index) => `word${String(index)}`).join(' ');
+  host.facts = [
+    { entity_kind: 'identity', property: 'full_name', value: 'Ada Lovelace' },
+    { entity_kind: 'preference', property: 'bio', value: long },
+  ];
+  await inMemoryPage(session, host, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    const row = page.locator('#memory-tree').getByRole('listitem').filter({ hasText: 'Bio' });
+    await expect(row.getByText(long, { exact: true })).toBeVisible();
+    const value = await boxOf(row.getByText(long, { exact: true }));
+    const short = await boxOf(
+      page.locator('#memory-tree').getByText('Ada Lovelace', { exact: true }),
+    );
+    // More than one line, and the row grows to hold all of it: the value box is inside the row
+    // box, so nothing the value needs is clipped by the row or by a parent.
+    expect(value.height).toBeGreaterThan(short.height * 2);
+    const rowBox = await boxOf(row);
+    expect(value.y).toBeGreaterThanOrEqual(rowBox.y);
+    expect(value.y + value.height).toBeLessThanOrEqual(rowBox.y + rowBox.height);
+    // The time stays in the row, and the row does not reach past the window's width.
+    const stored = await boxOf(row.getByText(/^Stored /));
+    expect(stored.y + stored.height).toBeLessThanOrEqual(rowBox.y + rowBox.height);
+    expect(rowBox.x + rowBox.width).toBeLessThanOrEqual(
+      await page.evaluate(() => window.innerWidth),
+    );
+    await screenshotBothThemes(page, 'memory-long-value');
   });
 });
 
