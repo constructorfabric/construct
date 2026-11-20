@@ -45,7 +45,7 @@ export function App(): ReactNode {
   const [page, setPage] = useState<Page>('chat');
   const { status, refresh } = useAgentStatus();
   const state = status?.state ?? 'unknown';
-  const chat = useChat();
+  const chat = useChat(state);
   // Where the thread was scrolled to, kept here because the chat page is gone on other pages.
   const threadPosition = useRef<ThreadPosition>({ atBottom: true, top: 0 });
   const erasing = useErasing(chat.reload);
