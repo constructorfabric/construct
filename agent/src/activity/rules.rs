@@ -466,4 +466,69 @@ mod tests {
         assert!(!is_unattended(0, 3, 1));
         assert!(!is_unattended(0, 0, 0));
     }
+
+    #[test]
+    fn minutes_are_read_as_the_time_library_reads_them() {
+        // The reading of a minute is by hand, for speed; it must agree with the library on
+        // everything a stored or a hand-written time can look like.
+        use time::OffsetDateTime;
+        use time::format_description::well_known::Rfc3339;
+        let by_library = |time: &str| -> Option<i64> {
+            let minute = minute_of(time);
+            if minute.len() != 16
+                || (time.len() > 16 && !time.ends_with('Z'))
+                || minute.as_bytes().get(10) != Some(&b'T')
+            {
+                return None;
+            }
+            let parsed = OffsetDateTime::parse(&format!("{minute}:00Z"), &Rfc3339).ok()?;
+            Some(parsed.unix_timestamp().div_euclid(60))
+        };
+        let mut cases: Vec<String> = [
+            "2026-02-31T10:15",
+            "2026-02-28T24:00",
+            "2026-02-28T23:60",
+            "2026-02-28T23:59",
+            "2024-02-29T00:00",
+            "2025-02-29T00:00",
+            "2026-00-10T10:15",
+            "2026-13-10T10:15",
+            "2026-11-00T10:15",
+            "2026-11-31T10:15",
+            "2026-11-10 10:15",
+            "2026-11-10T10-15",
+            "2026/11/10T10:15",
+            "+026-11-10T10:15",
+            "2026-1+-10T10:15",
+            "2026-11-1-T10:15",
+            "2026-11-10T1a:15",
+            "2026-11-10T10:1 ",
+            "2026-11-10T10:15:30Z",
+            "2026-11-10T10:15:30+00:00",
+            "1969-12-31T23:59",
+            "0000-01-01T00:00",
+            "9999-12-31T23:59",
+            "2026-11-10T10:1é",
+            "é026-11-10T10:15",
+            "2026-11-10T10:15é",
+            "",
+            "T",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        for hour in 0..100 {
+            for minute in [0, 1, 59, 60, 99] {
+                cases.push(format!("2026-11-10T{hour:02}:{minute:02}"));
+            }
+        }
+        for month in 0..100 {
+            for day in [0, 1, 28, 29, 30, 31, 32, 99] {
+                cases.push(format!("2026-{month:02}-{day:02}T10:15"));
+            }
+        }
+        for case in &cases {
+            assert_eq!(minute_number(case), by_library(case), "{case:?}");
+        }
+    }
 }

@@ -460,7 +460,8 @@ impl Store {
     }
 
     /// The active minutes of every session, with what the rules need to know of it, in the
-    /// order of tool and session. One read, so the answer is of one state of the store.
+    /// order of tool and session. Read in one snapshot, so the answer is of one state of the store;
+    /// callers that ask while the store does not change share one read.
     ///
     /// # Errors
     /// Fails when the query is refused or a stored minute cannot be read.
@@ -494,21 +495,28 @@ impl Store {
         // The minutes are read on their own, a row per session with the minutes gathered by the
         // database, and joined to the sessions here: a join of a row per minute to its session
         // costs several times as much.
+        // Both statements in one snapshot, so that a write between them cannot mix two states.
+        let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
+        sqlx::query("set transaction isolation level repeatable read read only")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| err("read the minutes of the sessions", e))?;
         let rows = sqlx::query(
             "select s.tool, s.session, s.project, s.ticket, s.area, s.collection, s.person_prompts,
                     s.unattended_prompts, s.unknown_prompts
              from activity.sessions s order by s.tool, s.session",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| err("read the sessions", e))?;
         let minutes: Vec<(String, String, Vec<String>)> = sqlx::query_as(
             "select tool, session, array_agg(minute order by minute)
              from activity.minutes group by tool, session",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| err("read the minutes of the sessions", e))?;
+        tx.commit().await.map_err(|e| err("commit", e))?;
         // By the key, not by position: the order the database sorts text in is its own.
         let mut minutes: HashMap<(String, String), Vec<String>> = minutes
             .into_iter()
