@@ -247,6 +247,15 @@
   flex: 1;
   flex-direction: column;
   min-height: 0;
+  /* The place of a widget is a few fixed rows: a body that is taller scrolls inside the card. */
+  overflow: auto;
+}
+
+/* A scrolling box clips what is outside it: the room above and under keeps the focus ring of a
+   control in the text whole. */
+.widgetCard .widgetReader {
+  padding-block: var(--space-1);
+  scroll-padding-block: var(--space-1);
 }
 
 .chart {
