@@ -1,6 +1,5 @@
 import { sourceValues } from '../dashboard-protocol';
 import type { DashboardDocument, Source, Widget } from '../dashboard-protocol';
-import type { Grant, GrantName } from '../screen-grants';
 
 /** What a widget counts: its own source, else the page's. */
 export function sourceOf(document: DashboardDocument, widget: Widget): Source {
@@ -33,11 +32,4 @@ export function gridWidgets(document: DashboardDocument, source: Source): Widget
     ...widget,
     position: { ...widget.position, row: widget.position.row - top },
   }));
-}
-
-/** The permissions the person has not given: a browser that is not running is not one. */
-export function missingGrants(grants: readonly Grant[] | undefined): GrantName[] {
-  return (grants ?? [])
-    .filter((grant) => grant.state === 'denied' || grant.state === 'not_asked')
-    .map((grant) => grant.name);
 }

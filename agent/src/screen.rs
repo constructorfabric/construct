@@ -494,17 +494,18 @@ impl Screen {
         *lock(&self.0.observer) = Some(observer);
     }
 
-    /// Why nothing is sampled now, or `None` when the person's switches are on and the computer
-    /// supports it.
+    /// Why nothing is sampled now, or `None` when the computer supports it and the person's
+    /// switches are on. A computer that cannot sample says so first, whatever the switches are,
+    /// so the app can tell it from a switch the person turned off.
     fn off_reason(&self) -> Option<&'static str> {
         let inner = &self.0;
         let c = inner.settings.collection();
-        if !c.enabled {
+        if !inner.signals.supported() {
+            Some("not supported on this computer")
+        } else if !c.enabled {
             Some("all collection is off")
         } else if !inner.settings.collects(SOURCE) {
             Some("switched off")
-        } else if !inner.signals.supported() {
-            Some("not supported on this computer")
         } else {
             None
         }

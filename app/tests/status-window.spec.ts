@@ -537,7 +537,7 @@ test('the sidebar group of connector indicators closes and opens, and a closed g
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');
     await expect(indicator).toBeHidden();
     // The broken tool does not vanish with the group.
-    await expect(page.locator('#sidebar-collection-failed')).toHaveText('(1 failed)');
+    await expect(page.locator('#sidebar-collection-failed')).toHaveText('(1 with a problem)');
     await screenshotBothThemes(page, 'status-connectors-group-closed');
     await trigger.click();
     await expect(trigger).toHaveAttribute('aria-expanded', 'true');
@@ -649,5 +649,176 @@ test('an agent that sends no connectors shows no collection group and no connect
     await expect(page.locator('#agent-status')).toHaveText('running');
     await expect(page.locator('#sidebar-collection')).toHaveCount(0);
     await expect(page.locator('[id^="connector-"]')).toHaveCount(0);
+  });
+});
+
+const grantsLacking = [
+  { name: 'accessibility', state: 'granted' },
+  { name: 'screen_recording', state: 'denied' },
+  { name: 'automation', state: 'not_asked' },
+  { name: 'input_monitoring', state: 'granted' },
+];
+
+// Each row is built by a function, so a time "just now" is taken when its test runs, not when the
+// file loads after many launches. `lines` is all the text of the card under its title, in order.
+const screenCases = [
+  {
+    state: 'collecting',
+    row: () => ({ state: 'collecting', samples_today: 42, last_sample: secondsAgo(5), grants: [] }),
+    lines: ['42 samples today', 'last sample just now'],
+    word: 'collecting',
+    tone: 'toneSuccess',
+  },
+  {
+    state: 'off',
+    row: () => ({ state: 'off', reason: 'switched off', samples_today: 0, grants: [] }),
+    lines: ['switched off', '0 samples today', 'no sample stored yet today'],
+    word: 'off',
+    tone: 'toneNeutral',
+  },
+  {
+    state: 'needs_permission',
+    row: () => ({
+      state: 'needs_permission',
+      reason: 'a permission is missing',
+      samples_today: 7,
+      last_sample: secondsAgo(300),
+      grants: grantsLacking,
+    }),
+    lines: [
+      'Missing: Screen recording, Automation',
+      '7 samples today',
+      /^last sample [45] min ago$/,
+    ],
+    word: 'needs permission',
+    tone: 'toneDanger',
+  },
+  {
+    state: 'failed',
+    row: () => ({
+      state: 'failed',
+      reason: 'the samples could not be written',
+      samples_today: 3,
+      grants: [],
+    }),
+    lines: ['the samples could not be written', '3 samples today', 'no sample stored yet today'],
+    word: 'failed',
+    tone: 'toneDanger',
+  },
+] as const;
+
+for (const expected of screenCases) {
+  test(`the apps and websites collection that is ${expected.state} shows so on the page and in the sidebar`, async ({
+    session,
+  }) => {
+    const reply = runningReply({
+      connectors: { 'claude-code': { turns: 1, skipped: 0, scanning: false } },
+      screen: expected.row(),
+    });
+    await withStandIn(session, reply, async (page) => {
+      await page.getByRole('button', { name: 'Status', exact: true }).click();
+      await expect(
+        page.locator('#screen').getByRole('heading', { name: 'Apps and websites' }),
+      ).toBeVisible();
+      await expect(page.locator('#screen-state')).toHaveAttribute('data-state', expected.state);
+      await expect(page.locator('#screen p')).toHaveText([...expected.lines]);
+      await expect(page.locator('#sidebar-screen')).toHaveAttribute('data-state', expected.state);
+      await expect(page.locator('#sidebar-screen')).toContainText('Apps and websites');
+      await expect(page.locator('#sidebar-screen-word')).toHaveText(expected.word);
+      // The colour backs the word up: a missing permission and a failure are both a problem.
+      await expect(page.locator('#sidebar-screen')).toHaveClass(new RegExp(expected.tone));
+      await screenshotBothThemes(page, `status-screen-${expected.state}`);
+    });
+  });
+}
+
+test('a row that needs permission with no grant to name keeps the reason of the agent', async ({
+  session,
+}) => {
+  const reply = runningReply({
+    screen: {
+      state: 'needs_permission',
+      reason: 'a permission is missing',
+      samples_today: 0,
+      grants: [{ name: 'automation', state: 'browser_not_running' }],
+    },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#screen-reason')).toHaveText('a permission is missing');
+  });
+});
+
+test('the Status page shows the collection with the apps and websites row alone', async ({
+  session,
+}) => {
+  const reply = runningReply({
+    screen: { state: 'collecting', samples_today: 2, grants: [] },
+  });
+  await withStandIn(session, reply, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Collection', exact: true })).toBeVisible();
+    await expect(page.locator('#screen-state')).toHaveAttribute('data-state', 'collecting');
+    await expect(page.locator('#sidebar-screen')).toBeVisible();
+  });
+});
+
+const problemStates = [
+  { state: 'needs_permission', grants: grantsLacking },
+  { state: 'failed', grants: [] },
+] as const;
+
+for (const { state, grants } of problemStates) {
+  test(`a collection that is ${state} counts as a problem in the closed sidebar group, with a failed tool`, async ({
+    session,
+  }) => {
+    const reply = runningReply({
+      connectors: {
+        'claude-code': {
+          turns: 0,
+          skipped: 0,
+          scanning: false,
+          error: 'the files cannot be listed',
+        },
+      },
+      screen: { state, reason: 'broken', samples_today: 0, grants },
+    });
+    await withStandIn(session, reply, async (page) => {
+      await page.getByRole('button', { name: 'Status', exact: true }).click();
+      const trigger = page.getByRole('button', { name: /^Collection/ });
+      await expect(page.locator('#sidebar-screen')).toBeVisible();
+      await expect(page.locator('#sidebar-collection-failed')).toHaveCount(0);
+      await trigger.click();
+      await expect(page.locator('#sidebar-screen')).toBeHidden();
+      await expect(page.locator('#sidebar-collection-failed')).toHaveText('(2 with a problem)');
+      await screenshotBothThemes(page, `status-screen-group-closed-${state}`);
+    });
+  });
+}
+
+test('a computer that cannot collect shows no apps and websites row, and an agent that sends none shows the rest', async ({
+  session,
+}) => {
+  // What the agent sends on such a computer, whether or not the person switched collection on.
+  const unsupported = runningReply({
+    connectors: { codex: { turns: 0, skipped: 0, scanning: false } },
+    screen: {
+      state: 'off',
+      reason: 'not supported on this computer',
+      samples_today: 0,
+      grants: [],
+    },
+  });
+  await withStandIn(session, unsupported, async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#connector-codex')).toBeVisible();
+    await expect(page.locator('#screen')).toHaveCount(0);
+    await expect(page.locator('#sidebar-screen')).toHaveCount(0);
+  });
+  await withStandIn(session, runningReply({}), async (page) => {
+    await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#agent-status')).toHaveText('running');
+    await expect(page.locator('#screen')).toHaveCount(0);
+    await expect(page.locator('#sidebar-screen')).toHaveCount(0);
   });
 });

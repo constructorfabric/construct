@@ -7,3 +7,11 @@ export const connectorTones = {
   off: 'neutral',
   failed: 'danger',
 } as const;
+
+/** The apps and websites collection: a missing permission is as red as a failure. */
+export const screenTones = {
+  collecting: 'success',
+  off: 'neutral',
+  needs_permission: 'danger',
+  failed: 'danger',
+} as const;
