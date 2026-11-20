@@ -44,6 +44,13 @@ import {
 } from './dashboard-setup-protocol';
 import { createCopyHandler, createLinkHandler, createPaneHandler } from './external-calls';
 import { COPY_TEXT_CHANNEL, OPEN_LINK_CHANNEL, OPEN_PANE_CHANNEL } from './external';
+import {
+  GLASSHOUSE_GO_CHANNEL,
+  GLASSHOUSE_HIDE_CHANNEL,
+  GLASSHOUSE_SHOW_CHANNEL,
+  GLASSHOUSE_STEP_CHANNEL,
+} from './glasshouse';
+import { Glasshouse } from './glasshouse-view';
 import { createMemoryHandlers } from './memory-calls';
 import {
   MEMORY_DELETE_CHANNEL,
@@ -232,6 +239,16 @@ function startApp(): void {
     ipcMain.handle(SETTINGS_COLLECTION_CHANNEL, (_event, input: unknown) =>
       settings.saveCollection(input),
     );
+    // The web page of the Glasshouse page is made when the page is first opened, and stays.
+    const glasshouse = new Glasshouse(() => mainWindow, process.env);
+    ipcMain.handle(GLASSHOUSE_SHOW_CHANNEL, (_event, bounds: unknown) => glasshouse.show(bounds));
+    ipcMain.handle(GLASSHOUSE_HIDE_CHANNEL, () => {
+      glasshouse.hide();
+    });
+    ipcMain.handle(GLASSHOUSE_GO_CHANNEL, (_event, address: unknown) => glasshouse.go(address));
+    ipcMain.handle(GLASSHOUSE_STEP_CHANNEL, (_event, step: unknown) => {
+      glasshouse.step(step);
+    });
     // The handlers come first: a second launch can open a window while the dialog is up.
     if (await moveToApplications()) {
       return;
