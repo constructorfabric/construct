@@ -330,7 +330,7 @@ export function DashboardSetupSection({
   readonly onOpenDashboard: () => void;
 }): ReactNode {
   return (
-    <section aria-labelledby="setup-section-title" className={styles.setup}>
+    <section aria-labelledby="setup-section-title">
       <Heading id="setup-section-title" typography="heading-1" render={<h2 />}>
         {t('DashboardSetup.Title')}
       </Heading>

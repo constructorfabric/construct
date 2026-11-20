@@ -43,7 +43,7 @@ function PartCard({
   readonly part: Part;
 }): ReactNode {
   return (
-    <Card className={styles.card}>
+    <Card>
       <CardHeader>
         <CardTitle render={<h2 />}>{title}</CardTitle>
         <CardAction className={styles.state}>
@@ -109,7 +109,7 @@ function ScreenCard({
 }): ReactNode {
   const detail = screenDetail(screen);
   return (
-    <Card className={styles.card} id="screen">
+    <Card id="screen">
       <CardHeader>
         <CardTitle render={<h3 />}>{t('StatusPage.Screen.Title')}</CardTitle>
         <CardAction className={styles.state}>
@@ -152,7 +152,7 @@ function ConnectorCard({
 }): ReactNode {
   const id = `connector-${connector.name}`;
   return (
-    <Card className={styles.card} id={id}>
+    <Card id={id}>
       <CardHeader>
         <CardTitle render={<h3 />}>{connectorName(connector.name)}</CardTitle>
         <CardAction className={styles.state}>
@@ -197,7 +197,7 @@ export function StatusPage({ status: answer }: { readonly status: AgentStatus | 
       <Heading typography="display" render={<h1 />}>
         {t('StatusPage.Title')}
       </Heading>
-      <Card className={styles.card}>
+      <Card>
         <CardHeader>
           <CardTitle render={<h2 />}>{t('StatusPage.Agent')}</CardTitle>
           {status !== null && (
@@ -247,7 +247,7 @@ export function StatusPage({ status: answer }: { readonly status: AgentStatus | 
         ((status.connectors !== undefined && status.connectors.length > 0) ||
           status.screen !== undefined) && (
           <>
-            <Heading typography="heading-1" className={styles.section} render={<h2 />}>
+            <Heading typography="heading-1" render={<h2 />}>
               {t('StatusPage.Connectors')}
             </Heading>
             {(status.connectors ?? []).map((connector) => (
@@ -257,7 +257,7 @@ export function StatusPage({ status: answer }: { readonly status: AgentStatus | 
           </>
         )}
       {status !== null && (
-        <Card className={styles.card}>
+        <Card>
           <CardHeader>
             <CardTitle render={<h2 />}>{t('StatusPage.StartAtLogin')}</CardTitle>
             <CardAction>

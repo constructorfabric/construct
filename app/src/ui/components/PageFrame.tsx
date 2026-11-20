@@ -9,10 +9,13 @@ import styles from './components.module.css';
  */
 export function PageFrame({
   layout = 'page',
+  spacing = 'normal',
   banner,
   children,
 }: {
   readonly layout?: 'page' | 'chat';
+  /** The space between the blocks of a `page`: `wide` is for a page of larger parts. */
+  readonly spacing?: 'normal' | 'wide';
   /** A notice above the page, such as a warning that concerns the whole app. */
   readonly banner?: ReactNode;
   readonly children: ReactNode;
@@ -23,7 +26,15 @@ export function PageFrame({
       render={<main className={chat ? `${styles.frame} ${styles.frameChat}` : styles.frame} />}
     >
       {banner ? <div className={styles.banner}>{banner}</div> : null}
-      {chat ? children : <div className={styles.column}>{children}</div>}
+      {chat ? (
+        children
+      ) : (
+        <div
+          className={spacing === 'wide' ? `${styles.column} ${styles.columnWide}` : styles.column}
+        >
+          {children}
+        </div>
+      )}
     </SidebarInset>
   );
 }

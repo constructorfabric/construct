@@ -107,6 +107,7 @@ export function App(): ReactNode {
       </Sidebar>
       <PageFrame
         layout={page === 'chat' || page === 'glasshouse' ? 'chat' : 'page'}
+        spacing={page === 'settings' ? 'wide' : 'normal'}
         banner={
           needsMove ? (
             <Alert id="needs-move" role="alert">
