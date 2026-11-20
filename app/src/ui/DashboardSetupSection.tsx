@@ -116,7 +116,7 @@ function Report({
   const report = status.report?.trim() ?? '';
   return (
     <>
-      <Card id="setup-result" className={styles.result}>
+      <Card id="setup-result" className={styles.card}>
         <CardContent className={styles.resultBody}>
           <p id="setup-done" role="status" className={styles.resultDone}>
             {t('DashboardSetup.Done')}

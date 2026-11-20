@@ -256,14 +256,14 @@ test('a finished run shows the result in one box with an outline and padding', a
     expect(parseFloat(frame.border)).toBeGreaterThan(0);
     expect(parseFloat(frame.padding)).toBeGreaterThan(0);
 
-    // Nothing of the report is cut or leaves the box: the long word wraps, the table scrolls
-    // inside its own area and the code block scrolls too.
+    // Nothing of the report is cut or leaves the box: the long word and the code line wrap, and
+    // the table scrolls inside its own area.
     await expect(box.locator('#setup-report')).toContainText('The end of the report.');
     const inside = await box.evaluate((element) => {
       const frameBox = element.getBoundingClientRect();
       const leaving = [...element.querySelectorAll('#setup-report *')].filter((node) => {
-        // A table and a code block scroll inside their own area: that area's edge has to be inside.
-        if (node.closest('table, pre') != null) {
+        // A table scrolls inside its own area: that area's edge has to be inside.
+        if (node.closest('table') != null) {
           return false;
         }
         const rect = node.getBoundingClientRect();
@@ -286,6 +286,13 @@ test('a finished run shows the result in one box with an outline and padding', a
       );
     expect(scrolls).toBe(true);
     await expect(box.getByText('unbroken'.repeat(30), { exact: false })).toBeVisible();
+    // The code line is whole: all of its text is there and the block does not clip or scroll it.
+    const code = await box.locator('pre').evaluate((block) => ({
+      text: block.textContent ?? '',
+      clipped: block.scrollWidth > block.clientWidth,
+    }));
+    expect(code.text).toContain(`const line = '${'x'.repeat(200)}';`);
+    expect(code.clipped).toBe(false);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     ).toBe(true);
