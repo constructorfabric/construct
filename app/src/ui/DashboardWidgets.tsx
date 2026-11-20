@@ -59,10 +59,13 @@ function shortDay(label: string): string {
 function WidgetCard({
   title,
   period,
+  reader,
   children,
 }: {
   readonly title: string;
   readonly period: string;
+  /** The body is text to read: it is a stop of its own for the keyboard, which scrolls it. */
+  readonly reader?: boolean;
   readonly children: ReactNode;
 }): ReactNode {
   return (
@@ -71,7 +74,14 @@ function WidgetCard({
         <CardTitle render={<h2 />}>{title}</CardTitle>
         <CardDescription>{period}</CardDescription>
       </CardHeader>
-      <CardContent className={styles.widgetBody}>{children}</CardContent>
+      <CardContent
+        className={
+          reader === true ? `${styles.widgetBody} ${styles.widgetReader}` : styles.widgetBody
+        }
+        {...(reader === true ? { tabIndex: 0, role: 'region', 'aria-label': title } : {})}
+      >
+        {children}
+      </CardContent>
     </Card>
   );
 }
@@ -438,6 +448,7 @@ export function DashboardWidget({
   return (
     <WidgetCard
       title={title}
+      reader={widget.kind === 'day_summary'}
       period={`${t(`DashboardPage.Source.${source}`)} · ${
         widget.kind === 'day_summary' ? dayLabel(day) : `${period} · ${rangeLabel(days)}`
       }`}
