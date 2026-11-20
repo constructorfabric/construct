@@ -55,6 +55,10 @@ interface Agent {
   looks: number;
   /** How many answers of `numbersError` the agent has given. */
   failed: number;
+  /** The lines of the summary of the day; one line when not set. */
+  summary: readonly string[] | null;
+  /** How many more groups than the usual ones a table gets. */
+  extraGroups: number;
   readonly requests: Request[];
 }
 
@@ -120,8 +124,15 @@ function numbersReply(agent: Agent, request: Request): string {
   const total = days.reduce((sum, day) => sum + day.minutes, 0);
   const rows =
     found?.kind === 'table' && !agent.empty
-      ? (groupsOf[found.group_by ?? 'project'] ??
-        days.map((day) => ({ key: day.label, minutes: day.minutes, sessions: 1 })))
+      ? [
+          ...(groupsOf[found.group_by ?? 'project'] ??
+            days.map((day) => ({ key: day.label, minutes: day.minutes, sessions: 1 }))),
+          ...Array.from({ length: agent.extraGroups }, (_, index) => ({
+            key: `extra-${String(index + 1).padStart(2, '0')}`,
+            minutes: 5,
+            sessions: 1,
+          })),
+        ]
       : [];
   const sum = rows.reduce((all, row) => all + row.minutes, 0);
   return JSON.stringify({
@@ -167,7 +178,7 @@ async function withAgent(
         return JSON.stringify({
           day,
           total_minutes: agent.empty ? 0 : 30,
-          lines: agent.empty ? [] : ['No ticket (billing): 30 min'],
+          lines: agent.empty ? [] : (agent.summary ?? ['No ticket (billing): 30 min']),
         });
       }
       if (line === 'dashboard-get') {
@@ -220,6 +231,8 @@ function newAgent(overrides: Partial<Agent> = {}): Agent {
     hold: null,
     looks: 0,
     failed: 0,
+    summary: null,
+    extraGroups: 0,
     numbersError: null,
     settingsError: null,
     building: 0,
@@ -794,5 +807,211 @@ test('the page keeps saying it is reading the history until the agent has the nu
     await expect(page.locator('#value-total')).toHaveText(ownWeek, { timeout: 15_000 });
     // Both answers of "still reading" were given before the numbers came.
     expect(agent.building).toBe(0);
+  });
+});
+
+/** Lines of a day's summary, the first and the last of them told apart. */
+function ticketLines(count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, index) => `Ticket ${String(index + 1).padStart(2, '0')} (billing): ${index + 5} min`,
+  );
+}
+
+/** Checks that what a widget holds is whole: it scrolls inside the card, and nothing is cut. */
+async function expectCardKeepsContent(
+  page: Page,
+  id: string,
+  first: string,
+  last: string,
+): Promise<void> {
+  // A small window shows only the top of the page.
+  await page.locator(`#widget-${id}`).scrollIntoViewIfNeeded();
+  const card = page.locator(`#widget-${id} > *`).first();
+  const scroller = await card.evaluateHandle((element) => {
+    const scrolls = [element, ...element.querySelectorAll<HTMLElement>('*')].filter(
+      (candidate) =>
+        candidate instanceof HTMLElement &&
+        ['auto', 'scroll'].includes(getComputedStyle(candidate).overflowY) &&
+        candidate.scrollHeight > candidate.clientHeight,
+    );
+    // The outermost one: a table scrolls in a part of its own inside it.
+    return scrolls[0] ?? null;
+  });
+  expect(await scroller.evaluate((element) => element !== null)).toBe(true);
+
+  // The first line is in view from the start, and nothing sits outside the frame of the card.
+  await expect(page.locator(`#widget-${id}`).getByText(first)).toBeInViewport({ ratio: 1 });
+  const frame = await page.evaluate((widgetId) => {
+    const widgetBox = document.querySelector(`#widget-${widgetId}`)?.getBoundingClientRect();
+    const cardElement = document.querySelector(`#widget-${widgetId}`)?.firstElementChild;
+    const cardBox = cardElement?.getBoundingClientRect();
+    if (!widgetBox || !cardBox || !cardElement) {
+      throw new Error('the widget is not on the page');
+    }
+    const outside = [...cardElement.querySelectorAll<HTMLElement>('*')].filter((child) => {
+      // A scrolled-away line is clipped by its scroller, not outside the card.
+      for (let up = child.parentElement; up !== null && up !== cardElement; up = up.parentElement) {
+        if (['auto', 'scroll', 'hidden'].includes(getComputedStyle(up).overflowY)) {
+          return false;
+        }
+      }
+      const box = child.getBoundingClientRect();
+      return (
+        box.width > 0 &&
+        (box.left < cardBox.left - 0.5 ||
+          box.right > cardBox.right + 0.5 ||
+          box.top < cardBox.top - 0.5 ||
+          box.bottom > cardBox.bottom + 0.5)
+      );
+    });
+    return {
+      cardInPlace:
+        cardBox.left >= widgetBox.left - 0.5 &&
+        cardBox.right <= widgetBox.right + 0.5 &&
+        cardBox.top >= widgetBox.top - 0.5 &&
+        cardBox.bottom <= widgetBox.bottom + 0.5,
+      outside: outside.length,
+    };
+  }, id);
+  expect(frame).toEqual({ cardInPlace: true, outside: 0 });
+
+  // The last control is whole once the focus is on it, with room under it inside the scrolling
+  // part, so that its focus ring is not clipped, and inside the card.
+  const end = page.locator(`#widget-${id}`).locator(last);
+  await end.focus();
+  await expect(end).toBeFocused();
+  await expect(end).toBeInViewport({ ratio: 1 });
+  const room = await end.evaluate((element) => {
+    const bottom = element.getBoundingClientRect().bottom;
+    const cardBox = element.closest('[id^="widget-"]')?.firstElementChild?.getBoundingClientRect();
+    let scroller = element.parentElement;
+    while (
+      scroller !== null &&
+      !['auto', 'scroll'].includes(getComputedStyle(scroller).overflowY)
+    ) {
+      scroller = scroller.parentElement;
+    }
+    return {
+      card: cardBox === undefined ? -1 : cardBox.bottom - bottom,
+      scroller: scroller === null ? -1 : scroller.getBoundingClientRect().bottom - bottom,
+    };
+  });
+  expect(room.card, `room under the last control of ${id}`).toBeGreaterThanOrEqual(8);
+  expect(room.scroller, `room in the scroller of ${id}`).toBeGreaterThanOrEqual(4);
+}
+
+/** Sizes the window and waits until the page has the size, so that what is measured is the size. */
+async function sizeWindow(
+  page: Page,
+  app: ElectronApplication,
+  size: { readonly width: number; readonly height: number },
+): Promise<void> {
+  // Full screen is a window that covers the whole display: a window manager is not needed for it.
+  const wanted = await app.evaluate(({ BrowserWindow, screen }, { width, height }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    const display = screen.getPrimaryDisplay().bounds;
+    const target = width === 0 ? display : { x: 0, y: 0, width, height };
+    win?.setContentBounds(target);
+    return { width: target.width, height: target.height };
+  }, size);
+  await expect
+    .poll(() => page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })))
+    .toEqual(wanted);
+}
+
+const windowSizes = [
+  { name: '720x480', width: 720, height: 480 },
+  { name: '960x640', width: 960, height: 640 },
+  { name: 'full screen', width: 0, height: 0 },
+] as const;
+
+for (const size of windowSizes) {
+  test(`at ${size.name}, a summary and two tables that are taller than their place scroll in the card`, async ({
+    session,
+  }) => {
+    const agent = newAgent({
+      summary: ticketLines(24),
+      extraGroups: 20,
+      document: gridPlaces([
+        widget('end-of-day', 'day_summary', [0, 0, 6, 3]),
+        widget('by-project', 'table', [6, 0, 6, 3], { group_by: 'project' }),
+        widget('by-ticket', 'table', [0, 3, 12, 3], { group_by: 'ticket' }),
+      ]),
+    });
+    await withAgent(session, agent, async (page, app) => {
+      await sizeWindow(page, app, size);
+      await expect(page.locator('#summary-end-of-day')).toBeVisible();
+      await expectCardKeepsContent(page, 'end-of-day', 'Ticket 01', '#summary-end-of-day-copy');
+      await expectCardKeepsContent(
+        page,
+        'by-project',
+        'search',
+        'button[aria-label="Show the sessions of extra-20"]',
+      );
+      await expectCardKeepsContent(
+        page,
+        'by-ticket',
+        'alpha-2',
+        'button[aria-label="Show the sessions of extra-20"]',
+      );
+    });
+  });
+}
+
+for (const count of [4, 24]) {
+  test(`the summary of the day with ${String(count)} lines in a place of three rows keeps its button`, async ({
+    session,
+  }) => {
+    const agent = newAgent({
+      summary: ticketLines(count),
+      document: gridPlaces([widget('end-of-day', 'day_summary', [0, 0, 6, 3])]),
+    });
+    await withAgent(session, agent, async (page) => {
+      await expect(page.locator('#summary-end-of-day li')).toHaveCount(count);
+      await page.locator('#summary-end-of-day-copy').focus();
+      await expect(page.locator('#summary-end-of-day-copy')).toBeInViewport({ ratio: 1 });
+      await screenshotBothThemes(page, `dashboard-summary-${String(count)}-lines`);
+    });
+  });
+}
+
+test('the text of a summary is a stop for the keyboard, and the arrows and End scroll it to every line', async ({
+  session,
+}) => {
+  const agent = newAgent({
+    summary: ticketLines(24),
+    document: gridPlaces([widget('end-of-day', 'day_summary', [0, 0, 6, 3])]),
+  });
+  await withAgent(session, agent, async (page) => {
+    const lines = page.getByRole('region', { name: 'End of day' });
+    await page.locator('#widget-end-of-day h2').click();
+    await page.keyboard.press('Tab');
+    await expect(lines).toBeFocused();
+    await page.keyboard.press('End');
+    await expect(page.getByText('Ticket 24')).toBeInViewport({ ratio: 1 });
+    await expect(page.locator('#summary-end-of-day-copy')).toBeInViewport({ ratio: 1 });
+    await page.keyboard.press('Home');
+    await expect(page.getByText('Ticket 01')).toBeInViewport({ ratio: 1 });
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#summary-end-of-day-copy')).toBeFocused();
+  });
+});
+
+test('a bars widget still fills its card, with nothing to scroll', async ({ session }) => {
+  const agent = newAgent({
+    document: gridPlaces([widget('per-day', 'bars_per_day', [0, 0, 12, 4])]),
+  });
+  await withAgent(session, agent, async (page) => {
+    await expect(page.locator('#chart-per-day svg').first()).toBeVisible();
+    const sizes = await page
+      .locator('#widget-per-day')
+      .evaluate((element) =>
+        [element, ...element.querySelectorAll<HTMLElement>('*')]
+          .filter((child) => ['auto', 'scroll'].includes(getComputedStyle(child).overflowY))
+          .map((child) => child.scrollHeight - child.clientHeight),
+      );
+    expect(sizes.length).toBeGreaterThan(0);
+    expect(sizes.every((extra) => extra <= 0)).toBe(true);
   });
 });

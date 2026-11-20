@@ -37,7 +37,7 @@ export function Section({
     </>
   );
   return (
-    <section aria-labelledby={titleId} className={styles.section}>
+    <section aria-labelledby={titleId}>
       <Heading id={titleId} typography="heading-1" render={<h2 />}>
         {title}
       </Heading>

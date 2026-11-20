@@ -19,6 +19,7 @@ import {
   EmptyTitle,
   Heading,
   Item,
+  ItemActions,
   ItemContent,
   ItemDescription,
   ItemGroup,
@@ -61,7 +62,7 @@ function Branch({
           <span>{label}</span>
         </span>
         {secondary !== undefined && (
-          <Text tone="muted" render={<span />}>
+          <Text typography="meta" tone="muted" render={<span />}>
             {secondary}
           </Text>
         )}
@@ -85,19 +86,25 @@ function ValueNode({
   const secondary = stored === undefined ? undefined : storedText(stored);
   if (value.kind === 'text') {
     return (
-      <Item size="sm">
+      <Item size="xs" className={styles.factItem}>
+        {label !== null && <ItemTitle>{label}</ItemTitle>}
         <ItemContent>
-          {label !== null && <ItemTitle>{label}</ItemTitle>}
           <ItemDescription lineClamp="none">{value.text}</ItemDescription>
-          {secondary !== undefined && <ItemDescription>{secondary}</ItemDescription>}
         </ItemContent>
+        {secondary !== undefined && (
+          <ItemActions>
+            <Text typography="meta" tone="muted" render={<span />}>
+              {secondary}
+            </Text>
+          </ItemActions>
+        )}
       </Item>
     );
   }
   if (value.kind === 'list') {
     return (
       <Branch label={t('MemoryPage.Count', { name: label ?? '', count: value.items.length })}>
-        <ItemGroup>
+        <ItemGroup className={styles.factList}>
           {value.items.map((item, index) => (
             <ValueNode key={index} label={null} value={item} />
           ))}
@@ -116,7 +123,7 @@ function ValueNode({
 
 function Fields({ fields }: { readonly fields: readonly TreeField[] }): ReactNode {
   return (
-    <ItemGroup>
+    <ItemGroup className={styles.factList}>
       {fields.map((field, index) => (
         <ValueNode key={index} label={field.name} value={field.value} />
       ))}
@@ -232,7 +239,7 @@ function Property({
   }
   return (
     <Branch label={t('MemoryPage.Count', { name: property.name, count: property.facts.length })}>
-      <ItemGroup>
+      <ItemGroup className={styles.factList}>
         {property.facts.map((fact) => (
           <FactRow
             key={fact.id}
@@ -258,11 +265,11 @@ function Kind({
   readonly onDelete: (factId: string, name: string) => void;
 }): ReactNode {
   return (
-    <section className={styles.memoryKind} aria-labelledby={`memory-kind-${group.kind}`}>
+    <section aria-labelledby={`memory-kind-${group.kind}`}>
       <Heading id={`memory-kind-${group.kind}`} typography="heading-1" render={<h2 />}>
         {t(`MemoryPage.Kind.${group.kind}`)}
       </Heading>
-      <ItemGroup>
+      <ItemGroup className={styles.factList}>
         {group.properties.map((property) => (
           <Property
             key={property.key}
@@ -364,7 +371,7 @@ export function MemoryPage({ onOpenSettings }: { readonly onOpenSettings: () => 
                   </EmptyHeader>
                 </Empty>
               ) : (
-                <div id="memory-tree">
+                <div id="memory-tree" className={styles.memoryTree}>
                   {buildTree(state.facts).map((group) => (
                     <Kind
                       key={group.kind}

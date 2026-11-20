@@ -1,4 +1,4 @@
-import { Alert, Button, Heading, Spinner } from '@gears-frontx/ui-kit';
+import { Alert, Button, Card, CardContent, Heading, Spinner } from '@gears-frontx/ui-kit';
 import { Circle, CircleCheck } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { isRunning, setupDays } from '../dashboard-setup-protocol';
@@ -116,23 +116,27 @@ function Report({
   const report = status.report?.trim() ?? '';
   return (
     <>
-      <Alert id="setup-done" role="status" className={styles.outcome}>
-        {t('DashboardSetup.Done')}
-      </Alert>
-      <Heading id="setup-report-title" typography="heading-2" render={<h3 />}>
-        {t('DashboardSetup.ReportTitle')}
-      </Heading>
-      <div id="setup-report" className={styles.report}>
-        {report === '' ? (
-          <p className={styles.setupMuted}>{t('DashboardSetup.NoReport')}</p>
-        ) : (
-          <Markdown
-            text={report}
-            onOpenLink={(address) => void window.constructAgent.openLink(address)}
-            imageLabel={t('Markdown.Image')}
-          />
-        )}
-      </div>
+      <Card id="setup-result" className={styles.card}>
+        <CardContent className={styles.resultBody}>
+          <p id="setup-done" role="status" className={styles.resultDone}>
+            {t('DashboardSetup.Done')}
+          </p>
+          <Heading id="setup-report-title" typography="heading-2" render={<h3 />}>
+            {t('DashboardSetup.ReportTitle')}
+          </Heading>
+          <div id="setup-report" className={styles.report}>
+            {report === '' ? (
+              <p className={styles.setupMuted}>{t('DashboardSetup.NoReport')}</p>
+            ) : (
+              <Markdown
+                text={report}
+                onOpenLink={(address) => void window.constructAgent.openLink(address)}
+                imageLabel={t('Markdown.Image')}
+              />
+            )}
+          </div>
+        </CardContent>
+      </Card>
       <ButtonRow>
         <Button id="setup-open-dashboard" type="button" variant="link" onClick={onOpenDashboard}>
           {t('DashboardSetup.OpenDashboard')}
@@ -326,7 +330,7 @@ export function DashboardSetupSection({
   readonly onOpenDashboard: () => void;
 }): ReactNode {
   return (
-    <section aria-labelledby="setup-section-title" className={styles.setup}>
+    <section aria-labelledby="setup-section-title">
       <Heading id="setup-section-title" typography="heading-1" render={<h2 />}>
         {t('DashboardSetup.Title')}
       </Heading>
