@@ -12,6 +12,7 @@ import {
 import { ask, assistant, configure, input, rows, test, toolLines } from './chat-helpers';
 import { closedPort, goodKey, goodModel } from './provider';
 import { screenshotBothThemes } from './screenshots';
+import { listRetryMs } from '../src/ui/chat-state';
 
 const reasonDeadlineMs = 15_000;
 const stopDeadlineMs = 2000;
@@ -291,8 +292,7 @@ test('an address with nothing behind it shows its reason within 15 seconds', asy
   });
 });
 
-const goTo = (page: Page, name: string) =>
-  page.getByRole('button', { name, exact: true }).click();
+const goTo = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).click();
 
 test('a running answer goes on while the person is on another page', async ({ page, provider }) => {
   provider.script = { chunks: ['Part ', 'one ', 'end.'], pauseMs: 0, holdAt: 1 };
@@ -710,6 +710,15 @@ test('a thread that ends on a tool line stops shimmering when the answer is stop
 });
 
 const listDeadlineMs = 10_000;
+/** Long enough for two retries of the list to have fired, were they still going. */
+const twoRetriesMs = 2 * listRetryMs + 500;
+/** Shorter than one retry, so only the agent saying it is running can explain a list by then. */
+const beforeRetryMs = listRetryMs - 500;
+const keptChat = JSON.stringify({
+  conversations: [{ conversation: 'c-1', title: 'kept chat', time: '2026-01-01T10:00:00Z' }],
+});
+const runningStatus = JSON.stringify({ status: 'running', version: '1.0.0', pid: 1 });
+const notReady = JSON.stringify({ error: 'not ready' });
 
 test('the old chats show once an agent that was not there at the start comes up, with no message sent', async ({
   session,
@@ -745,39 +754,60 @@ test('a first read of the list that fails shows its reason, and the list shows o
   session,
 }) => {
   let reads = 0;
-  const list = JSON.stringify({
-    conversations: [{ conversation: 'c-1', title: 'kept chat', time: '2026-01-01T10:00:00Z' }],
-  });
   await withStandIn(
     session,
     (line) => {
       if (line !== 'chat-list') {
-        return JSON.stringify({ error: 'not ready' });
+        return notReady;
       }
       reads += 1;
-      return reads === 1 ? JSON.stringify({ error: 'the store is still starting' }) : list;
+      return reads === 1 ? JSON.stringify({ error: 'the store is still starting' }) : keptChat;
     },
     async (page) => {
       await expect(page.locator('#chat-notice')).toContainText('the store is still starting');
       await expect(rows(page)).toHaveText(['kept chat'], { timeout: listDeadlineMs });
       await expect(page.locator('#chat-notice')).toHaveCount(0);
       const readsWhenListed = reads;
-      await page.waitForTimeout(4000);
+      await page.waitForTimeout(twoRetriesMs);
       // Nothing reads the list again once a read has worked.
       expect(reads).toBe(readsWhenListed);
     },
   );
 });
 
-test('against an agent that is up the list shows at once', async ({ session }) => {
-  const list = JSON.stringify({
-    conversations: [{ conversation: 'c-1', title: 'kept chat', time: '2026-01-01T10:00:00Z' }],
-  });
+test('the list is read again as soon as the agent says it is running, not at the next retry', async ({
+  session,
+}) => {
+  let reads = 0;
   await withStandIn(
     session,
-    (line) => (line === 'chat-list' ? list : JSON.stringify({ error: 'not asked for' })),
+    (line) => {
+      if (line === 'status') {
+        return runningStatus;
+      }
+      if (line !== 'chat-list') {
+        return notReady;
+      }
+      reads += 1;
+      return reads === 1 ? JSON.stringify({ error: 'the store is still starting' }) : keptChat;
+    },
     async (page) => {
-      await expect(rows(page)).toHaveText(['kept chat'], { timeout: 2000 });
+      await expect(rows(page)).toHaveText(['kept chat'], { timeout: beforeRetryMs });
+      await expect(page.locator('#chat-notice')).toHaveCount(0);
+      // The retry that was waiting does not read again, and no notice comes back over the list.
+      await page.waitForTimeout(twoRetriesMs);
+      expect(reads).toBe(2);
+      await expect(page.locator('#chat-notice')).toHaveCount(0);
+    },
+  );
+});
+
+test('against an agent that is up the list shows at once', async ({ session }) => {
+  await withStandIn(
+    session,
+    (line) => (line === 'chat-list' ? keptChat : notReady),
+    async (page) => {
+      await expect(rows(page)).toHaveText(['kept chat'], { timeout: beforeRetryMs });
       await expect(page.locator('#chat-notice')).toHaveCount(0);
     },
   );
