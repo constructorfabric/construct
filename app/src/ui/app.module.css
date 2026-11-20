@@ -387,8 +387,19 @@
   color: var(--muted-foreground);
 }
 
+/* The finished run: one framed box, so the line, the heading and the report read as one result. */
+.resultBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.resultDone {
+  margin: 0;
+  font-weight: 600;
+}
+
 .report {
-  margin-top: var(--space-4);
   overflow-wrap: anywhere;
 }
 
