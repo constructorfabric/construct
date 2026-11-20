@@ -258,7 +258,7 @@ function Kind({
   readonly onDelete: (factId: string, name: string) => void;
 }): ReactNode {
   return (
-    <section className={styles.memoryKind} aria-labelledby={`memory-kind-${group.kind}`}>
+    <section aria-labelledby={`memory-kind-${group.kind}`}>
       <Heading id={`memory-kind-${group.kind}`} typography="heading-1" render={<h2 />}>
         {t(`MemoryPage.Kind.${group.kind}`)}
       </Heading>
@@ -364,7 +364,7 @@ export function MemoryPage({ onOpenSettings }: { readonly onOpenSettings: () => 
                   </EmptyHeader>
                 </Empty>
               ) : (
-                <div id="memory-tree">
+                <div id="memory-tree" className={styles.memoryTree}>
                   {buildTree(state.facts).map((group) => (
                     <Kind
                       key={group.kind}

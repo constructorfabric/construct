@@ -3,14 +3,6 @@
   margin: 0;
 }
 
-.card {
-  margin-top: var(--space-4);
-}
-
-.section {
-  margin-top: var(--space-4);
-}
-
 .state {
   display: flex;
   align-items: center;
@@ -207,7 +199,6 @@
   flex-wrap: wrap;
   gap: var(--space-4);
   justify-content: space-between;
-  margin-top: var(--space-4);
 }
 
 .toolbarGroup {
@@ -228,7 +219,6 @@
 }
 
 .grid {
-  margin-top: var(--space-4);
   min-width: 0;
   width: 100%;
 }
@@ -333,8 +323,11 @@
   justify-content: space-between;
 }
 
-.memoryKind {
-  margin-top: var(--space-6);
+/* The groups of the memory tree are a step further apart than the blocks of a page. */
+.memoryTree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
 }
 
 .factRow {
@@ -372,10 +365,6 @@
 
 .branchContent {
   padding-inline-start: var(--space-6);
-}
-
-.setup {
-  margin-top: var(--space-8);
 }
 
 .setupText {

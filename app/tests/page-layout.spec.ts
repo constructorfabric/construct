@@ -1,7 +1,10 @@
 import type { Locator, Page } from '@playwright/test';
 import { configure, input, test } from './chat-helpers';
-import { expect } from './fixtures';
-import type { OpenedApp } from './fixtures';
+import { expect, withStandIn } from './fixtures';
+import type { OpenedApp, Session } from './fixtures';
+import { gridPlaces, now, settingsReply, widget } from './dashboard-shared';
+import { newHost, openMemory, withHostAndAgent } from './memory-host';
+import type { Fact } from './memory-host';
 import { screenshotBothThemes } from './screenshots';
 
 const sizes = [
@@ -123,4 +126,246 @@ test('the fields, buttons and switches of Settings share their edges and widths'
 
     await screenshotBothThemes(page, `settings-${size.name}`);
   }
+});
+
+/**
+ * The space between each block of the open page and the one above it, in pixels. The blocks are
+ * the children of the page's column that take room.
+ */
+async function gaps(page: Page): Promise<number[]> {
+  return page.evaluate(() => {
+    const column = document.querySelector('main > div:last-child');
+    if (column === null) {
+      throw new Error('the page has no column');
+    }
+    const boxes = [...column.children]
+      .map((child) => child.getBoundingClientRect())
+      .filter((box) => box.height > 0);
+    return boxes.slice(1).map((box, index) => box.top - (boxes[index]?.bottom ?? 0));
+  });
+}
+
+/** How long a page may take to show what the agent last said, or that it is gone. */
+const refreshDeadlineMs = 10_000;
+
+/** The space of a page's column between blocks, in pixels: `--space-4` and `--space-8`. */
+const normalGap = 16;
+const wideGap = 32;
+/** The space between the groups of the memory tree, in pixels: `--space-6`. */
+const groupGap = 24;
+
+/** The page has exactly `blocks` blocks, and every neighbouring pair is `gap` pixels apart. */
+async function expectBlocksApart(
+  page: Page,
+  blocks: number,
+  gap: number,
+  what: string,
+): Promise<void> {
+  await expect.poll(async () => (await gaps(page)).length + 1, { message: what }).toBe(blocks);
+  expect(await gaps(page), `${what}: the space between each two blocks`).toEqual(
+    Array.from({ length: blocks - 1 }, () => gap),
+  );
+}
+
+/** The stand-in agent of the Memory page: its settings, with collection on. */
+const memoryAgent = (line: string): string =>
+  line.startsWith('settings-get')
+    ? settingsReply(true)
+    : JSON.stringify({ status: 'running', version: '0.1.0', pid: 42 });
+
+const someFacts: Fact[] = [
+  { entity_kind: 'identity', property: 'full_name', value: 'Ada Lovelace' },
+  { entity_kind: 'role', property: 'job_title', value: 'Engineer' },
+  { entity_kind: 'skill', property: 'skills', value: { name: 'Rust' } },
+];
+
+async function checkMemory(session: Session, facts: Fact[], shot: string): Promise<void> {
+  const host = newHost(session);
+  host.facts = facts;
+  await withHostAndAgent(session, host, memoryAgent, async (page) => {
+    host.announce();
+    await openMemory(page).click();
+    await expect(page.locator('#memory-collection')).toBeVisible();
+    await expect(page.locator(facts.length === 0 ? '#memory-empty' : '#memory-tree')).toBeVisible();
+    await expectBlocksApart(page, 3, normalGap, 'Memory');
+    const groups = await page
+      .locator('#memory-tree section')
+      .evaluateAll((kinds) => kinds.map((kind) => kind.getBoundingClientRect()));
+    expect(groups, 'the groups of the tree').toHaveLength(facts.length);
+    expect(
+      groups.slice(1).map((group, index) => group.top - (groups[index]?.bottom ?? 0)),
+      'the space between two groups',
+    ).toEqual(groups.slice(1).map(() => groupGap));
+    await screenshotBothThemes(page, shot);
+  });
+}
+
+test('on the Memory page the collection line and the empty box are apart', async ({ session }) => {
+  await checkMemory(session, [], 'memory-empty-spacing');
+});
+
+test('on the Memory page the collection line and a list are apart', async ({ session }) => {
+  await checkMemory(session, someFacts, 'memory-list-spacing');
+});
+
+const days = (label: string) => ({ label, minutes: 30 });
+
+/** Answers the Dashboard page with a document, a problem with the file, and a hidden project. */
+function dashboardAgent(widgets: ReturnType<typeof widget>[], problem: boolean) {
+  return (line: string): string => {
+    if (line.startsWith('dashboard-numbers ')) {
+      const asked = JSON.parse(line.slice('dashboard-numbers '.length)) as {
+        days: { label: string }[];
+      };
+      return JSON.stringify({
+        total_minutes: asked.days.length * 30,
+        session_count: asked.days.length,
+        hidden_project_count: 1,
+        groups: [{ key: 'billing', minutes: 30, session_count: 1, share: 1 }],
+        days: asked.days.map((day) => days(day.label)),
+      });
+    }
+    if (line === 'dashboard-get') {
+      return JSON.stringify({
+        document: gridPlaces(widgets),
+        ...(problem
+          ? {
+              error: {
+                kind: 'line',
+                place: 'line 1, column 1',
+                message: 'the file is not valid JSON',
+              },
+            }
+          : {}),
+      });
+    }
+    if (line === 'settings-get') {
+      return settingsReply(true);
+    }
+    return JSON.stringify({ status: 'running', version: '0.1.0', pid: 42 });
+  };
+}
+
+function dashboardWidgets() {
+  return [widget('total', 'total', [0, 0, 12, 2]), widget('top', 'table', [0, 2, 12, 4])];
+}
+
+/**
+ * Each state of the Dashboard: what shows that the page has loaded it, the blocks it then has
+ * (heading, toolbar, the notices, then the rest) and whether it is the one that is photographed.
+ */
+const dashboardStates = [
+  { name: 'empty', widgets: [], problem: false, loaded: ['#dashboard-no-widgets'], blocks: 3 },
+  {
+    name: 'empty with a problem',
+    widgets: [],
+    problem: true,
+    loaded: ['#dashboard-no-widgets', '#dashboard-problem'],
+    blocks: 4,
+  },
+  {
+    name: 'filled',
+    widgets: dashboardWidgets(),
+    problem: false,
+    loaded: ['#widget-total', '#dashboard-hidden-note'],
+    blocks: 4,
+  },
+  {
+    name: 'filled with a problem',
+    widgets: dashboardWidgets(),
+    problem: true,
+    loaded: ['#widget-total', '#dashboard-hidden-note', '#dashboard-problem'],
+    blocks: 5,
+    shot: 'dashboard-notice-spacing',
+  },
+] as const;
+
+for (const state of dashboardStates) {
+  test(`on the Dashboard the notices and the widgets are apart: ${state.name}`, async ({
+    session,
+  }) => {
+    await withStandIn(session, dashboardAgent([...state.widgets], state.problem), async (page) => {
+      await page.clock.install({ time: now });
+      await page.reload();
+      await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+      for (const selector of state.loaded) {
+        await expect(page.locator(selector)).toBeVisible();
+      }
+      await expectBlocksApart(page, state.blocks, normalGap, `Dashboard ${state.name}`);
+      if ('shot' in state) {
+        await screenshotBothThemes(page, state.shot);
+      }
+    });
+  });
+}
+
+// The Status page has 8 blocks here: a platform with a screen to collect adds a card.
+test('the Status page keeps its blocks apart with a running agent', async ({ page }) => {
+  await openPage(page, 'Status');
+  await expect(page.locator('#agent-status')).toHaveText('running');
+  await expectBlocksApart(page, 8, normalGap, 'Status running');
+});
+
+test('the Settings page keeps its blocks wide apart with a running agent', async ({ page }) => {
+  await openPage(page, 'Settings');
+  await expect(toggle(page, 'Collect from my coding tools')).toBeVisible();
+  await expectBlocksApart(page, 5, wideGap, 'Settings');
+});
+
+test('the Status page keeps its blocks apart without an agent', async ({ page, session }) => {
+  session.agent.kill('SIGTERM');
+  await openPage(page, 'Status');
+  await expect(page.locator('#agent-status')).toHaveText('stopped', { timeout: refreshDeadlineMs });
+  await expectBlocksApart(page, 3, normalGap, 'Status stopped');
+});
+
+test('the Settings page keeps its blocks wide apart without an agent', async ({
+  page,
+  session,
+}) => {
+  // Settings reads once when it opens, so the agent must be gone first, not still shutting down.
+  session.agent.kill('SIGTERM');
+  if (session.agent.exitCode === null && session.agent.signalCode === null) {
+    await new Promise((resolve) => session.agent.once('exit', resolve));
+  }
+  await openPage(page, 'Settings');
+  await expect(page.getByRole('alert').first()).toBeVisible({ timeout: refreshDeadlineMs });
+  await expectBlocksApart(page, 2, wideGap, 'Settings without an agent');
+});
+
+/**
+ * Chat has no column: its thread fills the window and the composer sits under it, so no gap of
+ * the page's column applies. What is spaced is the notices of the composer's area.
+ */
+async function expectChatComposerSpaced(page: Page, what: string): Promise<void> {
+  const spacing = await page.evaluate(() => {
+    const thread = document.querySelector('#chat-thread')?.closest('main > *');
+    const area = document.querySelector('#chat-no-model')?.parentElement;
+    if (!thread || !area) {
+      throw new Error('the chat page is not shown');
+    }
+    const boxes = [...area.children]
+      .map((child) => child.getBoundingClientRect())
+      .filter((box) => box.height > 0);
+    return {
+      rowGap: getComputedStyle(thread).rowGap,
+      gaps: boxes.slice(1).map((box, index) => box.top - (boxes[index]?.bottom ?? 0)),
+    };
+  });
+  // The chat sits straight in the frame, with no column around it.
+  expect(spacing.rowGap, `${what}: the chat is in no column`).toBe('normal');
+  // The model notice and the composer, with the profile note above them while the gear is not
+  // ready: whichever of these the page shows, each is --space-2 from the next.
+  expect(spacing.gaps.length, `${what}: the notices and the composer`).toBeGreaterThan(0);
+  expect(spacing.gaps, `${what}: the space between the notices and the composer`).toEqual(
+    spacing.gaps.map(() => 8),
+  );
+}
+
+test('on Chat the notice and the composer are apart and the chat is in no column', async ({
+  page,
+}) => {
+  await expect(page.locator('#chat-empty')).toBeVisible();
+  await expect(page.locator('#chat-no-model')).toBeVisible({ timeout: refreshDeadlineMs });
+  await expectChatComposerSpaced(page, 'Chat with no model');
 });
