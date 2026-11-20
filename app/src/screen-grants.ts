@@ -45,3 +45,10 @@ export function parseGrants(screen: unknown): readonly Grant[] | undefined {
       : [],
   );
 }
+
+/** The permissions the person has not given: a browser that is not running is not one. */
+export function missingGrants(grants: readonly Grant[] | undefined): GrantName[] {
+  return (grants ?? [])
+    .filter((grant) => grant.state === 'denied' || grant.state === 'not_asked')
+    .map((grant) => grant.name);
+}

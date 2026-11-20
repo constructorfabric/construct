@@ -28,7 +28,8 @@ import { DashboardGrid } from './DashboardGrid';
 import { DashboardWidget } from './DashboardWidgets';
 import { addDays, startOfDay } from 'date-fns';
 import { countsDay, mondayOf, pageLabel, periodAnchor } from './dashboard-period';
-import { missingGrants, sourceWidgets, sourcesUsed, gridWidgets } from './dashboard-source';
+import { missingGrants } from '../screen-grants';
+import { sourceWidgets, sourcesUsed, gridWidgets } from './dashboard-source';
 import { useDashboard } from './useDashboard';
 import type { DashboardState, WidgetNumbers } from './useDashboard';
 

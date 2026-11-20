@@ -525,6 +525,19 @@ fn a_failure_is_shown_as_its_code() {
 }
 
 #[test]
+fn a_computer_without_the_signals_says_so_with_the_switches_off() {
+    let dirs = Dirs::new();
+    let screen = Screen::new(
+        dirs.settings(),
+        &dirs.data(),
+        Arc::new(construct_agent::screen::NoSignals),
+    );
+    let row = screen.status();
+    assert_eq!(row["state"], "off");
+    assert_eq!(row["reason"], "not supported on this computer");
+}
+
+#[test]
 fn a_computer_without_the_signals_reads_as_off() {
     let dirs = Dirs::new();
     let settings = dirs.settings();

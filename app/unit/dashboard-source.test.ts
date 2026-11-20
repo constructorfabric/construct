@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DashboardDocument, Widget } from '../src/dashboard-protocol';
-import { missingGrants, sourceOf, sourcesUsed, gridWidgets } from '../src/ui/dashboard-source';
+import { missingGrants } from '../src/screen-grants';
+import { sourceOf, sourcesUsed, gridWidgets } from '../src/ui/dashboard-source';
 import { secondsText } from '../src/ui/dashboard-period';
 
 const at = (row: number): Widget['position'] => ({ column: 0, row, width: 12, height: 2 });

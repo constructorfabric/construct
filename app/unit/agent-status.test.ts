@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePart, parseStatusReply } from '../src/agent-status';
+import { parsePart, parseScreen, parseStatusReply } from '../src/agent-status';
 
 describe('parseStatusReply', () => {
   it('turns a running reply into a running status and drops unknown fields', () => {
@@ -285,5 +285,102 @@ describe('the connectors of a status reply', () => {
       connectors: [{ name: 'b', state: 'collecting', turns: 0, skipped: 0 }],
     });
     expect(status).not.toHaveProperty('connectors.0.lastTurnAt');
+  });
+});
+
+describe('the screen row of a status reply', () => {
+  const at = '2026-01-02T03:04:05Z';
+  const grants = [
+    { name: 'accessibility', state: 'granted' },
+    { name: 'screen_recording', state: 'denied' },
+    { name: 'automation', state: 'not_asked' },
+    { name: 'input_monitoring', state: 'browser_not_running' },
+  ];
+
+  it('reads a collecting row with its samples and the time of the last', () => {
+    expect(
+      parseScreen({ state: 'collecting', samples_today: 12, last_sample: at, grants }),
+    ).toEqual({ state: 'collecting', samplesToday: 12, lastSampleAt: Date.parse(at), missing: [] });
+  });
+
+  it('drops a reason on a collecting row: there is nothing to explain', () => {
+    expect(parseScreen({ state: 'collecting', reason: 'stale', samples_today: 1 })).toEqual({
+      state: 'collecting',
+      samplesToday: 1,
+      missing: [],
+    });
+  });
+
+  it('names the permissions that are missing and keeps the reason when it needs one', () => {
+    expect(
+      parseScreen({
+        state: 'needs_permission',
+        reason: 'a permission is missing',
+        samples_today: 0,
+        grants,
+      }),
+    ).toEqual({
+      state: 'needs_permission',
+      reason: 'a permission is missing',
+      samplesToday: 0,
+      missing: ['screen_recording', 'automation'],
+    });
+  });
+
+  it('names no permission when only a browser that is not running is not allowed, or none came', () => {
+    const row = { state: 'needs_permission', samples_today: 0 };
+    expect(
+      parseScreen({ ...row, grants: [{ name: 'automation', state: 'browser_not_running' }] }),
+    ).toEqual({ state: 'needs_permission', samplesToday: 0, missing: [] });
+    expect(parseScreen(row)).toEqual({ state: 'needs_permission', samplesToday: 0, missing: [] });
+  });
+
+  it('keeps the reason of an off row and of a failed one, trimmed', () => {
+    expect(parseScreen({ state: 'off', reason: ' switched off ', samples_today: 0 })).toEqual({
+      state: 'off',
+      reason: 'switched off',
+      samplesToday: 0,
+      missing: [],
+    });
+    expect(parseScreen({ state: 'failed', reason: 'broken', samples_today: 2 })).toEqual({
+      state: 'failed',
+      reason: 'broken',
+      samplesToday: 2,
+      missing: [],
+    });
+  });
+
+  it('shows nothing for a computer that cannot collect, an unknown state or another shape', () => {
+    expect(
+      parseScreen({ state: 'off', reason: 'not supported on this computer', samples_today: 0 }),
+    ).toBeUndefined();
+    expect(parseScreen({ state: 'sleeping' })).toBeUndefined();
+    expect(parseScreen('collecting')).toBeUndefined();
+    expect(parseScreen(null)).toBeUndefined();
+  });
+
+  it('leaves out a field of another type instead of failing', () => {
+    const row = parseScreen({ state: 'collecting', samples_today: 'many', last_sample: 'soon' });
+    expect(row).toEqual({ state: 'collecting', samplesToday: 0, missing: [] });
+    expect(parseScreen({ state: 'collecting', samples_today: -1 })).toEqual({
+      state: 'collecting',
+      samplesToday: 0,
+      missing: [],
+    });
+  });
+
+  it('is part of a running status, and a reply with none still parses as before', () => {
+    const base = { status: 'running', version: '0.1.0', pid: 42 };
+    expect(
+      parseStatusReply(JSON.stringify({ ...base, screen: { state: 'off', samples_today: 0 } })),
+    ).toEqual({
+      state: 'running',
+      version: '0.1.0',
+      pid: 42,
+      startAtLogin: 'unknown',
+      screen: { state: 'off', samplesToday: 0, missing: [] },
+    });
+    expect(parseStatusReply(JSON.stringify(base))).not.toHaveProperty('screen');
+    expect(parseStatusReply(JSON.stringify({ ...base, screen: 7 }))).not.toHaveProperty('screen');
   });
 });

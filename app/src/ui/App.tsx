@@ -92,9 +92,11 @@ export function App(): ReactNode {
         </SidebarContent>
         <SidebarFooter>
           <AgentStatusLine state={state} />
-          {status?.state === 'running' && status.connectors !== undefined ? (
+          {status?.state === 'running' &&
+          (status.connectors !== undefined || status.screen !== undefined) ? (
             <ConnectorIndicators
-              connectors={status.connectors}
+              connectors={status.connectors ?? []}
+              screen={status.screen}
               open={collectionOpen}
               onOpenChange={setCollectionOpen}
             />

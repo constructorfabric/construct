@@ -13,12 +13,12 @@ import {
 } from '@gears-frontx/ui-kit';
 import { format } from 'date-fns';
 import type { ReactNode } from 'react';
-import type { AgentStatus, Connector, Part } from '../agent-status';
+import type { AgentStatus, Connector, Part, ScreenCollection } from '../agent-status';
 import { t } from '../translation';
 import styles from './app.module.css';
 import { useDelayedLoader } from './components/useDelayedLoader';
 import { connectorName } from './connector-name';
-import { connectorTones, tones } from './state-tones';
+import { connectorTones, screenTones, tones } from './state-tones';
 
 const loginVariants = {
   registered: 'success',
@@ -72,19 +72,74 @@ const connectorVariants = {
   failed: toneVariants[connectorTones.failed],
 } as const;
 
+/** How long ago something was stored, in words: just now, minutes, or the date. */
+function whenText(at: number, now: number): string {
+  const minutes = Math.floor((now - at) / 60_000);
+  return minutes < 1
+    ? t('StatusPage.Connector.JustNow')
+    : minutes < 60
+      ? t('StatusPage.Connector.MinutesAgo', { minutes })
+      : format(at, 'd MMM yyyy, HH:mm');
+}
+
 /** When the last turn was stored, in words; an older agent that sends no time has none to show. */
 function lastTurnText(lastTurnAt: number | undefined, now: number): string {
-  if (lastTurnAt === undefined) {
-    return t('StatusPage.Connector.NoTurn');
+  return lastTurnAt === undefined
+    ? t('StatusPage.Connector.NoTurn')
+    : t('StatusPage.Connector.LastTurn', { when: whenText(lastTurnAt, now) });
+}
+
+/** Why the apps and websites collection is not collecting: the grants it lacks, or the agent's reason. */
+function screenDetail(screen: ScreenCollection): string | undefined {
+  if (screen.state === 'needs_permission' && screen.missing.length > 0) {
+    return t('StatusPage.Screen.Missing', {
+      names: screen.missing.map((name) => t(`ScreenGrants.Name.${name}`)).join(', '),
+    });
   }
-  const minutes = Math.floor((now - lastTurnAt) / 60_000);
-  const when =
-    minutes < 1
-      ? t('StatusPage.Connector.JustNow')
-      : minutes < 60
-        ? t('StatusPage.Connector.MinutesAgo', { minutes })
-        : format(lastTurnAt, 'd MMM yyyy, HH:mm');
-  return t('StatusPage.Connector.LastTurn', { when });
+  return screen.reason;
+}
+
+/** The apps and websites collection: its state in words, why when it is not collecting, samples and last sample. */
+function ScreenCard({
+  screen,
+  now,
+}: {
+  readonly screen: ScreenCollection;
+  readonly now: number;
+}): ReactNode {
+  const detail = screenDetail(screen);
+  return (
+    <Card className={styles.card} id="screen">
+      <CardHeader>
+        <CardTitle render={<h3 />}>{t('StatusPage.Screen.Title')}</CardTitle>
+        <CardAction className={styles.state}>
+          <StatusDot tone={screenTones[screen.state]} />
+          <Badge
+            id="screen-state"
+            variant={toneVariants[screenTones[screen.state]]}
+            data-state={screen.state}
+          >
+            {t(`StatusPage.Screen.${screen.state}`)}
+          </Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        {detail !== undefined && (
+          <Text id="screen-reason" tone="muted" className={styles.detail}>
+            {detail}
+          </Text>
+        )}
+        <Text id="screen-samples" tone="muted" className={styles.detail}>
+          {t('StatusPage.Screen.Samples', { count: screen.samplesToday })}
+        </Text>
+        <Text id="screen-last-sample" tone="muted" className={styles.detail}>
+          {screen.lastSampleAt === undefined
+            ? t('StatusPage.Screen.NoSample')
+            : t('StatusPage.Screen.LastSample', { when: whenText(screen.lastSampleAt, now) })}
+        </Text>
+      </CardContent>
+    </Card>
+  );
 }
 
 /** One tool the agent collects from: its state in words, why when it failed, its count and last turn. */
@@ -189,15 +244,16 @@ export function StatusPage({ status: answer }: { readonly status: AgentStatus | 
         <PartCard id="construct" title={t('StatusPage.Construct')} part={status.construct} />
       )}
       {status?.state === 'running' &&
-        status.connectors !== undefined &&
-        status.connectors.length > 0 && (
+        ((status.connectors !== undefined && status.connectors.length > 0) ||
+          status.screen !== undefined) && (
           <>
             <Heading typography="heading-1" className={styles.section} render={<h2 />}>
               {t('StatusPage.Connectors')}
             </Heading>
-            {status.connectors.map((connector) => (
+            {(status.connectors ?? []).map((connector) => (
               <ConnectorCard key={connector.name} connector={connector} now={Date.now()} />
             ))}
+            {status.screen !== undefined && <ScreenCard screen={status.screen} now={Date.now()} />}
           </>
         )}
       {status !== null && (
