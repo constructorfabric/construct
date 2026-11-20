@@ -138,6 +138,9 @@ ad-hoc: it is not tied to a developer account, so it only has to be good enough 
 ```bash
 make package
 APP="app/out/Construct Browser-darwin-arm64/Construct Browser.app"
+# Sign the agent first and give it the name macOS lists it under, then the app. Do not add
+# `--options runtime` to an ad-hoc signature: the app does not start with it.
+codesign --force --identifier cf.construct.agent --sign - "$APP/Contents/Resources/construct-agent"
 codesign --force --deep --sign - "$APP"
 
 # A disk image with the app and a shortcut to the Applications folder.
@@ -146,6 +149,22 @@ hdiutil create -volname "Construct Browser" -srcfolder app/out/dmg -ov -format U
 ```
 
 Open `app/out/Construct Browser.dmg` and drag **Construct Browser** onto **Applications**.
+
+The app declares why it sends Apple Events (`NSAppleEventsUsageDescription` in its `Info.plist`), which macOS needs
+before it asks you to let the agent read the tab of your browser. An ad-hoc signature changes with every build, so
+macOS forgets the permissions you gave after each rebuild; give them again in **System Settings > Privacy &
+Security**. With a Developer ID certificate, sign the agent first and the app second, with the Hardened Runtime and
+the entitlements file of the app:
+
+```bash
+codesign --force --options runtime --entitlements app/entitlements.plist --identifier cf.construct.agent \
+  --sign "Developer ID Application: <your name>" "$APP/Contents/Resources/construct-agent"
+codesign --force --deep --options runtime --entitlements app/entitlements.plist \
+  --sign "Developer ID Application: <your name>" "$APP"
+```
+
+This Developer ID path has not been run yet. Electron may also need `com.apple.security.cs.allow-jit` in the
+entitlements under the Hardened Runtime; add it to `app/entitlements.plist` if the signed app does not start.
 
 ### Windows
 
