@@ -30,6 +30,7 @@
 //! refused while there is none that is usable. The only things of a request an error repeats are a short widget id and the label of a day.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -59,14 +60,14 @@ const MAX_ECHO: usize = 64;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Data {
     pub sessions: Vec<SessionMinutes>,
-    pub blocks: Vec<Block>,
+    pub blocks: Arc<[Block]>,
 }
 
 impl From<Vec<SessionMinutes>> for Data {
     fn from(sessions: Vec<SessionMinutes>) -> Self {
         Self {
             sessions,
-            blocks: Vec::new(),
+            blocks: Arc::default(),
         }
     }
 }
@@ -628,7 +629,7 @@ pub(crate) fn read_data(
                 // The read of the store is shared by the asks that come together; each takes its copy.
                 sessions: store.session_minutes().await?.to_vec(),
                 blocks: match source {
-                    Source::AiSessions => Vec::new(),
+                    Source::AiSessions => Arc::default(),
                     Source::OnScreen => store.screen_blocks().await?,
                 },
             })

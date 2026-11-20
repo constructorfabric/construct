@@ -25,7 +25,8 @@ use std::fmt;
 
 use connectors::minute_of;
 
-use time::{Date, Month};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use super::{assign, findings};
 
@@ -168,29 +169,9 @@ pub fn minute_number(time: &str) -> Option<i64> {
     {
         return None;
     }
-    // `YYYY-MM-DDTHH:MM`, digits only: read in place, a store of a year of minutes is read often.
-    let b = minute.as_bytes();
-    let digits = |from: usize, to: usize| -> Option<i32> {
-        b[from..to].iter().try_fold(0_i32, |n, c| {
-            c.is_ascii_digit().then(|| n * 10 + i32::from(c - b'0'))
-        })
-    };
-    if b[4] != b'-' || b[7] != b'-' || b[13] != b':' {
-        return None;
-    }
-    let month = Month::try_from(u8::try_from(digits(5, 7)?).ok()?).ok()?;
-    let date =
-        Date::from_calendar_date(digits(0, 4)?, month, u8::try_from(digits(8, 10)?).ok()?).ok()?;
-    let (hh, mm) = (digits(11, 13)?, digits(14, 16)?);
-    if hh > 23 || mm > 59 {
-        return None;
-    }
-    let days = i64::from(date.to_julian_day()) - UNIX_EPOCH_JULIAN_DAY;
-    Some(days * 24 * 60 + i64::from(hh) * 60 + i64::from(mm))
+    let parsed = OffsetDateTime::parse(&format!("{minute}:00Z"), &Rfc3339).ok()?;
+    Some(parsed.unix_timestamp().div_euclid(60))
 }
-
-/// The Julian day number of 1970-01-01.
-const UNIX_EPOCH_JULIAN_DAY: i64 = 2_440_588;
 
 /// Whether a session counts as unattended: it has prompts from scripts and none from a person
 /// or from an author that is not known.
@@ -465,70 +446,5 @@ mod tests {
         assert!(!is_unattended(1, 3, 0));
         assert!(!is_unattended(0, 3, 1));
         assert!(!is_unattended(0, 0, 0));
-    }
-
-    #[test]
-    fn minutes_are_read_as_the_time_library_reads_them() {
-        // The reading of a minute is by hand, for speed; it must agree with the library on
-        // everything a stored or a hand-written time can look like.
-        use time::OffsetDateTime;
-        use time::format_description::well_known::Rfc3339;
-        let by_library = |time: &str| -> Option<i64> {
-            let minute = minute_of(time);
-            if minute.len() != 16
-                || (time.len() > 16 && !time.ends_with('Z'))
-                || minute.as_bytes().get(10) != Some(&b'T')
-            {
-                return None;
-            }
-            let parsed = OffsetDateTime::parse(&format!("{minute}:00Z"), &Rfc3339).ok()?;
-            Some(parsed.unix_timestamp().div_euclid(60))
-        };
-        let mut cases: Vec<String> = [
-            "2026-02-31T10:15",
-            "2026-02-28T24:00",
-            "2026-02-28T23:60",
-            "2026-02-28T23:59",
-            "2024-02-29T00:00",
-            "2025-02-29T00:00",
-            "2026-00-10T10:15",
-            "2026-13-10T10:15",
-            "2026-11-00T10:15",
-            "2026-11-31T10:15",
-            "2026-11-10 10:15",
-            "2026-11-10T10-15",
-            "2026/11/10T10:15",
-            "+026-11-10T10:15",
-            "2026-1+-10T10:15",
-            "2026-11-1-T10:15",
-            "2026-11-10T1a:15",
-            "2026-11-10T10:1 ",
-            "2026-11-10T10:15:30Z",
-            "2026-11-10T10:15:30+00:00",
-            "1969-12-31T23:59",
-            "0000-01-01T00:00",
-            "9999-12-31T23:59",
-            "2026-11-10T10:1é",
-            "é026-11-10T10:15",
-            "2026-11-10T10:15é",
-            "",
-            "T",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-        for hour in 0..100 {
-            for minute in [0, 1, 59, 60, 99] {
-                cases.push(format!("2026-11-10T{hour:02}:{minute:02}"));
-            }
-        }
-        for month in 0..100 {
-            for day in [0, 1, 28, 29, 30, 31, 32, 99] {
-                cases.push(format!("2026-{month:02}-{day:02}T10:15"));
-            }
-        }
-        for case in &cases {
-            assert_eq!(minute_number(case), by_library(case), "{case:?}");
-        }
     }
 }

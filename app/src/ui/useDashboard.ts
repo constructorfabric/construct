@@ -251,11 +251,6 @@ export function useDashboard(day: Date): DashboardControls {
     // Whether the page shows numbers that were all counted: a recount that fails keeps them.
     let good = false;
     const read = (): void => {
-      // A window nobody sees is not recounted; the next look after it is shown does.
-      if (good && window.document.visibilityState === 'hidden') {
-        timer = setTimeout(read, refreshMs);
-        return;
-      }
       Promise.all([
         Promise.all(
           document.widgets.map(

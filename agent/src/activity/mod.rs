@@ -157,16 +157,72 @@ impl Stored {
     }
 }
 
-/// The sessions as [`Store::session_minutes`] reads them, kept while the store does not change:
-/// a page asks for the same state several times in a row, and each read takes the whole history.
-#[derive(Debug, Default)]
-struct Cache {
-    /// Goes up after every write to the store, so an entry of an earlier number is stale.
+/// A read of the store kept while what it read does not change: a page asks for the same state
+/// several times in a row, and each read takes the whole history.
+#[derive(Debug)]
+struct Kept<T> {
+    /// Goes up after every write to what is read, so an entry of an earlier number is stale.
     version: AtomicU64,
-    kept: Mutex<Option<(u64, Arc<[rules::SessionMinutes]>)>>,
+    entry: Mutex<Option<(u64, Arc<[T]>)>>,
     /// Held while the history is read, so that the callers that ask together (a page asks for
     /// every widget at once) wait for one read and share it.
     reading: tokio::sync::Mutex<()>,
+}
+
+impl<T> Default for Kept<T> {
+    fn default() -> Self {
+        Self {
+            version: AtomicU64::new(0),
+            entry: Mutex::new(None),
+            reading: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+impl<T> Kept<T> {
+    /// What is kept from a read of the store as it is now, if there is anything.
+    fn current(&self) -> Option<Arc<[T]>> {
+        let version = self.version.load(Ordering::SeqCst);
+        match &*lock(&self.entry) {
+            Some((at, all)) if *at == version => Some(Arc::clone(all)),
+            _ => None,
+        }
+    }
+
+    /// The kept read, or the one `read` makes; callers that come together wait for that one.
+    async fn get<F, Fut>(&self, read: F) -> Result<Arc<[T]>, Error>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<T>, Error>>,
+    {
+        if let Some(all) = self.current() {
+            return Ok(all);
+        }
+        let _one_reader = self.reading.lock().await;
+        if let Some(all) = self.current() {
+            return Ok(all);
+        }
+        let version = self.version.load(Ordering::SeqCst);
+        let all: Arc<[T]> = read().await?.into();
+        // A write between the read and here made the read stale: it is not kept.
+        if self.version.load(Ordering::SeqCst) == version {
+            *lock(&self.entry) = Some((version, Arc::clone(&all)));
+        }
+        Ok(all)
+    }
+
+    /// What was read is not what the store holds any more.
+    fn drop_kept(&self) {
+        self.version.fetch_add(1, Ordering::SeqCst);
+        *lock(&self.entry) = None;
+    }
+}
+
+/// What the store keeps of its reads, one for each thing a page reads whole.
+#[derive(Debug, Default)]
+struct Cache {
+    sessions: Kept<rules::SessionMinutes>,
+    screen: Kept<screen_time::Block>,
 }
 
 #[derive(Clone, Debug)]
@@ -255,14 +311,20 @@ impl Store {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
         lock_store(&mut tx).await?;
         apply_screen_in(&mut tx, line).await?;
-        tx.commit().await.map_err(|e| err("commit", e))
+        tx.commit().await.map_err(|e| err("commit", e))?;
+        self.cache.screen.drop_kept();
+        Ok(())
     }
 
     /// The time on screen, in order of time, with no overlap (see [`screen_time::without_overlap`]).
     ///
     /// # Errors
     /// Fails when the query is refused.
-    pub async fn screen_blocks(&self) -> Result<Vec<screen_time::Block>, Error> {
+    pub async fn screen_blocks(&self) -> Result<Arc<[screen_time::Block]>, Error> {
+        self.cache.screen.get(|| self.read_screen_blocks()).await
+    }
+
+    async fn read_screen_blocks(&self) -> Result<Vec<screen_time::Block>, Error> {
         let rows = sqlx::query(
             "select start, seconds, app, site, project, ticket from activity.screen order by start",
         )
@@ -328,7 +390,7 @@ impl Store {
             }
         }
         tx.commit().await.map_err(|e| err("commit", e))?;
-        self.changed();
+        self.changed_all();
         Ok(applied)
     }
 
@@ -389,14 +451,19 @@ impl Store {
         lock_store(&mut tx).await?;
         clear_in(&mut tx).await?;
         tx.commit().await.map_err(|e| err("commit", e))?;
-        self.changed();
+        self.changed_all();
         Ok(())
     }
 
     /// Drops what was kept of the sessions: the store has changed.
     fn changed(&self) {
-        self.cache.version.fetch_add(1, Ordering::SeqCst);
-        *lock(&self.cache.kept) = None;
+        self.cache.sessions.drop_kept();
+    }
+
+    /// Drops everything that was kept: the store was made again.
+    fn changed_all(&self) {
+        self.cache.sessions.drop_kept();
+        self.cache.screen.drop_kept();
     }
 
     /// Every session, ordered by tool and session.
@@ -466,29 +533,10 @@ impl Store {
     /// # Errors
     /// Fails when the query is refused or a stored minute cannot be read.
     pub async fn session_minutes(&self) -> Result<Arc<[rules::SessionMinutes]>, Error> {
-        if let Some(sessions) = self.kept() {
-            return Ok(sessions);
-        }
-        let _one_reader = self.cache.reading.lock().await;
-        if let Some(sessions) = self.kept() {
-            return Ok(sessions);
-        }
-        let version = self.cache.version.load(Ordering::SeqCst);
-        let sessions: Arc<[rules::SessionMinutes]> = self.read_session_minutes().await?.into();
-        // A write between the read and here made the read stale: it is not kept.
-        if self.cache.version.load(Ordering::SeqCst) == version {
-            *lock(&self.cache.kept) = Some((version, Arc::clone(&sessions)));
-        }
-        Ok(sessions)
-    }
-
-    /// The sessions kept from a read of the store as it is now, if there are any.
-    fn kept(&self) -> Option<Arc<[rules::SessionMinutes]>> {
-        let version = self.cache.version.load(Ordering::SeqCst);
-        match &*lock(&self.cache.kept) {
-            Some((kept, sessions)) if *kept == version => Some(Arc::clone(sessions)),
-            _ => None,
-        }
+        self.cache
+            .sessions
+            .get(|| self.read_session_minutes())
+            .await
     }
 
     async fn read_session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {

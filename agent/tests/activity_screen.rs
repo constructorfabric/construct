@@ -150,7 +150,7 @@ fn sink(stand: &Stand, lines: &[Line]) -> FileSink {
 }
 
 async fn blocks(store: &Store) -> Vec<Block> {
-    store.screen_blocks().await.unwrap()
+    store.screen_blocks().await.unwrap().to_vec()
 }
 
 /// Clear the store, then give it the sessions and the runs one by one.
@@ -252,7 +252,7 @@ async fn a_rebuild_equals_the_step_by_step_store() {
         let store = store.clone();
         async move {
             (
-                store.screen_blocks().await.unwrap(),
+                store.screen_blocks().await.unwrap().to_vec(),
                 store.sessions().await.unwrap(),
                 store.minutes().await.unwrap(),
             )
