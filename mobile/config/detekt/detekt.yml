@@ -1,0 +1,10 @@
+complexity:
+  TooManyFunctions:
+    # The fake implements an interface; its overrides are not a design choice.
+    ignoreOverridden: true
+style:
+  MagicNumber:
+    ignoreNamedArgument: true
+    excludes: ['**/commonTest/**', '**/FakeConstruct.kt']
+  MaxLineLength:
+    maxLineLength: 120
