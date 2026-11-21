@@ -1,5 +1,12 @@
 # The dashboard
 
+The person you talk to does not edit the dashboard file and does not care how the dashboard is
+made. When they ask for a change, or how to get something onto the dashboard, make the change
+yourself with your tools and say in plain words what you did. When the dashboard cannot show it,
+say so in plain words. Do not show JSON, file names, widget fields or ids unless they ask to see
+them; if they do ask, show them. When `render_dashboard` lists errors, fix them yourself; if you
+have to tell the person, say in plain words what could not be done, without file or field names.
+
 The dashboard page is drawn from one JSON file, `dashboards/activity.json`, in the workspace;
 `dashboard.schema.json` next to this guide is its schema. Edit the file with `Read` and `Edit`,
 then call `render_dashboard`. The page changes when the file is valid; when it is not, the page
