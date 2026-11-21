@@ -22,13 +22,27 @@
 //! * Every Accessibility call has a time limit of its own ([`AX_TIMEOUT_SECONDS`]), on top of the
 //!   limit the sampler puts on the whole read.
 //!
-//! A title, a name or a bundle id is never logged or put in an error.
+//! * The open tab of Chrome or Safari, when one of them is in front, comes from
+//!   [`crate::browser_tabs`] through the browser's own Automation grant, which the person gives
+//!   to the agent for each browser. The grants of both browsers are shown as one `automation`
+//!   row that names the browsers that lack it; a browser that is not running is never started.
+//!   A tab that cannot be read leaves the window title alone as the reading.
+//! * The browsers are touched only by a read, which the sampler makes only while the person has
+//!   collection on, and never while the screen is locked: touching one is what makes the system
+//!   ask the person, and it must not ask before they chose to collect. The grants shown come
+//!   from what the reads learned, so before the first read they read as not asked.
+//! * The browser calls share one deadline ([`BROWSER_BUDGET`]) counted from the start of the
+//!   read, so that the whole read stays inside the limit the sampler puts on it, whatever the
+//!   Accessibility calls before them took.
+//!
+//! A title, an address, a name or a bundle id is never logged or put in an error.
 
 use std::io;
 use std::process::Command;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use accessibility::{AXAttribute, AXUIElement};
 use accessibility_sys::{kAXErrorAPIDisabled, kAXErrorAttributeUnsupported, kAXErrorNoValue};
@@ -40,10 +54,17 @@ use objc2_core_graphics::{
 use objc2_foundation::{NSDate, NSRunLoop, NSString};
 
 use crate::activity::screen_time::CALL_APPS;
-use crate::screen::{App, Failure, Grant, GrantState, Reading, Signals};
+use crate::browser_tabs::{self, Browser, Osascript, Reach, ScriptRunner, TabRead};
+use crate::screen::{App, Failure, Grant, GrantState, Reading, Signals, Tab};
+use crate::sync::lock;
 
 /// The name of the grant in the status row.
 pub const ACCESSIBILITY: &str = "accessibility";
+/// How long after the start of a read the browser calls may still run: the sampler's limit for a
+/// read, less room for the thread to answer.
+const BROWSER_BUDGET: Duration = Duration::from_millis(1_700);
+/// The name of the browsers' grant in the status row.
+pub const AUTOMATION: &str = "automation";
 /// The longest one Accessibility call may wait for the program it asks.
 pub const AX_TIMEOUT_SECONDS: f32 = 0.5;
 /// The Settings pane where the person adds the agent to Accessibility.
@@ -100,15 +121,98 @@ pub fn open_accessibility_settings() -> io::Result<()> {
 /// It remembers the last clear answer about the grant, so that one probe that says nothing (the
 /// probe application busy for a moment) neither alarms a person who granted it nor hides a
 /// missing grant that was seen.
-#[derive(Default)]
 pub struct MacSignals {
     last_trust: AtomicU8,
+    runner: Box<dyn ScriptRunner>,
+    /// The last clear answer about each browser, in the order of [`Browser::ALL`].
+    browsers: Mutex<[Reach; 2]>,
+    /// Whether the system has the browser installed. A browser that is not has nothing to ask.
+    installed: fn(Browser) -> bool,
+}
+
+impl Default for MacSignals {
+    fn default() -> Self {
+        Self::with_runner(Box::new(Osascript))
+    }
 }
 
 impl MacSignals {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Signals that ask the browsers through `runner`.
+    #[must_use]
+    pub fn with_runner(runner: Box<dyn ScriptRunner>) -> Self {
+        Self {
+            last_trust: AtomicU8::new(0),
+            runner,
+            browsers: Mutex::new([Reach::Unknown; 2]),
+            installed: browser_installed,
+        }
+    }
+
+    /// The same, with the system's answer about what is installed given by `installed`.
+    #[cfg(test)]
+    fn with_installed(mut self, installed: fn(Browser) -> bool) -> Self {
+        self.installed = installed;
+        self
+    }
+
+    fn remember(&self, browser: Browser, reach: Reach) {
+        if reach != Reach::Unknown {
+            lock(&self.browsers)[browser_index(browser)] = reach;
+        }
+    }
+
+    /// The `automation` grant, from what the reads learned about each browser.
+    fn automation_grant(&self) -> Grant {
+        let known = *lock(&self.browsers);
+        let (state, browser) =
+            automation_state(std::array::from_fn(|i| (Browser::ALL[i], known[i])));
+        Grant {
+            name: AUTOMATION,
+            state,
+            browser,
+        }
+    }
+
+    /// The open tab of `browser`, which is in front, and what the answer says of its grant.
+    fn front_tab(&self, browser: Browser, deadline: Instant) -> Option<Tab> {
+        let (tab, reach) = match browser_tabs::read_tab(self.runner.as_ref(), browser, deadline) {
+            TabRead::Tab(tab) => (Some(tab), Reach::Allowed),
+            TabRead::NoTab => (None, Reach::Allowed),
+            TabRead::NotRunning => (None, Reach::NotRunning),
+            TabRead::NotAllowed => (None, Reach::NotAllowed),
+            TabRead::Unavailable => (None, Reach::Unknown),
+        };
+        self.remember(browser, reach);
+        tab
+    }
+
+    /// What the browsers give in one read: the tab of the one in front, and the grant of the
+    /// others learned by touching them. Nothing is asked of a browser while the screen is locked.
+    fn browser_signals(
+        &self,
+        front_bundle: Option<&str>,
+        locked: bool,
+        deadline: Instant,
+    ) -> Option<Tab> {
+        if locked {
+            return None;
+        }
+        let front = front_bundle.and_then(Browser::from_bundle_id);
+        let tab = front.and_then(|browser| self.front_tab(browser, deadline));
+        for browser in Browser::ALL.into_iter().filter(|b| Some(*b) != front) {
+            let reach = if (self.installed)(browser) {
+                browser_tabs::probe(self.runner.as_ref(), browser, deadline)
+            } else {
+                Reach::NotRunning
+            };
+            self.remember(browser, reach);
+        }
+        tab
     }
 
     /// The probe's answer now, remembered when it is clear.
@@ -127,6 +231,46 @@ impl MacSignals {
             self.trust_now(),
             Trust::from_u8(self.last_trust.load(Ordering::Relaxed)),
         )
+    }
+}
+
+/// Whether the system knows an application with the browser's bundle id.
+fn browser_installed(browser: Browser) -> bool {
+    NSWorkspace::sharedWorkspace()
+        .URLForApplicationWithBundleIdentifier(&NSString::from_str(browser.bundle_id()))
+        .is_some()
+}
+
+fn browser_index(browser: Browser) -> usize {
+    Browser::ALL
+        .iter()
+        .position(|b| *b == browser)
+        .unwrap_or_default()
+}
+
+/// The one state of the browsers' grant, and the browsers it is about when it is a missing one.
+/// A missing grant of any browser shows, whatever the other says; with none missing, one allowed
+/// browser is enough; with every browser closed there is nothing to ask. A browser that was never
+/// asked counts as not asked.
+fn automation_state(reaches: [(Browser, Reach); 2]) -> (GrantState, Option<String>) {
+    let named = |wanted: &[Reach]| {
+        let names: Vec<&str> = reaches
+            .iter()
+            .filter(|(_, reach)| wanted.contains(reach))
+            .map(|(browser, _)| browser.label())
+            .collect();
+        (!names.is_empty()).then(|| names.join(", "))
+    };
+    if let Some(names) = named(&[Reach::NotAllowed]) {
+        return (GrantState::Denied, Some(names));
+    }
+    if let Some(names) = named(&[Reach::Unknown]) {
+        return (GrantState::NotAsked, Some(names));
+    }
+    if reaches.iter().any(|(_, reach)| *reach == Reach::Allowed) {
+        (GrantState::Granted, None)
+    } else {
+        (GrantState::BrowserNotRunning, None)
     }
 }
 
@@ -269,13 +413,18 @@ impl Signals for MacSignals {
             Trust::NotTrusted => GrantState::Denied,
             Trust::Unknown => GrantState::NotAsked,
         };
-        vec![Grant {
-            name: ACCESSIBILITY,
-            state,
-        }]
+        vec![
+            Grant {
+                name: ACCESSIBILITY,
+                state,
+                browser: None,
+            },
+            self.automation_grant(),
+        ]
     }
 
     fn read(&self) -> Result<Reading, Failure> {
+        let deadline = Instant::now() + BROWSER_BUDGET;
         let front = front_app();
         let bundle = front.as_ref().map(|(app, _)| app.bundle_id.as_str());
         let locked = screen_locked_or_off(bundle);
@@ -284,6 +433,7 @@ impl Signals for MacSignals {
         let title = title_to_read(locked, || front.as_ref().map(|(_, pid)| window_title(*pid)));
         let window_title = front_title(title, || self.trust_now())?;
         let idle_seconds = idle_seconds().ok_or(Failure::Failed("idle"))?;
+        let tab = self.browser_signals(bundle, locked, deadline);
         let call = !locked && bundle.is_some_and(|b| is_call_window(b, window_title.as_deref()));
         Ok(Reading {
             idle_seconds,
@@ -291,7 +441,7 @@ impl Signals for MacSignals {
             locked,
             window_title,
             app: front.map(|(app, _)| app),
-            tab: None,
+            tab,
         })
     }
 }
@@ -500,18 +650,242 @@ mod tests {
         assert!(!locked_in(off));
     }
 
+    use crate::browser_tabs::Answer;
+    use std::sync::Arc;
+
+    /// A runner that answers by the script it is given (the bundle id in it says which browser),
+    /// counts its calls, and so lets no test ask a real browser (which would raise the system's
+    /// prompt).
+    struct Scripted {
+        chrome: fn() -> Answer,
+        safari: fn() -> Answer,
+        calls: Arc<Mutex<usize>>,
+    }
+
+    impl Scripted {
+        fn new(chrome: fn() -> Answer, safari: fn() -> Answer) -> (Box<Self>, Arc<Mutex<usize>>) {
+            let calls = Arc::new(Mutex::new(0));
+            let runner = Box::new(Self {
+                chrome,
+                safari,
+                calls: Arc::clone(&calls),
+            });
+            (runner, calls)
+        }
+    }
+
+    impl ScriptRunner for Scripted {
+        fn run(&self, script: &str, _limit: Duration) -> Answer {
+            *self.calls.lock().unwrap() += 1;
+            if script.contains(Browser::Chrome.bundle_id()) {
+                (self.chrome)()
+            } else {
+                (self.safari)()
+            }
+        }
+    }
+
+    fn same(answer: fn() -> Answer) -> MacSignals {
+        MacSignals::with_runner(Scripted::new(answer, answer).0).with_installed(|_| true)
+    }
+
+    fn far() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
+    fn chrome_window(mode: &str) -> Answer {
+        Answer::Text(format!(
+            "window\u{1f}{mode}\u{1f}Docs\u{1f}https://example.org/d"
+        ))
+    }
+
     #[test]
-    fn the_computer_is_supported_and_names_its_one_grant() {
-        let signals = MacSignals::new();
+    fn the_computer_is_supported_and_names_its_two_grants() {
+        let signals = same(|| Answer::Unavailable);
         assert!(signals.supported());
         let grants = signals.grants();
-        assert_eq!(grants.len(), 1);
+        assert_eq!(grants.len(), 2);
         assert_eq!(grants[0].name, ACCESSIBILITY);
+        assert_eq!(grants[1].name, AUTOMATION);
+    }
+
+    #[test]
+    fn asking_for_the_grants_touches_no_browser() {
+        let (runner, calls) = Scripted::new(|| Answer::NotAllowed, || Answer::NotAllowed);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
+        let grants = signals.grants();
+        assert_eq!(*calls.lock().unwrap(), 0);
+        // Nothing is learned yet: not asked, naming both browsers.
+        assert_eq!(grants[1].state, GrantState::NotAsked);
+        assert_eq!(grants[1].browser.as_deref(), Some("Chrome, Safari"));
+    }
+
+    #[test]
+    fn the_automation_grant_follows_what_a_read_of_the_browsers_learns() {
+        let grant_for = |answer: fn() -> Answer| {
+            let signals = same(answer);
+            let _ = signals.browser_signals(None, false, far());
+            signals.automation_grant()
+        };
+        let closed = grant_for(|| Answer::Text("not-running".into()));
+        assert_eq!(closed.state, GrantState::BrowserNotRunning);
+        assert_eq!(closed.browser, None);
+        let allowed = grant_for(|| Answer::Text("1".into()));
+        assert_eq!(allowed.state, GrantState::Granted);
+        let refused = grant_for(|| Answer::NotAllowed);
+        assert_eq!(refused.state, GrantState::Denied);
+        assert_eq!(refused.browser.as_deref(), Some("Chrome, Safari"));
+        // Nothing clear: not asked, naming the browsers.
+        let unknown = grant_for(|| Answer::Unavailable);
+        assert_eq!(unknown.state, GrantState::NotAsked);
+        // A browser that is not installed has nothing to ask.
+    }
+
+    #[test]
+    fn a_browser_that_is_not_installed_is_not_asked_and_counts_as_not_running() {
+        let (runner, calls) = Scripted::new(|| Answer::Unavailable, || Answer::Text("1".into()));
+        let signals =
+            MacSignals::with_runner(runner).with_installed(|browser| browser != Browser::Chrome);
+        let _ = signals.browser_signals(None, false, far());
+        // Only Safari was asked, and a Mac with only Safari reads by Safari.
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(signals.automation_grant().state, GrantState::Granted);
+        assert_eq!(signals.automation_grant().browser, None);
+    }
+
+    #[test]
+    fn the_front_browser_gives_its_tab_and_private_flag() {
+        let (runner, _) = Scripted::new(|| chrome_window("incognito"), || Answer::NotAllowed);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
+        let tab = signals
+            .browser_signals(Some("com.google.Chrome"), false, far())
+            .expect("a tab");
+        assert!(tab.private);
+        assert_eq!(tab.title, "Docs");
+        // The other browser was touched, and its refusal shows.
+        let grant = signals.automation_grant();
+        assert_eq!(grant.state, GrantState::Denied);
+        assert_eq!(grant.browser.as_deref(), Some("Safari"));
+    }
+
+    #[test]
+    fn no_browser_is_asked_for_a_tab_unless_it_is_in_front() {
+        let (runner, _) = Scripted::new(|| chrome_window("normal"), || chrome_window("normal"));
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
+        assert!(
+            signals
+                .browser_signals(Some("org.mozilla.firefox"), false, far())
+                .is_none()
+        );
+        assert!(signals.browser_signals(None, false, far()).is_none());
+    }
+
+    #[test]
+    fn nothing_is_asked_of_a_browser_while_the_screen_is_locked() {
+        let (runner, calls) = Scripted::new(|| chrome_window("normal"), || chrome_window("normal"));
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
+        assert!(
+            signals
+                .browser_signals(Some("com.google.Chrome"), true, far())
+                .is_none()
+        );
+        assert_eq!(*calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_refusal_of_the_front_browser_alone_names_only_that_browser() {
+        // Safari in front is refused, Chrome answers: only Safari is named.
+        let (runner, _) = Scripted::new(|| Answer::Text("2".into()), || Answer::NotAllowed);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
+        assert!(
+            signals
+                .browser_signals(Some("com.apple.Safari"), false, far())
+                .is_none()
+        );
+        let grant = signals.automation_grant();
+        assert_eq!(grant.state, GrantState::Denied);
+        assert_eq!(grant.browser.as_deref(), Some("Safari"));
+
+        // And the other way: Chrome in front is refused, Safari answers.
+        let (runner, _) = Scripted::new(|| Answer::NotAllowed, || Answer::Text("2".into()));
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
+        assert!(
+            signals
+                .browser_signals(Some("com.google.Chrome"), false, far())
+                .is_none()
+        );
+        let grant = signals.automation_grant();
+        assert_eq!(grant.browser.as_deref(), Some("Chrome"));
+    }
+
+    #[test]
+    fn a_front_browser_that_is_not_running_does_not_hide_the_other_ones_grant() {
+        let (runner, _) = Scripted::new(
+            || Answer::Text("not-running".into()),
+            || Answer::Text("2".into()),
+        );
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
+        let _ = signals.browser_signals(Some("com.google.Chrome"), false, far());
+        assert_eq!(signals.automation_grant().state, GrantState::Granted);
+    }
+
+    #[test]
+    fn a_refused_or_missing_tab_read_leaves_no_tab_and_says_why() {
+        let tab_with = |answer: fn() -> Answer| {
+            let signals = same(answer);
+            let tab = signals.browser_signals(Some("com.apple.Safari"), false, far());
+            (tab.is_none(), signals.automation_grant())
+        };
+        let (none, grant) = tab_with(|| Answer::NotAllowed);
+        assert!(none);
+        assert_eq!(grant.state, GrantState::Denied);
+        let (none, grant) = tab_with(|| Answer::Text("no-window".into()));
+        assert!(none);
+        assert_eq!(grant.state, GrantState::Granted);
+        let (none, grant) = tab_with(|| Answer::Text("not-running".into()));
+        assert!(none);
+        assert_eq!(grant.state, GrantState::BrowserNotRunning);
+    }
+
+    #[test]
+    fn one_browser_missing_its_grant_is_named_whatever_the_other_says() {
+        use Reach::{Allowed, NotAllowed, NotRunning};
+        let state = |chrome, safari| {
+            automation_state([(Browser::Chrome, chrome), (Browser::Safari, safari)])
+        };
+        assert_eq!(
+            state(NotAllowed, Allowed),
+            (GrantState::Denied, Some("Chrome".into()))
+        );
+        assert_eq!(
+            state(Allowed, NotAllowed),
+            (GrantState::Denied, Some("Safari".into()))
+        );
+        assert_eq!(state(Allowed, NotRunning), (GrantState::Granted, None));
+        assert_eq!(
+            state(NotRunning, NotRunning),
+            (GrantState::BrowserNotRunning, None)
+        );
+        assert_eq!(
+            state(Allowed, Reach::Unknown),
+            (GrantState::NotAsked, Some("Safari".into()))
+        );
+    }
+
+    #[test]
+    fn a_probe_that_says_nothing_keeps_the_last_clear_answer_of_a_browser() {
+        let signals = same(|| Answer::Unavailable);
+        signals.remember(Browser::Chrome, Reach::NotAllowed);
+        signals.remember(Browser::Safari, Reach::NotRunning);
+        signals.remember(Browser::Chrome, Reach::Unknown);
+        let grant = signals.automation_grant();
+        assert_eq!(grant.state, GrantState::Denied);
+        assert_eq!(grant.browser.as_deref(), Some("Chrome"));
     }
 
     #[test]
     fn a_read_is_a_reading_or_a_missing_grant_never_an_empty_healthy_one() {
-        match MacSignals::new().read() {
+        match same(|| Answer::Unavailable).read() {
             Ok(reading) => {
                 // With the grant, a title may be missing (no window), but a front application is
                 // never stored without being named.

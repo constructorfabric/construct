@@ -131,6 +131,8 @@ pub enum GrantState {
     Granted,
     Denied,
     NotAsked,
+    /// The program the permission is for is not running, so it cannot be asked.
+    BrowserNotRunning,
 }
 
 impl GrantState {
@@ -139,6 +141,7 @@ impl GrantState {
             GrantState::Granted => "granted",
             GrantState::Denied => "denied",
             GrantState::NotAsked => "not_asked",
+            GrantState::BrowserNotRunning => "browser_not_running",
         }
     }
 }
@@ -148,6 +151,8 @@ impl GrantState {
 pub struct Grant {
     pub name: &'static str,
     pub state: GrantState,
+    /// The browsers the state is about, named for the person, when it is about some of them.
+    pub browser: Option<String>,
 }
 
 /// What the platform gives.
@@ -633,7 +638,12 @@ impl Screen {
             shown
                 .grants
                 .iter()
-                .map(|g| json!({ "name": g.name, "state": g.state.as_str() }))
+                .map(|g| match &g.browser {
+                    Some(browser) => {
+                        json!({ "name": g.name, "state": g.state.as_str(), "browser": browser })
+                    }
+                    None => json!({ "name": g.name, "state": g.state.as_str() }),
+                })
                 .collect::<Vec<_>>()
         };
         let today = local_day(self.0.clock.now());

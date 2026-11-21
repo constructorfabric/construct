@@ -156,6 +156,7 @@ impl FakeSignals {
             grants: Mutex::new(vec![Grant {
                 name: "accessibility",
                 state: GrantState::Granted,
+                browser: None,
             }]),
             hangs: Mutex::new(Vec::new()),
             last: Mutex::new(first),
@@ -479,20 +480,48 @@ fn the_erase_removes_the_records() {
 }
 
 #[test]
+fn the_row_names_the_browser_a_grant_is_about() {
+    let rig = rig(Err(Failure::NeedsPermission));
+    *rig.signals.grants.lock().unwrap() = vec![
+        Grant {
+            name: "automation",
+            state: GrantState::Denied,
+            browser: Some("Chrome, Safari".into()),
+        },
+        Grant {
+            name: "other",
+            state: GrantState::BrowserNotRunning,
+            browser: None,
+        },
+    ];
+    rig.screen.tick();
+    assert_eq!(
+        rig.screen.status()["grants"],
+        json!([
+            { "name": "automation", "state": "denied", "browser": "Chrome, Safari" },
+            { "name": "other", "state": "browser_not_running" },
+        ])
+    );
+}
+
+#[test]
 fn the_row_carries_the_grants_of_the_fake() {
     let rig = rig(Err(Failure::NeedsPermission));
     *rig.signals.grants.lock().unwrap() = vec![
         Grant {
             name: "accessibility",
             state: GrantState::Granted,
+            browser: None,
         },
         Grant {
             name: "screen_recording",
             state: GrantState::Denied,
+            browser: None,
         },
         Grant {
             name: "automation",
             state: GrantState::NotAsked,
+            browser: None,
         },
     ];
     // Off, the row still says what the person can grant.
@@ -747,6 +776,7 @@ fn the_grants_are_looked_at_when_off_only_now_and_then() {
     *rig.signals.grants.lock().unwrap() = vec![Grant {
         name: "accessibility",
         state: GrantState::Denied,
+        browser: None,
     }];
     rig.screen.tick();
     assert_eq!(rig.screen.status()["grants"][0]["state"], "granted");
@@ -1010,6 +1040,7 @@ fn the_grants_are_looked_at_again_on_the_twelfth_step_while_off() {
     *rig.signals.grants.lock().unwrap() = vec![Grant {
         name: "accessibility",
         state: GrantState::Denied,
+        browser: None,
     }];
     for _ in 1..12 {
         rig.screen.tick();

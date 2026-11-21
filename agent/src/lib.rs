@@ -5,6 +5,8 @@
 pub mod activity;
 pub mod autostart;
 #[cfg(unix)]
+pub mod browser_tabs;
+#[cfg(unix)]
 pub mod chat;
 #[cfg(unix)]
 pub mod dashboard;
