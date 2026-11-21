@@ -207,10 +207,11 @@ fn macos_uses_the_given_uid_for_launchctl() {
     s.macos().install(&s.exe).unwrap();
     let calls = s.take_calls();
     assert_eq!(calls[0], "launchctl bootout gui/1234/cf.construct.agent");
+    assert_eq!(calls[1], "launchctl print gui/1234/cf.construct.agent");
     assert!(
-        calls[1].starts_with("launchctl bootstrap gui/1234 "),
+        calls[2].starts_with("launchctl bootstrap gui/1234 "),
         "{}",
-        calls[1]
+        calls[2]
     );
 }
 

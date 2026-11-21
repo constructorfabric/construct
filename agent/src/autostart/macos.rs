@@ -5,6 +5,8 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::{Autostart, CommandRunner, binary_stamp, escape, render, with_lock};
 
@@ -12,16 +14,34 @@ const PLIST_TEMPLATE: &str = include_str!("../../templates/cf.construct.agent.pl
 
 pub const LABEL: &str = "cf.construct.agent";
 
+/// The longest `reload` waits for the old job to go down after `bootout`. The agent stops its
+/// database first, which takes a few seconds. The app gives `ensure-service` 30 seconds.
+const UNLOAD_WAIT: Duration = Duration::from_secs(25);
+const UNLOAD_PAUSE: Duration = Duration::from_millis(100);
+
 pub struct LaunchAgent {
     home: PathBuf,
     uid: String,
     runner: Box<dyn CommandRunner>,
+    unload_wait: Duration,
 }
 
 impl LaunchAgent {
     #[must_use]
     pub fn new(home: PathBuf, uid: String, runner: Box<dyn CommandRunner>) -> Self {
-        Self { home, uid, runner }
+        Self {
+            home,
+            uid,
+            runner,
+            unload_wait: UNLOAD_WAIT,
+        }
+    }
+
+    /// Changes the longest wait for the old job to go down.
+    #[must_use]
+    pub fn with_unload_wait(mut self, wait: Duration) -> Self {
+        self.unload_wait = wait;
+        self
     }
 
     #[must_use]
@@ -79,15 +99,34 @@ impl LaunchAgent {
 
     /// Unload the job and load it again from the file. "Not loaded" is expected on a
     /// first install. A failed `bootout` of a job that is still loaded is an error:
-    /// bootstrapping over it would keep the old program.
+    /// bootstrapping over it would keep the old program. After a `bootout` that went
+    /// through, the old job is still going down for a while, and launchd refuses a
+    /// `bootstrap` until it is gone.
     fn reload(&self) -> io::Result<()> {
         match self
             .runner
             .run("launchctl", &["bootout", &self.gui_domain_target()])
         {
+            Ok(()) => {
+                self.wait_until_unloaded()?;
+                self.bootstrap()
+            }
             Err(e) if self.is_loaded() => Err(e),
-            _ => self.bootstrap(),
+            Err(_) => self.bootstrap(),
         }
+    }
+
+    fn wait_until_unloaded(&self) -> io::Result<()> {
+        let deadline = Instant::now() + self.unload_wait;
+        while self.is_loaded() {
+            if Instant::now() >= deadline {
+                return Err(io::Error::other(
+                    "the old job is still loaded after `launchctl bootout`",
+                ));
+            }
+            thread::sleep(UNLOAD_PAUSE);
+        }
+        Ok(())
     }
 
     fn bootstrap(&self) -> io::Result<()> {

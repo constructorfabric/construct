@@ -37,12 +37,29 @@ use construct_agent::autostart::{CommandRunner, linux, macos};
 use serde_json::{Value, json};
 
 #[derive(Clone, Default)]
-pub struct Recorder(pub Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<&'static str>>>);
+pub struct Recorder(
+    pub Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<Vec<&'static str>>>,
+    Arc<Mutex<LaunchJob>>,
+);
+
+/// What the fake `launchctl` remembers: after a `bootout` the job is gone until the next
+/// `bootstrap`, but `print` still finds it for `lingering` more calls.
+#[derive(Default)]
+struct LaunchJob {
+    gone: bool,
+    lingering: usize,
+}
 
 impl Recorder {
     /// Makes every call whose text contains one of `needles` fail (`""` matches all).
     pub fn fail_on(&self, needles: &[&'static str]) {
         *self.1.lock().unwrap() = needles.to_vec();
+    }
+
+    /// After a `bootout`, `launchctl print` still finds the job `calls` more times.
+    pub fn job_lingers_for(&self, calls: usize) {
+        self.2.lock().unwrap().lingering = calls;
     }
 }
 
@@ -57,10 +74,20 @@ impl CommandRunner for Recorder {
             .iter()
             .any(|needle| call.contains(needle))
         {
-            Err(io::Error::other(format!("{call} failed")))
-        } else {
-            Ok(())
+            return Err(io::Error::other(format!("{call} failed")));
         }
+        let mut job = self.2.lock().unwrap();
+        if call.starts_with("launchctl bootout") {
+            job.gone = true;
+        } else if call.starts_with("launchctl bootstrap") {
+            job.gone = false;
+        } else if call.starts_with("launchctl print") && job.gone {
+            if job.lingering == 0 {
+                return Err(io::Error::other(format!("{call} found no job")));
+            }
+            job.lingering -= 1;
+        }
+        Ok(())
     }
 }
 
@@ -97,6 +124,11 @@ impl Scenario {
 
     pub fn macos(&self) -> macos::LaunchAgent {
         macos::LaunchAgent::new(self.dir.clone(), "1234".into(), Box::new(self.rec.clone()))
+    }
+
+    /// Like `macos`, but waits at most `wait` for the old job to go down.
+    pub fn macos_waiting(&self, wait: Duration) -> macos::LaunchAgent {
+        self.macos().with_unload_wait(wait)
     }
 
     /// Another copy of the agent at a different path.
@@ -161,8 +193,9 @@ pub const LINUX_ENABLE: [&str; 2] = [
     "systemctl --user daemon-reload",
     "systemctl --user enable --now construct-agent.service",
 ];
-pub const MACOS_INSTALL: [&str; 2] = [
+pub const MACOS_INSTALL: [&str; 3] = [
     "launchctl bootout gui/1234/cf.construct.agent",
+    MACOS_PRINT,
     "launchctl bootstrap gui/1234 ",
 ];
 pub const MACOS_PRINT: &str = "launchctl print gui/1234/cf.construct.agent";
