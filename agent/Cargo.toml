@@ -84,7 +84,7 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEventSource", "CGEventTypes", "libc", "CGSession", "CGDirectDisplay", "CGDisplayConfiguration"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary", "CFString"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSRunLoop", "NSDate", "NSString", "NSObjCRuntime", "NSArray"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSRunLoop", "NSDate", "NSString", "NSObjCRuntime", "NSArray", "NSURL"] }
 accessibility = "0.2"
 accessibility-sys = "0.2"
 

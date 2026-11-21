@@ -10,8 +10,8 @@
 //! * Every call has a time limit ([`CALL_LIMIT`], or what is left of the caller's deadline); a call
 //!   that does not answer in time is killed and counts as no answer. An empty answer is asked
 //!   once more while there is time. An answer longer than [`MAX_OUTPUT`] is no answer.
-//! * A bundle id that no application has (a browser that is not installed) is said by error -1728
-//!   and counts as not running.
+//! * A window or a tab that is not there (a browser with only a settings window open) gives no
+//!   tab, in the script itself; any other failure of the script is no answer.
 //! * The system refuses with error -1743 when the person has not allowed the agent to control the
 //!   browser; that is a missing grant, said as such.
 //!
@@ -44,11 +44,10 @@ const NO_WINDOW: &str = "no-window";
 const WINDOW: &str = "window";
 /// The system's error number for "not allowed to send Apple events".
 const NOT_ALLOWED_CODE: &str = "-1743";
-/// The same number, for the script.
-const NOT_ALLOWED_NUMBER: i32 = -1743;
-/// The system's error number for "can't get": the answer to an application id that no
-/// application has, but also to any missing part of an application's own objects.
-const NOT_INSTALLED_CODE: &str = "-1728";
+/// The numbers of the errors that say a window or a tab is not there ("can't get", "invalid
+/// index"), for the script.
+const CANT_GET: i32 = -1728;
+const INVALID_INDEX: i32 = -1719;
 
 /// A browser whose tab can be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,11 +108,12 @@ tell application id "{id}"
         set w to front window
         set sep to (character id 31)
         return "{WINDOW}" & sep & ({mode}) & sep & ({title}) & sep & ({url})
-    on error message number code
-        -- A window with no tab to read (only a settings window open) is no tab; a refusal
-        -- is not, and goes on to the caller.
-        if code is {NOT_ALLOWED_NUMBER} then error message number code
-        return "{NO_WINDOW}"
+    on error errText number errCode
+        -- A window with no tab to read (only a settings window open) is no tab: the browser
+        -- says it cannot get the window or the tab. Any other failure (a refusal, a browser that
+        -- quit in the middle) goes on to the caller as it is.
+        if errCode is {CANT_GET} or errCode is {INVALID_INDEX} then return "{NO_WINDOW}"
+        error errText number errCode
     end try
 end tell"#
         )
@@ -136,8 +136,6 @@ pub enum Answer {
     Text(String),
     /// The person has not allowed the agent to control the browser.
     NotAllowed,
-    /// No application has the browser's id: it is not installed.
-    NotInstalled,
     /// No answer in time, a failure to run, or any other error.
     Unavailable,
 }
@@ -148,7 +146,6 @@ impl std::fmt::Debug for Answer {
         f.write_str(match self {
             Answer::Text(_) => "Text",
             Answer::NotAllowed => "NotAllowed",
-            Answer::NotInstalled => "NotInstalled",
             Answer::Unavailable => "Unavailable",
         })
     }
@@ -252,30 +249,9 @@ fn run_limited(program: &str, args: &[&str], limit: Duration) -> Answer {
         Answer::Text(trim_line_break(&String::from_utf8_lossy(&out)).to_owned())
     } else if err.contains(NOT_ALLOWED_CODE) {
         Answer::NotAllowed
-    } else if is_not_installed(&err) {
-        Answer::NotInstalled
     } else {
         Answer::Unavailable
     }
-}
-
-/// Whether the error says that no application has the browser's id. The number alone does not
-/// say it (a missing window of a running browser has it too); the script of an application that is
-/// not there fails to compile, and a compile error is the one that starts with the position in
-/// the script (`86:122: syntax error: …`), whatever language the system speaks. A failure while
-/// running starts with `execution error` and has no position in front.
-fn is_not_installed(err: &str) -> bool {
-    let first = err.lines().next().unwrap_or_default();
-    let mut parts = first.splitn(3, ':');
-    let position = parts
-        .next()
-        .zip(parts.next())
-        .is_some_and(|(line, column)| {
-            [line, column]
-                .iter()
-                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        });
-    position && err.contains(NOT_INSTALLED_CODE)
 }
 
 fn trim_line_break(text: &str) -> &str {
@@ -319,7 +295,6 @@ pub fn read_tab(runner: &dyn ScriptRunner, browser: Browser, deadline: Instant) 
             Answer::Text(text) if text.is_empty() => {}
             Answer::Text(text) => return parse_tab(&text),
             Answer::NotAllowed => return TabRead::NotAllowed,
-            Answer::NotInstalled => return TabRead::NotRunning,
             Answer::Unavailable => return TabRead::Unavailable,
         }
     }
@@ -348,7 +323,6 @@ pub fn probe(runner: &dyn ScriptRunner, browser: Browser, deadline: Instant) -> 
         Answer::Text(text) if text == NOT_RUNNING => Reach::NotRunning,
         Answer::Text(text) if !text.is_empty() => Reach::Allowed,
         Answer::NotAllowed => Reach::NotAllowed,
-        Answer::NotInstalled => Reach::NotRunning,
         Answer::Text(_) | Answer::Unavailable => Reach::Unknown,
     }
 }
@@ -586,21 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn a_browser_that_is_not_installed_is_not_running() {
-        let runner = Fake::new(vec![Answer::NotInstalled]);
-        assert_eq!(
-            read_tab(&runner, Browser::Chrome, later()),
-            TabRead::NotRunning
-        );
-        let probed = probe(
-            &Fake::new(vec![Answer::NotInstalled]),
-            Browser::Safari,
-            later(),
-        );
-        assert_eq!(probed, Reach::NotRunning);
-    }
-
-    #[test]
     fn no_call_is_made_without_time_and_a_call_gets_no_more_than_is_left() {
         let runner = Fake::new(vec![Answer::Text("not-running".into())]);
         let over = Instant::now();
@@ -658,39 +617,55 @@ mod tests {
         assert_eq!(text.len() as u64, MAX_OUTPUT);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn the_system_says_a_browser_is_not_installed_by_its_error_number() {
-        let missing = run_limited(
-            "sh",
-            &[
-                "-c",
-                "echo '86:122: syntax error: Cannot get application id (-1728)' >&2; exit 1",
-            ],
-            Duration::from_secs(5),
-        );
-        assert_eq!(missing, Answer::NotInstalled);
-    }
-
-    #[test]
-    fn a_missing_part_of_a_running_browser_is_not_a_missing_browser() {
-        let compile = "86:122: syntax error: Can’t get application id \"x\". (-1728)\n";
-        let runtime = "execution error: Can’t get window 1 of application \"Safari\". (-1728)\n";
-        assert!(is_not_installed(compile));
-        assert!(!is_not_installed(runtime));
-        assert!(!is_not_installed(
-            "86:122: syntax error: another thing (-2740)"
-        ));
-        assert!(!is_not_installed(""));
-    }
-
-    #[test]
-    fn the_tab_script_turns_a_failed_read_into_no_tab_and_keeps_a_refusal() {
+    fn the_tab_script_gives_no_tab_for_a_missing_window_and_passes_every_other_failure_on() {
         for browser in Browser::ALL {
             let script = browser.tab_script();
-            assert!(script.contains("on error message number code"));
-            assert!(script.contains("if code is -1743 then error message number code"));
-            assert!(script.contains("return \"no-window\""));
+            assert!(script.contains("on error errText number errCode"));
+            assert!(
+                script
+                    .contains("if errCode is -1728 or errCode is -1719 then return \"no-window\"")
+            );
+            assert!(script.contains("error errText number errCode"));
         }
+    }
+
+    /// Compiles each script with the system's own compiler (nothing is run, so no browser is
+    /// asked and nothing is started): a name that clashes with a word of a browser's scripting
+    /// dictionary, or a property the browser does not have, fails here.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_script_compiles_on_a_mac() {
+        let dir = std::env::temp_dir().join(format!("browser-tabs-compile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut compiled = 0;
+        for (browser, app) in [
+            (Browser::Chrome, "/Applications/Google Chrome.app"),
+            (Browser::Safari, "/Applications/Safari.app"),
+        ] {
+            // A browser that is not here has no dictionary to compile against.
+            if !std::path::Path::new(app).exists() {
+                continue;
+            }
+            for (name, script) in [
+                ("tab", browser.tab_script()),
+                ("probe", browser.probe_script()),
+            ] {
+                let out = Command::new("osacompile")
+                    .arg("-o")
+                    .arg(dir.join("out.scpt"))
+                    .args(["-e", &script])
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "the {name} script of {}",
+                    browser.label()
+                );
+                compiled += 1;
+            }
+        }
+        eprintln!("compiled {compiled} scripts");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

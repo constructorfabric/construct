@@ -126,6 +126,8 @@ pub struct MacSignals {
     runner: Box<dyn ScriptRunner>,
     /// The last clear answer about each browser, in the order of [`Browser::ALL`].
     browsers: Mutex<[Reach; 2]>,
+    /// Whether the system has the browser installed. A browser that is not has nothing to ask.
+    installed: fn(Browser) -> bool,
 }
 
 impl Default for MacSignals {
@@ -147,7 +149,15 @@ impl MacSignals {
             last_trust: AtomicU8::new(0),
             runner,
             browsers: Mutex::new([Reach::Unknown; 2]),
+            installed: browser_installed,
         }
+    }
+
+    /// The same, with the system's answer about what is installed given by `installed`.
+    #[cfg(test)]
+    fn with_installed(mut self, installed: fn(Browser) -> bool) -> Self {
+        self.installed = installed;
+        self
     }
 
     fn remember(&self, browser: Browser, reach: Reach) {
@@ -195,7 +205,11 @@ impl MacSignals {
         let front = front_bundle.and_then(Browser::from_bundle_id);
         let tab = front.and_then(|browser| self.front_tab(browser, deadline));
         for browser in Browser::ALL.into_iter().filter(|b| Some(*b) != front) {
-            let reach = browser_tabs::probe(self.runner.as_ref(), browser, deadline);
+            let reach = if (self.installed)(browser) {
+                browser_tabs::probe(self.runner.as_ref(), browser, deadline)
+            } else {
+                Reach::NotRunning
+            };
             self.remember(browser, reach);
         }
         tab
@@ -218,6 +232,13 @@ impl MacSignals {
             Trust::from_u8(self.last_trust.load(Ordering::Relaxed)),
         )
     }
+}
+
+/// Whether the system knows an application with the browser's bundle id.
+fn browser_installed(browser: Browser) -> bool {
+    NSWorkspace::sharedWorkspace()
+        .URLForApplicationWithBundleIdentifier(&NSString::from_str(browser.bundle_id()))
+        .is_some()
 }
 
 fn browser_index(browser: Browser) -> usize {
@@ -665,7 +686,7 @@ mod tests {
     }
 
     fn same(answer: fn() -> Answer) -> MacSignals {
-        MacSignals::with_runner(Scripted::new(answer, answer).0)
+        MacSignals::with_runner(Scripted::new(answer, answer).0).with_installed(|_| true)
     }
 
     fn far() -> Instant {
@@ -691,7 +712,7 @@ mod tests {
     #[test]
     fn asking_for_the_grants_touches_no_browser() {
         let (runner, calls) = Scripted::new(|| Answer::NotAllowed, || Answer::NotAllowed);
-        let signals = MacSignals::with_runner(runner);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
         let grants = signals.grants();
         assert_eq!(*calls.lock().unwrap(), 0);
         // Nothing is learned yet: not asked, naming both browsers.
@@ -718,22 +739,24 @@ mod tests {
         let unknown = grant_for(|| Answer::Unavailable);
         assert_eq!(unknown.state, GrantState::NotAsked);
         // A browser that is not installed has nothing to ask.
-        let missing = grant_for(|| Answer::NotInstalled);
-        assert_eq!(missing.state, GrantState::BrowserNotRunning);
     }
 
     #[test]
-    fn a_mac_with_one_browser_installed_reads_by_that_browser() {
-        let (runner, _) = Scripted::new(|| Answer::NotInstalled, || Answer::Text("1".into()));
-        let signals = MacSignals::with_runner(runner);
+    fn a_browser_that_is_not_installed_is_not_asked_and_counts_as_not_running() {
+        let (runner, calls) = Scripted::new(|| Answer::Unavailable, || Answer::Text("1".into()));
+        let signals =
+            MacSignals::with_runner(runner).with_installed(|browser| browser != Browser::Chrome);
         let _ = signals.browser_signals(None, false, far());
+        // Only Safari was asked, and a Mac with only Safari reads by Safari.
+        assert_eq!(*calls.lock().unwrap(), 1);
         assert_eq!(signals.automation_grant().state, GrantState::Granted);
+        assert_eq!(signals.automation_grant().browser, None);
     }
 
     #[test]
     fn the_front_browser_gives_its_tab_and_private_flag() {
         let (runner, _) = Scripted::new(|| chrome_window("incognito"), || Answer::NotAllowed);
-        let signals = MacSignals::with_runner(runner);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
         let tab = signals
             .browser_signals(Some("com.google.Chrome"), false, far())
             .expect("a tab");
@@ -748,7 +771,7 @@ mod tests {
     #[test]
     fn no_browser_is_asked_for_a_tab_unless_it_is_in_front() {
         let (runner, _) = Scripted::new(|| chrome_window("normal"), || chrome_window("normal"));
-        let signals = MacSignals::with_runner(runner);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
         assert!(
             signals
                 .browser_signals(Some("org.mozilla.firefox"), false, far())
@@ -760,7 +783,7 @@ mod tests {
     #[test]
     fn nothing_is_asked_of_a_browser_while_the_screen_is_locked() {
         let (runner, calls) = Scripted::new(|| chrome_window("normal"), || chrome_window("normal"));
-        let signals = MacSignals::with_runner(runner);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
         assert!(
             signals
                 .browser_signals(Some("com.google.Chrome"), true, far())
@@ -773,7 +796,7 @@ mod tests {
     fn a_refusal_of_the_front_browser_alone_names_only_that_browser() {
         // Safari in front is refused, Chrome answers: only Safari is named.
         let (runner, _) = Scripted::new(|| Answer::Text("2".into()), || Answer::NotAllowed);
-        let signals = MacSignals::with_runner(runner);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
         assert!(
             signals
                 .browser_signals(Some("com.apple.Safari"), false, far())
@@ -785,7 +808,7 @@ mod tests {
 
         // And the other way: Chrome in front is refused, Safari answers.
         let (runner, _) = Scripted::new(|| Answer::NotAllowed, || Answer::Text("2".into()));
-        let signals = MacSignals::with_runner(runner);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
         assert!(
             signals
                 .browser_signals(Some("com.google.Chrome"), false, far())
@@ -801,7 +824,7 @@ mod tests {
             || Answer::Text("not-running".into()),
             || Answer::Text("2".into()),
         );
-        let signals = MacSignals::with_runner(runner);
+        let signals = MacSignals::with_runner(runner).with_installed(|_| true);
         let _ = signals.browser_signals(Some("com.google.Chrome"), false, far());
         assert_eq!(signals.automation_grant().state, GrantState::Granted);
     }
