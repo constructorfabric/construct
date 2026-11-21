@@ -119,20 +119,23 @@ fn the_guide_begins_with_the_rule_that_the_file_is_not_for_the_person() {
     let (workspace, root) = workspace("rule");
     write(&workspace).unwrap();
     let written = std::fs::read_to_string(root.join("workspace").join(GUIDE_FILE)).unwrap();
-    let opening: String = written.lines().take(8).collect::<Vec<_>>().join("\n");
+    let first_fence = written.find("```").unwrap();
+    let opening = &written[..first_fence];
     assert!(opening.starts_with("# The dashboard"));
     for phrase in [
         "does not edit the dashboard file",
+        "does not care how the dashboard is\nmade",
         "yourself with your tools",
         "say so in plain words",
-        "unless they ask to see",
+        "unless they ask to see\nthem; if they do ask, show them",
+        "fix them yourself",
+        "without file or field names",
     ] {
-        assert!(opening.contains(phrase), "the opening says: {phrase}");
+        assert!(
+            opening.contains(phrase),
+            "before any example it says: {phrase}"
+        );
     }
-    assert!(
-        !opening.contains("```"),
-        "the rule comes before any example"
-    );
 }
 
 #[test]
