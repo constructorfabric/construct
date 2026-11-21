@@ -113,10 +113,32 @@ fn every_json_example_of_the_guide_is_a_valid_dashboard() {
     }
 }
 
+/// The first lines tell the model the person does not see the file, before any detail of it.
+#[test]
+fn the_guide_begins_with_the_rule_that_the_file_is_not_for_the_person() {
+    let (workspace, root) = workspace("rule");
+    write(&workspace).unwrap();
+    let written = std::fs::read_to_string(root.join("workspace").join(GUIDE_FILE)).unwrap();
+    let opening: String = written.lines().take(8).collect::<Vec<_>>().join("\n");
+    assert!(opening.starts_with("# The dashboard"));
+    for phrase in [
+        "does not edit the dashboard file",
+        "yourself with your tools",
+        "say so in plain words",
+        "unless they ask to see",
+    ] {
+        assert!(opening.contains(phrase), "the opening says: {phrase}");
+    }
+    assert!(
+        !opening.contains("```"),
+        "the rule comes before any example"
+    );
+}
+
 #[test]
 fn the_guide_stays_short() {
     assert!(
-        GUIDE.lines().count() <= 80,
+        GUIDE.lines().count() <= 90,
         "the model reads it when it needs it"
     );
 }
