@@ -1,9 +1,13 @@
 package cf.construct.mobile.core.model
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
 /** Whose time the page counts: the user's own, the unattended agents', or both. */
 enum class Whose { OWN, UNATTENDED, ALL }
 
 /** One day as the page counts it: its label and its start and end in UTC, whole minutes. */
+@Serializable
 data class DayBounds(
     val label: String,
     val start: String,
@@ -11,6 +15,7 @@ data class DayBounds(
 )
 
 /** What a widget keeps: a list left out means no limit on it. */
+@Serializable
 data class Filter(
     val projects: List<String>? = null,
     val tickets: List<String>? = null,
@@ -18,14 +23,19 @@ data class Filter(
 )
 
 /** What to count in the days: a widget of the document, or the sessions and filter the call names. */
+@Serializable
 sealed interface DashboardInput {
     val days: List<DayBounds>
 
+    @Serializable
+    @SerialName("widget")
     data class ForWidget(
         override val days: List<DayBounds>,
         val widget: String,
     ) : DashboardInput
 
+    @Serializable
+    @SerialName("sessions")
     data class ForSessions(
         override val days: List<DayBounds>,
         val sessions: Whose,
@@ -33,12 +43,14 @@ sealed interface DashboardInput {
     ) : DashboardInput
 }
 
+@Serializable
 data class DayMinutes(
     val label: String,
     val minutes: Int,
 )
 
 /** One group of a table: its key, its time, its share of the total (0 to 1) and its sessions. */
+@Serializable
 data class GroupMinutes(
     val key: String,
     val minutes: Int,
@@ -47,6 +59,7 @@ data class GroupMinutes(
 )
 
 /** The numbers of a period. They hold no text of a message. */
+@Serializable
 data class DashboardNumbers(
     val totalMinutes: Int,
     val sessionCount: Int,
@@ -61,6 +74,7 @@ enum class GroupBy { PROJECT, TICKET, TOOL, DAY }
 enum class Period { TODAY, THIS_WEEK, LAST_WEEK, THIS_MONTH, LAST_MONTH, LAST_7_DAYS, LAST_30_DAYS }
 
 /** Where a widget sits on the grid of 12 columns; columns and rows count from 0. */
+@Serializable
 data class Position(
     val column: Int,
     val row: Int,
@@ -68,6 +82,7 @@ data class Position(
     val height: Int,
 )
 
+@Serializable
 data class Widget(
     val id: String,
     val kind: WidgetKind,
@@ -78,6 +93,7 @@ data class Widget(
     val filter: Filter? = null,
 )
 
+@Serializable
 data class DashboardDocument(
     val title: String,
     /** The period and the sessions of every widget that has none of its own. */
@@ -87,6 +103,7 @@ data class DashboardDocument(
 )
 
 /** Why the file as it is now is not used, and where: a line and column or a JSON pointer. */
+@Serializable
 data class DocumentProblem(
     val kind: Kind,
     val place: String,

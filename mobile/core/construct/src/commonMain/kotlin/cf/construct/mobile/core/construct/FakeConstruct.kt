@@ -179,8 +179,10 @@ class FakeConstruct(
         Outcome.Ok(DocumentState(seededDocument, null))
 
     companion object {
-        const val NO_SUCH_CONVERSATION = "no such conversation"
         const val ANSWER_RUNNING = "an answer is running"
+
+        /** The profile's version the fake reports until everything is erased. */
+        const val FACTS_VERSION = 3L
         const val CANNED_TOOL_LINE = "Looked up your profile"
         val CANNED_ANSWER = listOf("Here is ", "a canned ", "answer.")
 
@@ -190,7 +192,6 @@ class FakeConstruct(
         private const val NEW_CHAT_DAY = "2026-01-03T"
         private const val SECONDS_PER_MINUTE = 60
         private const val SECONDS_PER_HOUR = 3600
-        private const val FACTS_VERSION = 3L
         private const val MINUTES_PER_DAY = 60
         private const val PERCENT = 100
         private val GROUP_KEYS = listOf("alpha", "beta")

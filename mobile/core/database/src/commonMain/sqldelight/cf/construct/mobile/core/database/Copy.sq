@@ -1,0 +1,118 @@
+CREATE TABLE conversation (
+    id TEXT NOT NULL PRIMARY KEY,
+    title TEXT NOT NULL,
+    time TEXT NOT NULL
+);
+
+CREATE TABLE message (
+    conversation_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, position)
+);
+
+-- The value is JSON text: a string, or an object.
+CREATE TABLE fact (
+    fact_id TEXT NOT NULL PRIMARY KEY,
+    entity_kind TEXT NOT NULL,
+    property TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    stored_at TEXT NOT NULL,
+    tool TEXT
+);
+
+-- One row at most: the last good document and the problem of the file as it is now, both JSON text.
+CREATE TABLE document (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+    document_json TEXT,
+    problem_json TEXT
+);
+
+-- The key is the JSON text of the input the numbers were counted for.
+CREATE TABLE numbers (
+    input_json TEXT NOT NULL PRIMARY KEY,
+    numbers_json TEXT NOT NULL
+);
+
+-- One row at most: when the copy was last brought up to date.
+CREATE TABLE sync (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+    synced_at TEXT,
+    memory_version INTEGER
+);
+
+listConversations:
+SELECT id, title, time FROM conversation ORDER BY time DESC, id;
+
+conversationExists:
+SELECT COUNT(*) FROM conversation WHERE id = ?;
+
+messagesOf:
+SELECT role, text FROM message WHERE conversation_id = ? ORDER BY position;
+
+saveConversation:
+INSERT OR REPLACE INTO conversation(id, title, time) VALUES (?, ?, ?);
+
+saveMessage:
+INSERT INTO message(conversation_id, position, role, text) VALUES (?, ?, ?, ?);
+
+deleteMessagesOf:
+DELETE FROM message WHERE conversation_id = ?;
+
+deleteConversation:
+DELETE FROM conversation WHERE id = ?;
+
+deleteAllMessages:
+DELETE FROM message;
+
+deleteAllConversations:
+DELETE FROM conversation;
+
+listFacts:
+SELECT fact_id, entity_kind, property, value_json, stored_at, tool FROM fact ORDER BY rowid;
+
+saveFact:
+INSERT OR REPLACE INTO fact(fact_id, entity_kind, property, value_json, stored_at, tool) VALUES (?, ?, ?, ?, ?, ?);
+
+deleteFact:
+DELETE FROM fact WHERE fact_id = ?;
+
+deleteAllFacts:
+DELETE FROM fact;
+
+documentRow:
+SELECT document_json, problem_json FROM document WHERE id = 1;
+
+saveDocument:
+INSERT OR REPLACE INTO document(id, document_json, problem_json) VALUES (1, ?, ?);
+
+deleteDocument:
+DELETE FROM document;
+
+numbersFor:
+SELECT numbers_json FROM numbers WHERE input_json = ?;
+
+saveNumbers:
+INSERT OR REPLACE INTO numbers(input_json, numbers_json) VALUES (?, ?);
+
+deleteAllNumbers:
+DELETE FROM numbers;
+
+lastSync:
+SELECT synced_at FROM sync WHERE id = 1;
+
+startSync:
+INSERT OR IGNORE INTO sync(id) VALUES (1);
+
+saveSyncedAt:
+UPDATE sync SET synced_at = ? WHERE id = 1;
+
+memoryVersion:
+SELECT memory_version FROM sync WHERE id = 1;
+
+saveMemoryVersion:
+UPDATE sync SET memory_version = ? WHERE id = 1;
+
+deleteSync:
+DELETE FROM sync;
