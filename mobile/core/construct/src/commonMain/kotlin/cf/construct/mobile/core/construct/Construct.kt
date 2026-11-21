@@ -1,0 +1,62 @@
+package cf.construct.mobile.core.construct
+
+import cf.construct.mobile.core.model.ChatEvent
+import cf.construct.mobile.core.model.ChatInput
+import cf.construct.mobile.core.model.ChatMessage
+import cf.construct.mobile.core.model.ConversationSummary
+import cf.construct.mobile.core.model.DashboardInput
+import cf.construct.mobile.core.model.DashboardNumbers
+import cf.construct.mobile.core.model.DocumentState
+import cf.construct.mobile.core.model.EraseStarted
+import cf.construct.mobile.core.model.MemoryFacts
+import cf.construct.mobile.core.model.Outcome
+import kotlinx.coroutines.flow.Flow
+
+interface ChatApi {
+    /** The conversations, the newest first. */
+    suspend fun listConversations(): Outcome<List<ConversationSummary>>
+
+    suspend fun getConversation(conversation: String): Outcome<List<ChatMessage>>
+
+    /** One conversation, or [cf.construct.mobile.core.model.DELETE_ALL_CONVERSATIONS]. */
+    suspend fun deleteConversation(which: String): Outcome<Unit>
+
+    /** Whether an answer was started. Its events come through [chatEvents]. */
+    suspend fun sendMessage(input: ChatInput): Outcome<Unit>
+
+    /** Asks for the running answer to end; the end comes as an event. */
+    suspend fun stopAnswer()
+
+    /** The events of the answers; collect it before sending to see every event. */
+    val chatEvents: Flow<ChatEvent>
+}
+
+interface MemoryApi {
+    /** Every fact of the person, with the profile's version. */
+    suspend fun getMemoryFacts(): Outcome<MemoryFacts>
+
+    /** Only the profile's version. */
+    suspend fun getMemoryVersion(): Outcome<Long?>
+
+    /** Deletes one fact by its id. Sending it again after a failure is safe. */
+    suspend fun deleteMemoryFact(factId: String): Outcome<Unit>
+
+    /** Asks for everything about the person to be erased; it does not wait for the end. */
+    suspend fun eraseEverything(): Outcome<EraseStarted>
+
+    /** Whether an erasure is still running. */
+    suspend fun getErasing(): Outcome<Boolean>
+}
+
+interface DashboardApi {
+    suspend fun getDashboardNumbers(input: DashboardInput): Outcome<DashboardNumbers>
+
+    /** The last good document, or none, and the problem of the file as it is now. */
+    suspend fun getDashboardDocument(): Outcome<DocumentState>
+}
+
+/** The one interface the screens use for chats, memory and the dashboard. */
+interface Construct :
+    ChatApi,
+    MemoryApi,
+    DashboardApi
