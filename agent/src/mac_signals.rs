@@ -770,6 +770,43 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_of_the_front_browser_alone_names_only_that_browser() {
+        // Safari in front is refused, Chrome answers: only Safari is named.
+        let (runner, _) = Scripted::new(|| Answer::Text("2".into()), || Answer::NotAllowed);
+        let signals = MacSignals::with_runner(runner);
+        assert!(
+            signals
+                .browser_signals(Some("com.apple.Safari"), false, far())
+                .is_none()
+        );
+        let grant = signals.automation_grant();
+        assert_eq!(grant.state, GrantState::Denied);
+        assert_eq!(grant.browser.as_deref(), Some("Safari"));
+
+        // And the other way: Chrome in front is refused, Safari answers.
+        let (runner, _) = Scripted::new(|| Answer::NotAllowed, || Answer::Text("2".into()));
+        let signals = MacSignals::with_runner(runner);
+        assert!(
+            signals
+                .browser_signals(Some("com.google.Chrome"), false, far())
+                .is_none()
+        );
+        let grant = signals.automation_grant();
+        assert_eq!(grant.browser.as_deref(), Some("Chrome"));
+    }
+
+    #[test]
+    fn a_front_browser_that_is_not_running_does_not_hide_the_other_ones_grant() {
+        let (runner, _) = Scripted::new(
+            || Answer::Text("not-running".into()),
+            || Answer::Text("2".into()),
+        );
+        let signals = MacSignals::with_runner(runner);
+        let _ = signals.browser_signals(Some("com.google.Chrome"), false, far());
+        assert_eq!(signals.automation_grant().state, GrantState::Granted);
+    }
+
+    #[test]
     fn a_refused_or_missing_tab_read_leaves_no_tab_and_says_why() {
         let tab_with = |answer: fn() -> Answer| {
             let signals = same(answer);

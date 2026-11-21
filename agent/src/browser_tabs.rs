@@ -44,8 +44,10 @@ const NO_WINDOW: &str = "no-window";
 const WINDOW: &str = "window";
 /// The system's error number for "not allowed to send Apple events".
 const NOT_ALLOWED_CODE: &str = "-1743";
-/// The system's error number for "no application has this id", which is what a browser that is
-/// not installed gives.
+/// The same number, for the script.
+const NOT_ALLOWED_NUMBER: i32 = -1743;
+/// The system's error number for "can't get": the answer to an application id that no
+/// application has, but also to any missing part of an application's own objects.
 const NOT_INSTALLED_CODE: &str = "-1728";
 
 /// A browser whose tab can be read.
@@ -102,10 +104,17 @@ impl Browser {
         format!(
             r#"if application id "{id}" is not running then return "{NOT_RUNNING}"
 tell application id "{id}"
-    if (count of windows) is 0 then return "{NO_WINDOW}"
-    set w to front window
-    set sep to (character id 31)
-    return "{WINDOW}" & sep & ({mode}) & sep & ({title}) & sep & ({url})
+    try
+        if (count of windows) is 0 then return "{NO_WINDOW}"
+        set w to front window
+        set sep to (character id 31)
+        return "{WINDOW}" & sep & ({mode}) & sep & ({title}) & sep & ({url})
+    on error message number code
+        -- A window with no tab to read (only a settings window open) is no tab; a refusal
+        -- is not, and goes on to the caller.
+        if code is {NOT_ALLOWED_NUMBER} then error message number code
+        return "{NO_WINDOW}"
+    end try
 end tell"#
         )
     }
@@ -243,11 +252,30 @@ fn run_limited(program: &str, args: &[&str], limit: Duration) -> Answer {
         Answer::Text(trim_line_break(&String::from_utf8_lossy(&out)).to_owned())
     } else if err.contains(NOT_ALLOWED_CODE) {
         Answer::NotAllowed
-    } else if err.contains(NOT_INSTALLED_CODE) {
+    } else if is_not_installed(&err) {
         Answer::NotInstalled
     } else {
         Answer::Unavailable
     }
+}
+
+/// Whether the error says that no application has the browser's id. The number alone does not
+/// say it (a missing window of a running browser has it too); the script of an application that is
+/// not there fails to compile, and a compile error is the one that starts with the position in
+/// the script (`86:122: syntax error: …`), whatever language the system speaks. A failure while
+/// running starts with `execution error` and has no position in front.
+fn is_not_installed(err: &str) -> bool {
+    let first = err.lines().next().unwrap_or_default();
+    let mut parts = first.splitn(3, ':');
+    let position = parts
+        .next()
+        .zip(parts.next())
+        .is_some_and(|(line, column)| {
+            [line, column]
+                .iter()
+                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        });
+    position && err.contains(NOT_INSTALLED_CODE)
 }
 
 fn trim_line_break(text: &str) -> &str {
@@ -637,10 +665,32 @@ mod tests {
             "sh",
             &[
                 "-c",
-                "echo \"Can't get application id (-1728)\" >&2; exit 1",
+                "echo '86:122: syntax error: Cannot get application id (-1728)' >&2; exit 1",
             ],
             Duration::from_secs(5),
         );
         assert_eq!(missing, Answer::NotInstalled);
+    }
+
+    #[test]
+    fn a_missing_part_of_a_running_browser_is_not_a_missing_browser() {
+        let compile = "86:122: syntax error: Can’t get application id \"x\". (-1728)\n";
+        let runtime = "execution error: Can’t get window 1 of application \"Safari\". (-1728)\n";
+        assert!(is_not_installed(compile));
+        assert!(!is_not_installed(runtime));
+        assert!(!is_not_installed(
+            "86:122: syntax error: another thing (-2740)"
+        ));
+        assert!(!is_not_installed(""));
+    }
+
+    #[test]
+    fn the_tab_script_turns_a_failed_read_into_no_tab_and_keeps_a_refusal() {
+        for browser in Browser::ALL {
+            let script = browser.tab_script();
+            assert!(script.contains("on error message number code"));
+            assert!(script.contains("if code is -1743 then error message number code"));
+            assert!(script.contains("return \"no-window\""));
+        }
     }
 }
