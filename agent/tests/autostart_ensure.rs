@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::time::Duration;
+
 use construct_agent::autostart::Autostart;
 
 use common::{LINUX_ENABLE, LINUX_INSTALL, MACOS_INSTALL, MACOS_PRINT, Scenario};
@@ -228,6 +230,35 @@ fn macos_install_reports_a_refused_bootout_of_a_loaded_job_and_bootstraps_nothin
     let s = Scenario::new();
     s.rec.fail_on(&["bootout"]);
     assert!(s.macos().install(&s.exe).is_err());
+    assert!(!s.take_calls().iter().any(|c| c.contains("bootstrap")));
+}
+
+#[test]
+fn macos_bootstrap_waits_until_the_old_job_is_gone() {
+    let s = Scenario::new();
+    let agent = s.macos();
+    s.rec.job_lingers_for(2);
+    agent.install(&s.exe).unwrap();
+    assert_eq!(
+        s.take_macos_calls(),
+        [
+            "launchctl bootout gui/1234/cf.construct.agent",
+            MACOS_PRINT,
+            MACOS_PRINT,
+            MACOS_PRINT,
+            "launchctl bootstrap gui/1234 ",
+        ]
+    );
+    agent.ensure(&s.exe).unwrap();
+    assert_eq!(s.take_calls(), [MACOS_PRINT]);
+}
+
+#[test]
+fn macos_job_that_never_goes_down_is_reported_and_bootstraps_nothing() {
+    let s = Scenario::new();
+    let agent = s.macos_waiting(Duration::from_millis(300));
+    s.rec.job_lingers_for(usize::MAX);
+    assert!(agent.install(&s.exe).is_err());
     assert!(!s.take_calls().iter().any(|c| c.contains("bootstrap")));
 }
 
