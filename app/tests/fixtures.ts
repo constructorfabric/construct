@@ -355,3 +355,18 @@ export async function recordOpenedLinks(
   });
   return () => app.evaluate(() => Reflect.get(globalThis, 'openedLinks') as string[]);
 }
+
+/** The line the agent answers on its socket when it runs, with `fields` added or replaced. */
+export function runningReply(fields: Record<string, unknown>): string {
+  return JSON.stringify({
+    status: 'running',
+    version: '0.1.0',
+    pid: 42,
+    model: 'example-model',
+    ...fields,
+  });
+}
+
+export function secondsAgo(seconds: number): string {
+  return new Date(Date.now() - seconds * 1000).toISOString();
+}
