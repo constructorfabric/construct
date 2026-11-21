@@ -25,3 +25,6 @@ rootProject.name = "construct-mobile"
 include(":core:model")
 include(":core:construct")
 include(":core:database")
+include(":core:designsystem")
+include(":feature:template")
+include(":feature:memory")

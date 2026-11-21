@@ -10,6 +10,9 @@ Multiplatform. This folder holds the shared Gradle project.
 | `core/model`     | The types: conversation, message, fact, dashboard.                                          |
 | `core/construct` | The one interface the screens use for chats, memory and the dashboard, and `FakeConstruct`. |
 | `core/database`  | The phone's copy in SQLite (SQLDelight), behind the same interface. Sending says "not available yet". |
+| `core/designsystem` | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme. |
+| `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`. |
+| `feature/memory`    | The first feature made from the template: the person's facts as a plain list. |
 
 The calls and names follow the desktop app's `chat-protocol.ts`, `memory-protocol.ts` and
 `dashboard-protocol.ts` in `app/src`. A screen talks to `Construct` and never knows where the data
@@ -33,5 +36,6 @@ cd mobile
 ./gradlew check                                           # tests, ktlint, detekt
 ./gradlew :core:construct:compileKotlinIosSimulatorArm64  # the iPhone simulator target
 ./gradlew :core:database:linkDebugFrameworkIosSimulatorArm64  # the copy store as an iPhone framework
+./gradlew :feature:memory:compileKotlinIosSimulatorArm64      # a feature for the iPhone simulator
 ./gradlew ktlintFormat                                    # fix ktlint findings
 ```
