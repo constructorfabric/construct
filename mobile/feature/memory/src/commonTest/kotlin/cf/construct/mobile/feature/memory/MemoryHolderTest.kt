@@ -106,20 +106,6 @@ class MemoryHolderTest {
         }
 
     @Test
-    fun aReadThatThrowsBecomesAFailure() =
-        runTest {
-            val offline = Offline(this)
-            offline.down = true
-            offline.throws = true
-            val holder = MemoryHolder(offline, backgroundScope)
-
-            holder.settled()
-
-            assertFalse(holder.state.value.loading)
-            assertEquals(OFFLINE, holder.state.value.failure)
-        }
-
-    @Test
     fun theNewestReadWinsEvenWhenAnOlderOneEndsLast() =
         runTest {
             val slow = Slow(this)
@@ -138,20 +124,15 @@ class MemoryHolderTest {
             assertFalse(holder.state.value.loading)
         }
 
-    /** The fake, which fails the facts read while [down], by an outcome or by throwing. */
+    /** The fake, which fails the facts read while [down]. */
     private class Offline(
         scope: TestScope,
         private val fake: FakeConstruct = FakeConstruct(scope.backgroundScope),
     ) : Construct by fake {
         var down = false
-        var throws = false
 
         override suspend fun getMemoryFacts(): Outcome<MemoryFacts> =
-            when {
-                !down -> fake.getMemoryFacts()
-                throws -> error(OFFLINE)
-                else -> Outcome.Failed(OFFLINE)
-            }
+            if (down) Outcome.Failed(OFFLINE) else fake.getMemoryFacts()
     }
 
     /**

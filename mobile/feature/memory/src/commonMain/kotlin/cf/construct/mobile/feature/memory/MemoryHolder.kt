@@ -2,7 +2,6 @@ package cf.construct.mobile.feature.memory
 
 import cf.construct.mobile.core.construct.Construct
 import cf.construct.mobile.core.model.Outcome
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,6 +13,10 @@ import kotlinx.coroutines.launch
 /**
  * Reads from [construct] and turns what it gets into one [MemoryState]. It is plain common
  * Kotlin with no Android type, so the Android screen and the iPhone screen watch the same class.
+ *
+ * A [Construct] reports a failed read as [Outcome.Failed] and does not throw, so the holder does not
+ * catch. Call [refresh] and run [scope] on one thread, the main one: the newest read wins because
+ * a refresh cancels the read before it, and that holds only without a second thread in between.
  *
  * @param scope where the reads run; the screen's owner cancels it.
  */
@@ -39,21 +42,10 @@ class MemoryHolder(
         reading =
             scope.launch {
                 mutableState.value =
-                    when (val read = readOrFail()) {
+                    when (val read = construct.getMemoryFacts()) {
                         is Outcome.Ok -> MemoryState(loading = false, facts = read.value.facts)
                         is Outcome.Failed -> mutableState.value.copy(loading = false, failure = read.error)
                     }
             }
     }
-
-    /** An implementation that throws becomes a failed read, so one bad read cannot cancel the scope. */
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun readOrFail() =
-        try {
-            construct.getMemoryFacts()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            Outcome.Failed(failure.message ?: failure::class.simpleName.orEmpty())
-        }
 }

@@ -4,8 +4,11 @@ import cf.construct.mobile.core.construct.Construct
 import cf.construct.mobile.core.construct.FakeConstruct
 import cf.construct.mobile.core.model.ConversationSummary
 import cf.construct.mobile.core.model.Outcome
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -13,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class TemplateHolderTest {
     private val seededTitles =
         FakeConstruct.seededConversations.keys
@@ -47,36 +51,72 @@ class TemplateHolderTest {
         }
 
     @Test
-    fun aReadThatThrowsBecomesAFailure() =
+    fun theItemsStayOnScreenWhileARefreshRuns() =
         runTest {
-            val offline = Offline(this)
-            offline.down = true
-            offline.throws = true
-            val holder = TemplateHolder(offline, backgroundScope)
-
+            val slow = Slow(this)
+            val holder = TemplateHolder(slow, backgroundScope)
+            slow.gates[0].complete(Unit)
             holder.state.first { !it.loading }
 
-            assertFalse(holder.state.value.loading)
-            assertEquals(OFFLINE, holder.state.value.failure)
+            holder.refresh()
+            runCurrent()
+
+            assertTrue(holder.state.value.loading)
+            assertEquals(seededTitles, holder.state.value.items)
         }
 
-    /** The fake, which fails the conversations read while [down], by an outcome or by throwing. */
+    @Test
+    fun theNewestReadWinsEvenWhenAnOlderOneEndsLast() =
+        runTest {
+            val slow = Slow(this)
+            val holder = TemplateHolder(slow, backgroundScope)
+            runCurrent()
+            holder.refresh()
+            runCurrent()
+
+            // The second read ends first, then the first one is let go.
+            slow.gates[1].complete(Unit)
+            holder.state.first { !it.loading }
+            slow.gates[0].complete(Unit)
+            runCurrent()
+
+            assertEquals(seededTitles.drop(1), holder.state.value.items)
+            assertFalse(holder.state.value.loading)
+            assertNull(holder.state.value.failure)
+        }
+
+    /** The fake, which fails the conversations read while [down]. */
     private class Offline(
         scope: TestScope,
         private val fake: FakeConstruct = FakeConstruct(scope.backgroundScope),
     ) : Construct by fake {
         var down = false
-        var throws = false
 
         override suspend fun listConversations(): Outcome<List<ConversationSummary>> =
-            when {
-                !down -> fake.listConversations()
-                throws -> error(OFFLINE)
-                else -> Outcome.Failed(OFFLINE)
-            }
+            if (down) Outcome.Failed(OFFLINE) else fake.listConversations()
+    }
+
+    /**
+     * A [Construct] whose Nth conversations read waits for `gates[N]`. The first read gives the seeded
+     * conversations and every later one gives them without the first.
+     */
+    private class Slow(
+        scope: TestScope,
+        private val fake: FakeConstruct = FakeConstruct(scope.backgroundScope),
+    ) : Construct by fake {
+        val gates = List(GATES) { CompletableDeferred<Unit>() }
+        private var reads = 0
+
+        override suspend fun listConversations(): Outcome<List<ConversationSummary>> {
+            val index = reads++
+            gates[index].await()
+            val all = (fake.listConversations() as Outcome.Ok).value
+            return Outcome.Ok(if (index == 0) all else all.drop(1))
+        }
     }
 
     private companion object {
         const val OFFLINE = "offline"
+        const val GATES = 4
     }
 }
