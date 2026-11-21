@@ -12,6 +12,9 @@ import cf.construct.mobile.core.model.MemoryFacts
 import cf.construct.mobile.core.model.Outcome
 import kotlinx.coroutines.flow.Flow
 
+/** Why `getConversation` fails for an id the copy does not hold. */
+const val NO_SUCH_CONVERSATION = "no such conversation"
+
 interface ChatApi {
     /** The conversations, the newest first. */
     suspend fun listConversations(): Outcome<List<ConversationSummary>>

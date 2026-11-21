@@ -5,6 +5,6 @@ complexity:
 style:
   MagicNumber:
     ignoreNamedArgument: true
-    excludes: ['**/commonTest/**', '**/FakeConstruct.kt']
+    excludes: ['**/commonTest/**', '**/androidHostTest/**', '**/iosTest/**', '**/FakeConstruct.kt']
   MaxLineLength:
     maxLineLength: 120

@@ -24,3 +24,4 @@ rootProject.name = "construct-mobile"
 
 include(":core:model")
 include(":core:construct")
+include(":core:database")
