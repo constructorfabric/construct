@@ -51,6 +51,24 @@ class TemplateHolderTest {
         }
 
     @Test
+    fun aLaterGoodReadClearsTheFailure() =
+        runTest {
+            val offline = Offline(this)
+            offline.down = true
+            val holder = TemplateHolder(offline, backgroundScope)
+            holder.state.first { !it.loading }
+            assertEquals(OFFLINE, holder.state.value.failure)
+
+            offline.down = false
+            holder.refresh()
+            // The failure goes as soon as the new read starts.
+            assertNull(holder.state.value.failure)
+            holder.state.first { !it.loading }
+
+            assertEquals(seededTitles, holder.state.value.items)
+        }
+
+    @Test
     fun theItemsStayOnScreenWhileARefreshRuns() =
         runTest {
             val slow = Slow(this)
