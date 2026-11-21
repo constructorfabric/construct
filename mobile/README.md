@@ -13,6 +13,7 @@ Multiplatform. This folder holds the shared Gradle project.
 | `core/designsystem` | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme. |
 | `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`. |
 | `feature/memory`    | The first feature made from the template: the person's facts as a plain list. |
+| `androidApp`        | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. |
 
 The state holders wrap the one-shot reads of `Construct`: a fact changed elsewhere shows after `refresh()`, not by itself. A read that is still running is dropped when a new one starts. A `Construct` reports a failed read as `Outcome.Failed` and does not throw; run a holder's scope and call `refresh()` on the main thread.
 
@@ -39,5 +40,6 @@ cd mobile
 ./gradlew :core:construct:compileKotlinIosSimulatorArm64  # the iPhone simulator target
 ./gradlew :core:database:linkDebugFrameworkIosSimulatorArm64  # the copy store as an iPhone framework
 ./gradlew :feature:memory:compileKotlinIosSimulatorArm64      # a feature for the iPhone simulator
+./gradlew :androidApp:assembleDebug                      # the Android app
 ./gradlew ktlintFormat                                    # fix ktlint findings
 ```
