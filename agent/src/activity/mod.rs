@@ -18,7 +18,7 @@
 //! the sessions first, so every block is named by all of them. The project of a session is its
 //! folder alone, so the setup findings never change it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,7 +44,7 @@ pub mod screen_time;
 pub const DBNAME: &str = "activity";
 /// The version of the rules that turn records into rows. Change it when a rule changes: the
 /// next start drops the store and it is rebuilt.
-pub const RULES_VERSION: i32 = 4;
+pub const RULES_VERSION: i32 = 5;
 
 /// The advisory lock `apply` and `rebuild` take for their transaction, so that no two writers
 /// overlap: a record applied while the store is being cleared would be lost, and `touch` reads a
@@ -157,9 +157,78 @@ impl Stored {
     }
 }
 
+/// A read of the store kept while what it read does not change: a page asks for the same state
+/// several times in a row, and each read takes the whole history.
+#[derive(Debug)]
+struct Kept<T> {
+    /// Goes up after every write to what is read, so an entry of an earlier number is stale.
+    version: AtomicU64,
+    entry: Mutex<Option<(u64, Arc<[T]>)>>,
+    /// Held while the history is read, so that the callers that ask together (a page asks for
+    /// every widget at once) wait for one read and share it.
+    reading: tokio::sync::Mutex<()>,
+}
+
+impl<T> Default for Kept<T> {
+    fn default() -> Self {
+        Self {
+            version: AtomicU64::new(0),
+            entry: Mutex::new(None),
+            reading: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+impl<T> Kept<T> {
+    /// What is kept from a read of the store as it is now, if there is anything.
+    fn current(&self) -> Option<Arc<[T]>> {
+        let version = self.version.load(Ordering::SeqCst);
+        match &*lock(&self.entry) {
+            Some((at, all)) if *at == version => Some(Arc::clone(all)),
+            _ => None,
+        }
+    }
+
+    /// The kept read, or the one `read` makes; callers that come together wait for that one.
+    async fn get<F, Fut>(&self, read: F) -> Result<Arc<[T]>, Error>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<T>, Error>>,
+    {
+        if let Some(all) = self.current() {
+            return Ok(all);
+        }
+        let _one_reader = self.reading.lock().await;
+        if let Some(all) = self.current() {
+            return Ok(all);
+        }
+        let version = self.version.load(Ordering::SeqCst);
+        let all: Arc<[T]> = read().await?.into();
+        // A write between the read and here made the read stale: it is not kept.
+        if self.version.load(Ordering::SeqCst) == version {
+            *lock(&self.entry) = Some((version, Arc::clone(&all)));
+        }
+        Ok(all)
+    }
+
+    /// What was read is not what the store holds any more.
+    fn drop_kept(&self) {
+        self.version.fetch_add(1, Ordering::SeqCst);
+        *lock(&self.entry) = None;
+    }
+}
+
+/// What the store keeps of its reads, one for each thing a page reads whole.
+#[derive(Debug, Default)]
+struct Cache {
+    sessions: Kept<rules::SessionMinutes>,
+    screen: Kept<screen_time::Block>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     pool: PgPool,
+    cache: Arc<Cache>,
     /// What the setup found, as the assignment of a session uses it.
     findings: Arc<Mutex<Findings>>,
 }
@@ -179,6 +248,7 @@ impl Store {
             .map_err(|e| err("connect to the activity database", e))?;
         let store = Self {
             pool,
+            cache: Arc::default(),
             findings: Arc::default(),
         };
         if let Err(e) = store.prepare().await {
@@ -207,7 +277,8 @@ impl Store {
     }
 
     /// Applies one record. The same record twice changes nothing. Records that carry no
-    /// activity (tool calls and results of a chat) and records without a usable time are ignored.
+    /// activity (tool calls and results, and the turns and marks of the app's own chat) and
+    /// records without a usable time are ignored.
     /// Returns true when the record changed the projects the store knows while it holds blocks of
     /// the time on screen: they were named without it, and only [`Store::rebuild`] names them
     /// again.
@@ -228,6 +299,7 @@ impl Store {
         apply_in(&mut tx, record, &findings).await?;
         let changed = watching && project_folders(&mut tx).await? != before;
         tx.commit().await.map_err(|e| err("commit", e))?;
+        self.changed();
         Ok(changed)
     }
 
@@ -239,14 +311,20 @@ impl Store {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
         lock_store(&mut tx).await?;
         apply_screen_in(&mut tx, line).await?;
-        tx.commit().await.map_err(|e| err("commit", e))
+        tx.commit().await.map_err(|e| err("commit", e))?;
+        self.cache.screen.drop_kept();
+        Ok(())
     }
 
     /// The time on screen, in order of time, with no overlap (see [`screen_time::without_overlap`]).
     ///
     /// # Errors
     /// Fails when the query is refused.
-    pub async fn screen_blocks(&self) -> Result<Vec<screen_time::Block>, Error> {
+    pub async fn screen_blocks(&self) -> Result<Arc<[screen_time::Block]>, Error> {
+        self.cache.screen.get(|| self.read_screen_blocks()).await
+    }
+
+    async fn read_screen_blocks(&self) -> Result<Vec<screen_time::Block>, Error> {
         let rows = sqlx::query(
             "select start, seconds, app, site, project, ticket from activity.screen order by start",
         )
@@ -312,6 +390,7 @@ impl Store {
             }
         }
         tx.commit().await.map_err(|e| err("commit", e))?;
+        self.changed_all();
         Ok(applied)
     }
 
@@ -358,6 +437,7 @@ impl Store {
             changed.push((stored.tool, stored.session));
         }
         tx.commit().await.map_err(|e| err("commit", e))?;
+        self.changed();
         *lock(&self.findings) = new;
         Ok(changed)
     }
@@ -370,7 +450,20 @@ impl Store {
         let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
         lock_store(&mut tx).await?;
         clear_in(&mut tx).await?;
-        tx.commit().await.map_err(|e| err("commit", e))
+        tx.commit().await.map_err(|e| err("commit", e))?;
+        self.changed_all();
+        Ok(())
+    }
+
+    /// Drops what was kept of the sessions: the store has changed.
+    fn changed(&self) {
+        self.cache.sessions.drop_kept();
+    }
+
+    /// Drops everything that was kept: the store was made again.
+    fn changed_all(&self) {
+        self.cache.sessions.drop_kept();
+        self.cache.screen.drop_kept();
     }
 
     /// Every session, ordered by tool and session.
@@ -434,36 +527,65 @@ impl Store {
     }
 
     /// The active minutes of every session, with what the rules need to know of it, in the
-    /// order of tool and session. One read, so the answer is of one state of the store.
+    /// order of tool and session. Read in one snapshot, so the answer is of one state of the store;
+    /// callers that ask while the store does not change share one read.
     ///
     /// # Errors
     /// Fails when the query is refused or a stored minute cannot be read.
-    pub async fn session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {
+    pub async fn session_minutes(&self) -> Result<Arc<[rules::SessionMinutes]>, Error> {
+        self.cache
+            .sessions
+            .get(|| self.read_session_minutes())
+            .await
+    }
+
+    async fn read_session_minutes(&self) -> Result<Vec<rules::SessionMinutes>, Error> {
+        // The minutes are read on their own, a row per session with the minutes gathered by the
+        // database, and joined to the sessions here: a join of a row per minute to its session
+        // costs several times as much.
+        // Both statements in one snapshot, so that a write between them cannot mix two states.
+        let mut tx = self.pool.begin().await.map_err(|e| err("begin", e))?;
+        sqlx::query("set transaction isolation level repeatable read read only")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| err("read the minutes of the sessions", e))?;
         let rows = sqlx::query(
             "select s.tool, s.session, s.project, s.ticket, s.area, s.collection, s.person_prompts,
-                    s.unattended_prompts, s.unknown_prompts, m.minute
-             from activity.sessions s
-             join activity.minutes m on m.tool = s.tool and m.session = s.session
-             order by s.tool, s.session, m.minute",
+                    s.unattended_prompts, s.unknown_prompts
+             from activity.sessions s order by s.tool, s.session",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| err("read the sessions", e))?;
+        let minutes: Vec<(String, String, Vec<String>)> = sqlx::query_as(
+            "select tool, session, array_agg(minute order by minute)
+             from activity.minutes group by tool, session",
+        )
+        .fetch_all(&mut *tx)
         .await
         .map_err(|e| err("read the minutes of the sessions", e))?;
-        let mut sessions: Vec<rules::SessionMinutes> = Vec::new();
+        tx.commit().await.map_err(|e| err("commit", e))?;
+        // By the key, not by position: the order the database sorts text in is its own.
+        let mut minutes: HashMap<(String, String), Vec<String>> = minutes
+            .into_iter()
+            .map(|(tool, session, texts)| ((tool, session), texts))
+            .collect();
+        let mut sessions: Vec<rules::SessionMinutes> = Vec::with_capacity(minutes.len());
         for row in &rows {
-            let fail = |e| err("read a minute", e);
+            let fail = |e| err("read a session", e);
             let tool: String = row.try_get("tool").map_err(fail)?;
             let session: String = row.try_get("session").map_err(fail)?;
-            let text: String = row.try_get("minute").map_err(fail)?;
-            let minute = rules::minute_number(&text)
-                .ok_or_else(|| err("read a minute", format!("{text:?} is not a minute")))?;
-            if let Some(last) = sessions
-                .last_mut()
-                .filter(|s| s.tool == tool && s.session == session)
-            {
-                last.minutes.push(minute);
+            // A session without minutes is not listed.
+            let Some(texts) = minutes.remove(&(tool.clone(), session.clone())) else {
                 continue;
-            }
+            };
+            let numbers = texts
+                .iter()
+                .map(|text| {
+                    rules::minute_number(text)
+                        .ok_or_else(|| err("read a minute", format!("{text:?} is not a minute")))
+                })
+                .collect::<Result<Vec<i64>, Error>>()?;
             sessions.push(rules::SessionMinutes {
                 project: row.try_get("project").map_err(fail)?,
                 ticket: row.try_get("ticket").map_err(fail)?,
@@ -476,7 +598,7 @@ impl Store {
                 ),
                 tool,
                 session,
-                minutes: vec![minute],
+                minutes: numbers,
             });
         }
         Ok(sessions)
@@ -595,11 +717,12 @@ fn is_utc_time(time: &str) -> bool {
         && time::OffsetDateTime::parse(time, &time::format_description::well_known::Rfc3339).is_ok()
 }
 
-/// Whether the store counts the record at all; tool calls and results of a chat carry no
-/// activity.
+/// Whether the store counts the record at all: tool calls and results carry no activity, and
+/// neither does anything the chat of the app wrote (time in the chat is not work time).
 fn is_activity(record: &Record) -> bool {
     match record {
-        Record::Turn(_) | Record::Mark(_) => true,
+        Record::Turn(turn) => turn.tool != crate::chat::SOURCE,
+        Record::Mark(mark) => mark.tool != crate::chat::SOURCE,
         Record::ToolCall(_) | Record::ToolResult(_) => false,
     }
 }
@@ -609,7 +732,7 @@ async fn apply_in(
     record: &Record,
     findings: &Findings,
 ) -> Result<bool, Error> {
-    if !is_utc_time(record.time()) {
+    if !is_activity(record) || !is_utc_time(record.time()) {
         return Ok(false);
     }
     match record {
@@ -872,7 +995,8 @@ async fn touch(
 
 #[cfg(test)]
 mod tests {
-    use super::is_utc_time;
+    use super::{is_activity, is_utc_time};
+    use connectors::{Author, Mark, Record, Role, Turn};
 
     #[test]
     fn only_real_utc_times_written_with_z_count() {
@@ -886,5 +1010,36 @@ mod tests {
         assert!(!is_utc_time("2026-11-11T10:15"));
         assert!(!is_utc_time(""));
         assert!(!is_utc_time("yesterday"));
+    }
+
+    #[test]
+    fn time_in_the_chat_is_not_activity() {
+        let turn = |tool: &str| {
+            Record::Turn(Turn {
+                tool: tool.into(),
+                session: "s".into(),
+                time: "2026-11-11T10:15:30Z".into(),
+                folder: String::new(),
+                branch: String::new(),
+                role: Role::User,
+                author: Author::Person,
+                text: String::new(),
+                tools: Vec::new(),
+            })
+        };
+        let mark = |tool: &str| {
+            Record::Mark(Mark {
+                tool: tool.into(),
+                session: "s".into(),
+                time: "2026-11-11T10:15:30Z".into(),
+                folder: String::new(),
+                branch: String::new(),
+                tools: Vec::new(),
+            })
+        };
+        assert!(is_activity(&turn("claude")));
+        assert!(is_activity(&mark("claude")));
+        assert!(!is_activity(&turn("chat")));
+        assert!(!is_activity(&mark("chat")));
     }
 }

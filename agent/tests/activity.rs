@@ -274,6 +274,105 @@ async fn the_stored_minutes_give_the_time_of_a_period() {
 
 #[tokio::test]
 #[ignore = "starts PostgreSQL; run with --ignored"]
+async fn the_chat_of_the_app_is_not_stored_as_activity() {
+    let stand = Stand::new("act-chat").await;
+    let store = stand.store().await;
+    let chat = |time: &str| {
+        Record::Turn(Turn {
+            tool: "chat".into(),
+            session: "c".into(),
+            time: time.into(),
+            folder: String::new(),
+            branch: String::new(),
+            role: Role::User,
+            author: Author::Unknown,
+            text: "hello".into(),
+            tools: Vec::new(),
+        })
+    };
+    let work = turn(
+        "w",
+        "2026-11-11T10:00:00Z",
+        Role::User,
+        Author::Person,
+        "/w/x",
+        "main",
+    );
+    let sink = sink_with(&stand, &[work, chat("2026-11-11T11:00:00Z")]);
+    let days = [Day {
+        label: "2026-11-11".into(),
+        start: minute_number("2026-11-11T00:00").unwrap(),
+        end: minute_number("2026-11-12T00:00").unwrap(),
+    }];
+    let by_tool = |store: Store| {
+        let days = days.clone();
+        async move {
+            store
+                .activity(&days, Kind::Both, Grouping::Tool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // A rebuild leaves the chat out.
+    store.rebuild(&sink).await.unwrap();
+    let report = by_tool(store.clone()).await;
+    let tools: Vec<&str> = report.groups.iter().map(|g| g.key.as_str()).collect();
+    assert_eq!(tools, ["claude"]);
+    let total = report.total_parts;
+
+    // So does a record applied while the agent runs, and the time of the week does not change.
+    store.apply(&chat("2026-11-11T12:00:00Z")).await.unwrap();
+    let report = by_tool(store.clone()).await;
+    assert_eq!(report.groups.len(), 1);
+    assert_eq!(report.total_parts, total);
+    assert!(
+        store
+            .sessions()
+            .await
+            .unwrap()
+            .iter()
+            .all(|s| s.tool != "chat")
+    );
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn callers_that_ask_together_share_one_read_and_a_write_is_seen() {
+    let stand = Stand::new("act-share").await;
+    let (store, _) = stand.with_fixture().await;
+    // Five callers on a cold store: one read serves them all.
+    store
+        .apply(&mark("w", "2026-11-11T10:00:00Z", "/w/x", "main"))
+        .await
+        .unwrap();
+    let reads = futures_util::future::join_all((0..5).map(|_| store.session_minutes())).await;
+    let reads: Vec<_> = reads.into_iter().map(Result::unwrap).collect();
+    assert!(reads.iter().all(|r| std::sync::Arc::ptr_eq(r, &reads[0])));
+    // The next read of the same state is the kept one.
+    let again = store.session_minutes().await.unwrap();
+    assert!(std::sync::Arc::ptr_eq(&again, &reads[0]));
+    // A write is seen by the next read, which is a new one.
+    store
+        .apply(&mark("w", "2026-11-11T10:30:00Z", "/w/x", "main"))
+        .await
+        .unwrap();
+    let after = store.session_minutes().await.unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&after, &reads[0]));
+    let minutes = |all: &[construct_agent::activity::rules::SessionMinutes]| {
+        all.iter()
+            .find(|s| s.session == "w")
+            .map(|s| s.minutes.len())
+    };
+    assert_eq!(minutes(&after), minutes(&reads[0]).map(|n| n + 1));
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
 async fn stored_prompt_authors_decide_whose_time_a_session_is() {
     use Author::{Person, Unattended, Unknown};
     use Role::User;
@@ -713,6 +812,106 @@ async fn the_groups_by_project_and_by_ticket_use_the_stored_values() {
     assert_eq!(
         keys(by_ticket),
         ["AB-1", "EF-3", "KL-6", "No ticket", "ST-2"]
+    );
+    store.close().await;
+    stand.finish().await;
+}
+
+/// The week of the dashboard on a store of about 140,000 prompts: the five widgets ask at once.
+/// The time is of the agent's side of a click, from the five asks to the five answers. Run it
+/// where the time counts, on a release build: `cargo test --release --locked --test activity --
+/// --ignored --nocapture a_week_on_140000`. It prints the times and asserts none: the machine
+/// decides them.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "starts PostgreSQL and builds a large store; run with --release --ignored"]
+async fn a_week_on_140000_prompts_is_timed() {
+    use chrono::{Duration, NaiveDate};
+    use std::time::Instant;
+
+    if cfg!(debug_assertions) {
+        eprintln!("skipped: the times of a debug build say nothing; run with --release");
+        return;
+    }
+    let stand = Stand::new("act-140k").await;
+    let store = stand.store().await;
+    // 1,000 sessions of 140 prompts, a minute apart, over 120 days that end on 18 November.
+    let last_day = NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+    let mut records = Vec::new();
+    for n in 0..1000_i64 {
+        let start = (last_day - Duration::days(n % 120))
+            .and_hms_opt(8 + u32::try_from(n % 8).unwrap(), 0, 10)
+            .unwrap();
+        for p in 0..140_i64 {
+            records.push(said(
+                &format!("s{n}"),
+                &(start + Duration::minutes(p))
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string(),
+                Role::User,
+                Author::Person,
+                (&format!("/work/p{}/app", n % 40), "main"),
+                "words",
+            ));
+        }
+    }
+    let sink = sink_with(&stand, &records);
+    store.rebuild(&sink).await.unwrap();
+    let days: Vec<Day> = (0..7)
+        .map(|d| {
+            let day = NaiveDate::from_ymd_opt(2026, 11, 16).unwrap() + Duration::days(d);
+            Day {
+                label: day.to_string(),
+                start: minute_number(&format!("{day}T00:00")).unwrap(),
+                end: minute_number(&format!("{}T00:00", day + Duration::days(1))).unwrap(),
+            }
+        })
+        .collect();
+    let five_widgets = |store: Store| {
+        let days = days.clone();
+        async move {
+            let started = Instant::now();
+            let asks: Vec<_> = [
+                Grouping::Project,
+                Grouping::Ticket,
+                Grouping::Tool,
+                Grouping::Project,
+                Grouping::Tool,
+            ]
+            .into_iter()
+            .map(|grouping| {
+                let (store, days) = (store.clone(), days.clone());
+                tokio::spawn(async move {
+                    store
+                        .activity(&days, Kind::Both, grouping)
+                        .await
+                        .unwrap()
+                        .total_parts
+                })
+            })
+            .collect();
+            for ask in asks {
+                assert!(ask.await.unwrap() > 0);
+            }
+            started.elapsed()
+        }
+    };
+    let cold = five_widgets(store.clone()).await;
+    let warm = five_widgets(store.clone()).await;
+    // A write at each refresh drops what was kept: the next five asks read once more.
+    store
+        .apply(&said(
+            "s0",
+            "2026-11-18T12:00:00Z",
+            Role::User,
+            Author::Person,
+            ("/work/p0/app", "main"),
+            "words",
+        ))
+        .await
+        .unwrap();
+    let after_write = five_widgets(store.clone()).await;
+    println!(
+        "140,000 prompts, the five widgets at once: cold {cold:?}, kept {warm:?}, after a write {after_write:?}"
     );
     store.close().await;
     stand.finish().await;

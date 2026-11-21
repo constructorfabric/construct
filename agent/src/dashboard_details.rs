@@ -9,7 +9,7 @@
 //!   and `group_by`) with the `group` to open, and `offset`, `limit` and `utc_offset_minutes` (the
 //!   user's offset from UTC, `0` when left out; the times of the answer are in it). The answer
 //!   lists the sessions that have time in the group, the earliest first, a page at a time. A
-//!   session shows when it first and last counted in the group, how many minutes it counted in,
+//!   session shows when it first and last counted in the group, its share of the group in whole minutes,
 //!   and the first characters of its id.
 //! * `dashboard-summary`: the request of `dashboard-numbers` with one `day` in place of `days`,
 //!   and no `group_by`. The answer is one text line for each ticket and, for time with no ticket,
@@ -56,7 +56,7 @@ pub struct SessionRow {
     pub start: String,
     /// The end of the last minute it counted in.
     pub end: String,
-    /// The minutes it counted in. A minute shared with other groups counts whole.
+    /// Its share of the group in whole minutes: the shares of a group add up to the group.
     pub minutes: u64,
     pub tool: String,
     /// The project as the page names it.
@@ -216,16 +216,18 @@ pub fn sessions_of(
         ))
     });
     let total = spans.len();
+    let shares = whole_shares(&spans);
     let rows = spans
         .into_iter()
+        .zip(shares)
         .skip(offset)
         .take(limit)
-        .map(|span| {
+        .map(|(span, minutes)| {
             let session = &kept[span.session];
             SessionRow {
                 start: clock(span.first, zone),
                 end: clock(span.last + 1, zone),
-                minutes: span.minutes,
+                minutes,
                 tool: session.tool.clone(),
                 project: selection
                     .shown
@@ -247,6 +249,26 @@ pub fn sessions_of(
         limit,
         rows,
     })
+}
+
+/// The whole minutes of each span, so that they add up to the whole minutes of the group. A
+/// minute two sessions of a group share is split between them, so a list of the sessions adds up
+/// to the row it opens. The rounding gives the leftover minutes to the largest remainders.
+fn whole_shares(spans: &[Span]) -> Vec<u64> {
+    let total: u64 = spans.iter().map(|s| s.parts).sum();
+    let target = (total + PARTS_PER_MINUTE / 2) / PARTS_PER_MINUTE;
+    let mut shares: Vec<u64> = spans.iter().map(|s| s.parts / PARTS_PER_MINUTE).collect();
+    let mut left = target.saturating_sub(shares.iter().sum());
+    let mut order: Vec<usize> = (0..spans.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(spans[i].parts % PARTS_PER_MINUTE));
+    for i in order {
+        if left == 0 {
+            break;
+        }
+        shares[i] += 1;
+        left -= 1;
+    }
+    shares
 }
 
 /// A time of whole minutes as a person says it: `1 h 20 min`, `2 h`, `45 min`.
@@ -557,5 +579,45 @@ mod tests {
             "1969-12-31T22:30:00-01:30"
         );
         assert!(offset_of(5000).is_err());
+    }
+
+    fn shop_session(id: &str, minutes: std::ops::RangeInclusive<i64>) -> SessionMinutes {
+        SessionMinutes {
+            tool: "claude".to_owned(),
+            session: id.to_owned(),
+            project: "/work/shop".to_owned(),
+            ticket: String::new(),
+            area: String::new(),
+            collection: String::new(),
+            unattended: false,
+            minutes: minutes.collect(),
+        }
+    }
+
+    #[test]
+    fn overlapping_sessions_of_a_project_add_up_to_its_row() {
+        // A is minutes 0..=9 and B is 5..=14: the project holds 15 minutes, 5 of them shared.
+        let sessions = [shop_session("a", 0..=9), shop_session("b", 5..=14)];
+        let days = [Day {
+            label: "d".to_owned(),
+            start: 0,
+            end: 1440,
+        }];
+        let spec = crate::dashboard_numbers::Spec {
+            kind: Some(Kind::Person),
+            grouping: Some(Grouping::Project),
+            ..Default::default()
+        };
+        let page = sessions_of(&sessions, &days, &spec, "shop", 0, (0, 50)).unwrap();
+        // Each holds 7.5 minutes; the leftover minute goes to the earlier session.
+        let shares: Vec<u64> = page.rows.iter().map(|r| r.minutes).collect();
+        assert_eq!(shares, vec![8, 7]);
+        // The shares are of the whole group, not of the page: the second page keeps its share.
+        let second = sessions_of(&sessions, &days, &spec, "shop", 0, (1, 1)).unwrap();
+        assert_eq!(second.total, 2);
+        assert_eq!(
+            second.rows.iter().map(|r| r.minutes).collect::<Vec<_>>(),
+            vec![7]
+        );
     }
 }

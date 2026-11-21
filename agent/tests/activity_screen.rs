@@ -150,7 +150,7 @@ fn sink(stand: &Stand, lines: &[Line]) -> FileSink {
 }
 
 async fn blocks(store: &Store) -> Vec<Block> {
-    store.screen_blocks().await.unwrap()
+    store.screen_blocks().await.unwrap().to_vec()
 }
 
 /// Clear the store, then give it the sessions and the runs one by one.
@@ -252,7 +252,7 @@ async fn a_rebuild_equals_the_step_by_step_store() {
         let store = store.clone();
         async move {
             (
-                store.screen_blocks().await.unwrap(),
+                store.screen_blocks().await.unwrap().to_vec(),
                 store.sessions().await.unwrap(),
                 store.minutes().await.unwrap(),
             )
@@ -337,6 +337,23 @@ async fn the_store_holds_no_title_and_no_address() {
         names,
         ["start", "seconds", "app", "site", "project", "ticket"]
     );
+    store.close().await;
+    stand.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "starts PostgreSQL; run with --ignored"]
+async fn clearing_the_store_drops_the_kept_read_of_the_blocks() {
+    let stand = Stand::new("scr-clear-kept").await;
+    let store = stand.store().await;
+    store.rebuild(&sink(&stand, &finals())).await.unwrap();
+    // The blocks are read, and kept for the next ask.
+    let first = store.screen_blocks().await.unwrap();
+    assert!(!first.is_empty());
+    assert!(Arc::ptr_eq(&first, &store.screen_blocks().await.unwrap()));
+    // What the person erased is gone at the next read, with no rebuild in between.
+    store.clear().await.unwrap();
+    assert!(store.screen_blocks().await.unwrap().is_empty());
     store.close().await;
     stand.finish().await;
 }

@@ -690,7 +690,7 @@ fn provider() -> String {
 
 #[test]
 #[ignore = "starts PostgreSQL; run with --ignored"]
-fn a_chat_message_while_the_agent_runs_reaches_the_activity_store() {
+fn a_chat_message_while_the_agent_runs_is_not_stored_as_activity() {
     use std::io::{Read, Write};
 
     let stand = Stand::new("actchat");
@@ -725,15 +725,17 @@ fn a_chat_message_while_the_agent_runs_reaches_the_activity_store() {
     let mut answer = String::new();
     socket.read_to_string(&mut answer).unwrap();
     assert!(answer.contains("fine"), "{answer}");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while stand.sql_in(
-        "activity",
-        "select count(*) from activity.sessions where tool = 'chat'",
-    ) != "1"
-    {
-        assert!(
-            Instant::now() < deadline,
-            "the chat message did not reach the store"
+    // The follower reads the chat log within a second or two; give it several
+    // rounds and see that nothing of the chat was stored as activity.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        assert_eq!(
+            stand.sql_in(
+                "activity",
+                "select count(*) from activity.sessions where tool = 'chat'",
+            ),
+            "0",
+            "the chat message reached the store as activity"
         );
         std::thread::sleep(Duration::from_millis(300));
     }

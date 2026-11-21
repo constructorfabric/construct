@@ -53,6 +53,8 @@ interface Agent {
   building: number;
   /** How many times the page has asked for the document. */
   looks: number;
+  /** How many answers of `numbersError` the agent has given. */
+  failed: number;
   /** The lines of the summary of the day; one line when not set. */
   summary: readonly string[] | null;
   /** How many more groups than the usual ones a table gets. */
@@ -109,6 +111,7 @@ function numbersReply(agent: Agent, request: Request): string {
     return JSON.stringify({ error: 'the activity time is being built' });
   }
   if (agent.numbersError !== null) {
+    agent.failed += 1;
     return JSON.stringify({ error: agent.numbersError });
   }
   const found = agent.document?.payload.widgets.find((w) => w.id === request.widget);
@@ -227,6 +230,7 @@ function newAgent(overrides: Partial<Agent> = {}): Agent {
     documentError: null,
     hold: null,
     looks: 0,
+    failed: 0,
     summary: null,
     extraGroups: 0,
     numbersError: null,
@@ -630,6 +634,18 @@ test('the page says when there is nothing to show', async ({ session }) => {
   });
 });
 
+test('work done while the page is open appears without a click', async ({ session }) => {
+  const agent = newAgent();
+  await withAgent(session, agent, async (page) => {
+    await expect(page.locator('#value-total')).toHaveText(ownWeek);
+    // The document is the same: only a count on a timer can bring the new numbers.
+    agent.empty = true;
+    await page.clock.runFor(30_000);
+    await expect(page.locator('#dashboard-empty')).toContainText('Nothing to show');
+    await expect(page.locator('#value-total')).toHaveCount(0);
+  });
+});
+
 test('the page says when collection is off, and links to Settings', async ({ session }) => {
   await withAgent(session, newAgent({ empty: true, collecting: false }), async (page) => {
     await expect(page.locator('#dashboard-off')).toContainText('Collection is off');
@@ -735,6 +751,25 @@ test('the page shows the error of the agent, and not numbers, when the agent can
       );
     }
     await expect(page.locator('#value-total')).toHaveCount(0);
+  });
+});
+
+test('a recount that fails keeps the numbers that were on show', async ({ session }) => {
+  const agent = newAgent();
+  await withAgent(session, agent, async (page) => {
+    await expect(page.locator('#value-total')).toHaveText(ownWeek);
+    agent.numbersError = 'the activity time could not be read';
+    await page.clock.runFor(30_000);
+    // The agent has failed all four widgets of the page, and a round trip to it that began
+    // after that has come back: the failed answers have been through the page.
+    await expect.poll(() => agent.failed).toBeGreaterThanOrEqual(4);
+    await page.evaluate(() => window.constructAgent.getSettings());
+    await expect(page.locator('#value-total')).toHaveText(ownWeek);
+    await expect(page.locator('#dashboard-empty')).toHaveCount(0);
+    agent.numbersError = null;
+    agent.empty = true;
+    await page.clock.runFor(30_000);
+    await expect(page.locator('#dashboard-empty')).toContainText('Nothing to show');
   });
 });
 

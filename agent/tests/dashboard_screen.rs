@@ -66,7 +66,8 @@ fn fixture() -> Data {
             ),
             block("2026-11-11T10:00:00Z", 90, "Code", "", "shop", "SHOP-7"),
             block("2026-11-12T10:00:00Z", 600, "Code", "", "shop", "SHOP-7"),
-        ],
+        ]
+        .into(),
     }
 }
 
@@ -185,7 +186,7 @@ fn the_total_and_the_bars_need_no_grouping() {
     assert_eq!(days, [45.0, 10.0, 21.5]);
     // A day with no block is in the days and in a table by day, with no time.
     let mut empty = fixture();
-    empty.blocks.clear();
+    empty.blocks = Vec::new().into();
     let answer = ask(&default_activity(), &screen(Some("day")), &empty);
     assert!(same(answer["total_minutes"].as_f64().unwrap(), 0.0));
     assert_eq!(answer["groups"].as_array().unwrap().len(), 3);
@@ -609,7 +610,7 @@ fn a_request_for_a_month_answers_within_a_second() {
         sessions: (0..40)
             .map(|n| folder(&format!("/work/p{}/app", n % 20)))
             .collect(),
-        blocks,
+        blocks: blocks.into(),
     };
     let days: Vec<Day> = (0..31)
         .map(|d| Day {

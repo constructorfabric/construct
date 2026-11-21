@@ -18,6 +18,13 @@ const retryMs = 2000;
 /** How often the page asks the agent whether the dashboard file has changed. */
 const documentPollMs = 2000;
 
+/**
+ * How often the page counts again for the document and the day it already shows, so that work
+ * done meanwhile appears without a click. Each count reads the whole history in the agent, so it
+ * is not much more often than a person looks.
+ */
+const refreshMs = 15_000;
+
 type Numbers = Extract<DashboardResult, { ok: true }>;
 type Summary = Extract<SummaryResult, { ok: true }>;
 
@@ -135,7 +142,7 @@ export interface DashboardControls {
  * The dashboard document with the numbers of each of its widgets, counted from the day the page
  * stands on (`day`; see `periodAnchor`), which stands for today. The agent watches the file, so
  * the page asks again every few seconds and reads the numbers again when the document, or the day,
- * changes.
+ * changes, and every `refreshMs` besides.
  */
 export function useDashboard(day: Date): DashboardControls {
   const [file, setFile] = useState<File | { readonly error: string } | null>(null);
@@ -239,6 +246,10 @@ export function useDashboard(day: Date): DashboardControls {
     }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // What the page shows now, so that a count that came out the same changes nothing.
+    let shown = '';
+    // Whether the page shows numbers that were all counted: a recount that fails keeps them.
+    let good = false;
     const read = (): void => {
       Promise.all([
         Promise.all(
@@ -257,6 +268,19 @@ export function useDashboard(day: Date): DashboardControls {
             timer = setTimeout(read, retryMs);
             return;
           }
+          timer = setTimeout(read, refreshMs);
+          const whole = settings.ok && entries.every(([, counted]) => counted.ok);
+          // A failed recount keeps the numbers on show, as a failed look at the file does; the
+          // next one may count again.
+          if (!whole && good) {
+            return;
+          }
+          good = whole;
+          const text = JSON.stringify([entries, settings]);
+          if (text === shown) {
+            return;
+          }
+          shown = text;
           // Without the settings the page cannot say whether collection is on.
           setLoaded({
             shape,
@@ -268,6 +292,10 @@ export function useDashboard(day: Date): DashboardControls {
         },
         (error: unknown) => {
           if (!cancelled) {
+            timer = setTimeout(read, refreshMs);
+            if (good) {
+              return;
+            }
             setLoaded({
               shape,
               numbers: new Map(),
@@ -284,7 +312,7 @@ export function useDashboard(day: Date): DashboardControls {
       cancelled = true;
       clearTimeout(timer);
     };
-    // `key` stands for the document and the day: the same ones are not read again.
+    // `key` stands for the document and the day; the same ones are counted again on a timer.
   }, [key]);
 
   const state = ((): DashboardState => {
