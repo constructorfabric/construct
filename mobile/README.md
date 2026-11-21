@@ -14,6 +14,8 @@ Multiplatform. This folder holds the shared Gradle project.
 | `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`. |
 | `feature/memory`    | The first feature made from the template: the person's facts as a plain list. |
 
+The state holders wrap the one-shot reads of `Construct`: a fact changed elsewhere shows after `refresh()`, not by itself. A read that is still running is dropped when a new one starts, and a read that throws becomes the state's `failure`.
+
 The calls and names follow the desktop app's `chat-protocol.ts`, `memory-protocol.ts` and
 `dashboard-protocol.ts` in `app/src`. A screen talks to `Construct` and never knows where the data
 comes from. `FakeConstruct` has seeded data and a canned streamed answer, for tests and previews.

@@ -1,10 +1,9 @@
 package cf.construct.mobile.core.designsystem
 
-/*
- * Values of the desktop app's UI kit (version 0.5.1), as opaque ARGB numbers. Final values come
- * from the design of the mobile apps; then only the numbers below change.
+/**
+ * The colour roles as opaque ARGB numbers. The values are those of the desktop app's UI kit
+ * (version 0.5.1), under the same names.
  */
-
 object Colors {
     /** Every role in the light theme. */
     val light: Map<ColorRole, Long> =

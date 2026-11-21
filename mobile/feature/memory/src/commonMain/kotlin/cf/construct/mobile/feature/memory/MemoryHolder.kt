@@ -2,7 +2,9 @@ package cf.construct.mobile.feature.memory
 
 import cf.construct.mobile.core.construct.Construct
 import cf.construct.mobile.core.model.Outcome
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,6 +21,7 @@ class MemoryHolder(
     private val construct: Construct,
     private val scope: CoroutineScope,
 ) {
+    private var reading: Job? = null
     private val mutableState = MutableStateFlow(MemoryState())
     val state: StateFlow<MemoryState> = mutableState.asStateFlow()
 
@@ -26,16 +29,31 @@ class MemoryHolder(
         refresh()
     }
 
-    /** Reads again. The facts stay on screen while it runs. */
+    /**
+     * Reads again. The facts stay on screen while it runs, and a read still running is dropped,
+     * so the newest read is the one that shows.
+     */
     fun refresh() {
-        mutableState.update { it.copy(loading = true) }
-        scope.launch {
-            val next =
-                when (val read = construct.getMemoryFacts()) {
-                    is Outcome.Ok -> MemoryState(loading = false, facts = read.value.facts)
-                    is Outcome.Failed -> mutableState.value.copy(loading = false, failure = read.error)
-                }
-            mutableState.value = next
-        }
+        reading?.cancel()
+        mutableState.update { it.copy(loading = true, failure = null) }
+        reading =
+            scope.launch {
+                mutableState.value =
+                    when (val read = readOrFail()) {
+                        is Outcome.Ok -> MemoryState(loading = false, facts = read.value.facts)
+                        is Outcome.Failed -> mutableState.value.copy(loading = false, failure = read.error)
+                    }
+            }
     }
+
+    /** An implementation that throws becomes a failed read, so one bad read cannot cancel the scope. */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun readOrFail() =
+        try {
+            construct.getMemoryFacts()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Outcome.Failed(failure.message ?: failure::class.simpleName.orEmpty())
+        }
 }

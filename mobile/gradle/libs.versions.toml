@@ -6,6 +6,7 @@ ktlintPlugin = "14.2.0"
 ktlint = "1.8.0"
 coroutines = "1.10.2"
 composeBom = "2026.11.01"
+# The Compose compiler plugin needs the runtime on the class path of the iPhone compiles too.
 composeRuntime = "1.13.0"
 serializationJson = "1.9.0"
 sqldelight = "2.4.1"

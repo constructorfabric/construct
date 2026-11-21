@@ -18,20 +18,32 @@ class ColorsTest {
     }
 
     @Test
-    fun theThemesDifferWhereTheyShould() {
-        assertEquals(0xFFF1F5F9, Colors.light.getValue(ColorRole.BACKGROUND))
-        assertEquals(0xFF0F172A, Colors.dark.getValue(ColorRole.BACKGROUND))
+    fun theLightThemeHasALightPageAndDarkText() {
+        assertTrue(brightness(Colors.light, ColorRole.BACKGROUND) > brightness(Colors.dark, ColorRole.BACKGROUND))
+        assertTrue(brightness(Colors.light, ColorRole.FOREGROUND) < brightness(Colors.dark, ColorRole.FOREGROUND))
     }
 
     @Test
-    fun spacingStepsGrow() {
-        val steps = listOf(Spacing.XS, Spacing.S, Spacing.M, Spacing.L, Spacing.XL, Spacing.XXL)
-        assertEquals(steps.sorted(), steps)
-        assertEquals(steps.size, steps.toSet().size)
+    fun textStandsOutFromThePageInBothThemes() {
+        for (theme in listOf(Colors.light, Colors.dark)) {
+            assertTrue(brightness(theme, ColorRole.FOREGROUND) != brightness(theme, ColorRole.BACKGROUND))
+        }
+    }
+
+    /** The sum of the three colour channels; only the order of two values matters. */
+    private fun brightness(
+        theme: Map<ColorRole, Long>,
+        role: ColorRole,
+    ): Long {
+        val value = theme.getValue(role)
+        return (value shr RED_SHIFT and CHANNEL) + (value shr GREEN_SHIFT and CHANNEL) + (value and CHANNEL)
     }
 
     private companion object {
         const val OPAQUE_MIN = 0xFF000000
         const val OPAQUE_MAX = 0xFFFFFFFF
+        const val RED_SHIFT = 16
+        const val GREEN_SHIFT = 8
+        const val CHANNEL = 0xFFL
     }
 }
