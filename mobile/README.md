@@ -15,9 +15,9 @@ The calls and names follow the desktop app's `chat-protocol.ts`, `memory-protoco
 `dashboard-protocol.ts` in `app/src`. A screen talks to `Construct` and never knows where the data
 comes from. `FakeConstruct` has seeded data and a canned streamed answer, for tests and previews.
 
-The copy keeps the dashboard types and the fact values as JSON text, and enums by name. A change to
-those types in `core/model` that old rows no longer fit needs a migration (`core/database`), like a
-column change does.
+The copy keeps the dashboard types and the fact values as JSON text, and enums by name. Removing
+a field needs no migration; adding a required field or renaming a field or a constant does
+(`core/database`), like a column change.
 
 Targets: Android (minimum API 26, set once in `gradle/libs.versions.toml`), `iosArm64` and
 `iosSimulatorArm64`. Every version lives in `gradle/libs.versions.toml`.

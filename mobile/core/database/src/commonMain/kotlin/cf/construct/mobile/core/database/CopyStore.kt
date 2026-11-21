@@ -22,10 +22,11 @@ import kotlinx.serialization.json.JsonElement
  * its own dispatcher.
  *
  * Structured values are kept as JSON text in the shape the types of `core/model` have today, and
- * enums by their names. Changing one of those types (a required field, a renamed constant) changes
- * what stored rows must look like, so it needs a migration that rewrites them, as a column change
- * does. A row that no longer reads fails the read, and the reads of [DatabaseConstruct] answer it as
- * a failure.
+ * enums by their names. A key that a type no longer has is ignored when a row is read, so removing a
+ * field needs no migration. Adding a required field or renaming a field or a constant changes what
+ * stored rows must look like, so it needs a migration that rewrites them, as a column change does.
+ * A row that no longer reads fails the read, and the reads of [DatabaseConstruct] answer it as a
+ * failure.
  */
 @Suppress("TooManyFunctions")
 class CopyStore(

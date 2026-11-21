@@ -97,6 +97,15 @@ class DatabaseConstructTest {
         }
 
     @Test
+    fun aKeyTheTypeNoLongerHasIsIgnoredWhenAStoredRowIsRead() =
+        runTest {
+            val row = "'{\"title\":\"Week\",\"period\":\"TODAY\",\"sessions\":\"ALL\",\"widgets\":[],\"removed\":1}'"
+            driver.execute(null, "INSERT INTO document VALUES (1, $row, NULL)", 0)
+            val document = DashboardDocument("Week", Period.TODAY, Whose.ALL, emptyList())
+            assertEquals(Outcome.Ok(DocumentState(document, null)), construct.getDashboardDocument())
+        }
+
+    @Test
     fun savingFactsReplacesTheFactsThatWereThere() {
         val first = MemoryFact("f1", EntityKind.ROLE, "title", JsonPrimitive("A"), "2026-01-01T08:00:00Z")
         val second = MemoryFact("f2", EntityKind.ROLE, "title", JsonPrimitive("B"), "2026-01-01T08:01:00Z")
