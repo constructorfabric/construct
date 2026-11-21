@@ -13,7 +13,9 @@ Multiplatform. This folder holds the shared Gradle project.
 | `core/designsystem` | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme. |
 | `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`. |
 | `feature/memory`    | The first feature made from the template: the person's facts as a plain list. |
+| `shared`            | The one Kotlin framework the iPhone app links (`ConstructShared`): it re-exports the modules above, adds `UiScope` (a main-thread scope Swift can create and close) and uses SKIE, which shows Kotlin flows to Swift as `AsyncSequence`. Its analytics upload is off. |
 | `androidApp`        | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. |
+| `iosApp`            | The iPhone app in SwiftUI. `project.yml` generates the Xcode project (not committed); Swift files under `App/`, `Core/` and `Features/` are picked up by folder. `Composition.swift` is the one place its objects are built, `Core/FlowState.swift` is the one adapter every feature uses to watch a state holder, `Core/ConstructTheme.swift` maps the shared colours to SwiftUI and holds the iPhone text sizes, radii and control sizes. |
 
 The state holders wrap the one-shot reads of `Construct`: a fact changed elsewhere shows after `refresh()`, not by itself. A read that is still running is dropped when a new one starts. A `Construct` reports a failed read as `Outcome.Failed` and does not throw; run a holder's scope and call `refresh()` on the main thread.
 
@@ -38,8 +40,24 @@ its toolchain (about 1.6 GB).
 cd mobile
 ./gradlew check                                           # tests, ktlint, detekt
 ./gradlew :core:construct:compileKotlinIosSimulatorArm64  # the iPhone simulator target
-./gradlew :core:database:linkDebugFrameworkIosSimulatorArm64  # the copy store as an iPhone framework
+./gradlew :shared:linkDebugFrameworkIosSimulatorArm64         # the iPhone framework
 ./gradlew :feature:memory:compileKotlinIosSimulatorArm64      # a feature for the iPhone simulator
 ./gradlew :androidApp:assembleDebug                      # the Android app
 ./gradlew ktlintFormat                                    # fix ktlint findings
 ```
+
+## The iPhone app
+
+You also need `xcodegen` and `swiftlint` (`brew install xcodegen swiftlint`) and an iPhone simulator.
+The app links the simulator framework only; a device build needs the `iosArm64` framework or an
+XCFramework, and the path in `iosApp/project.yml` changes then.
+
+```sh
+cd mobile/iosApp
+xcodegen generate                                   # writes Construct.xcodeproj (ignored by git)
+swiftlint lint --strict
+xcodebuild -project Construct.xcodeproj -scheme Construct \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test
+```
+
+The build runs the Gradle link of the Kotlin framework first, so `JAVA_HOME` must point at JDK 17.

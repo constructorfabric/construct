@@ -1,0 +1,78 @@
+# The Xcode project is generated from this file (`xcodegen generate`) and is not committed. Swift
+# files under App/, Core/ and Features/ are picked up by folder, so adding one changes nothing else.
+name: Construct
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    # The bundle id of the app, set here and nowhere else.
+    APP_BUNDLE_ID: cf.construct.mobile
+    # The shared Kotlin framework for the simulator, built by the Gradle project one folder up. A
+    # device build needs the iosArm64 framework or an XCFramework instead.
+    KOTLIN_FRAMEWORK_DIR: $(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+    # The framework is static, so what the Kotlin code needs from the system is linked here.
+    OTHER_LDFLAGS: -lsqlite3
+    CODE_SIGNING_ALLOWED: "NO"
+    # Off because the Gradle build phase writes the framework outside any declared output.
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+targets:
+  Construct:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - Core
+      - Features
+    preBuildScripts:
+      - name: Build the Kotlin framework
+        basedOnDependencyAnalysis: false
+        script: |
+          cd "$SRCROOT/.." && ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64 --console=plain
+      - name: SwiftLint
+        basedOnDependencyAnalysis: false
+        script: |
+          if command -v swiftlint >/dev/null; then swiftlint lint --quiet; else echo "warning: swiftlint is not installed"; fi
+    dependencies:
+      - framework: $(KOTLIN_FRAMEWORK_DIR)/ConstructShared.framework
+        embed: false
+        link: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
+        PRODUCT_NAME: Construct
+        FRAMEWORK_SEARCH_PATHS: $(KOTLIN_FRAMEWORK_DIR)
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        INFOPLIST_KEY_CFBundleDisplayName: Construct
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+  ConstructTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: Construct
+      - framework: $(KOTLIN_FRAMEWORK_DIR)/ConstructShared.framework
+        embed: false
+        link: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).tests
+        FRAMEWORK_SEARCH_PATHS: $(KOTLIN_FRAMEWORK_DIR)
+        GENERATE_INFOPLIST_FILE: "YES"
+schemes:
+  Construct:
+    build:
+      targets:
+        Construct: all
+    test:
+      targets:
+        - ConstructTests

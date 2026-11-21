@@ -1,0 +1,11 @@
+included:
+  - App
+  - Core
+  - Features
+  - Tests
+opt_in_rules:
+  - empty_count
+  - explicit_init
+  - sorted_imports
+analyzer_rules: []
+line_length: 120
