@@ -54,7 +54,7 @@ export function useChat(agentRunning: boolean): Chat {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
     const readUntilListed = (): void => {
-      if (stopped || listed.current) {
+      if (listed.current) {
         return;
       }
       void refresh().then((conversations) => {
