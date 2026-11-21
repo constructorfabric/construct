@@ -174,6 +174,30 @@ codesign --force --deep --options runtime --entitlements app/entitlements.plist 
 This Developer ID path has not been run yet. Electron may also need `com.apple.security.cs.allow-jit` in the
 entitlements under the Hardened Runtime; add it to `app/entitlements.plist` if the signed app does not start.
 
+#### When you have a DMG
+
+Someone gives you a disk image made with the steps above (Apple Silicon only; an Intel Mac builds from source).
+The agent in it carries the requirement from the signing step, which is what keeps its Accessibility grant.
+
+Fresh install:
+
+1. Drag **Construct Browser** onto **Applications**.
+2. The app is not notarized. Remove the quarantine mark:
+   `xattr -dr com.apple.quarantine "/Applications/Construct Browser.app"`
+   (or right-click the app > Open, then **System Settings > Privacy & Security > Open Anyway**).
+3. Open the app, quit it, and open it again. The second start registers the background agent.
+4. Add the agent to Accessibility once, as described above.
+
+Reinstall or update:
+
+1. Quit the app. Drag the new **Construct Browser** onto **Applications** and choose **Replace**.
+2. Remove the quarantine mark again (step 2 above): every downloaded disk image has it.
+3. Open the app. If `"/Applications/Construct Browser.app/Contents/Resources/construct-agent" status` says
+   `stopped`, quit the app and open it again.
+4. Do nothing in **Privacy & Security** when the old and the new disk image were both signed with the requirement:
+   the grant holds. If the old build was signed without it, remove its `construct-agent` row from the Accessibility
+   list and add the agent again, once.
+
 ### Windows
 
 Windows has no installer from source yet, and the agent does not run there. You can start the window in
