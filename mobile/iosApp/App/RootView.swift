@@ -7,7 +7,7 @@ struct RootView: View {
 
     var body: some View {
         NavigationStack {
-            MemoryScreen(construct: composition.construct)
+            MemoryPage(construct: composition.construct)
                 .navigationTitle("Memory")
                 .navigationBarTitleDisplayMode(.inline)
         }

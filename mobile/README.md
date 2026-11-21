@@ -5,16 +5,16 @@ Multiplatform. This folder holds the shared Gradle project.
 
 ## Layout
 
-| Module           | What it holds                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------- |
-| `core/model`     | The types: conversation, message, fact, dashboard.                                          |
-| `core/construct` | The one interface the screens use for chats, memory and the dashboard, and `FakeConstruct`. |
-| `core/database`  | The phone's copy in SQLite (SQLDelight), behind the same interface. Sending says "not available yet". |
-| `core/designsystem` | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme. |
-| `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`. |
-| `feature/memory`    | The first feature made from the template: the person's facts as a plain list. |
-| `shared`            | The one Kotlin framework the iPhone app links (`ConstructShared`): it re-exports the modules above, adds `UiScope` (a main-thread scope Swift can create and close) and uses SKIE, which shows Kotlin flows to Swift as `AsyncSequence`. Its analytics upload is off. |
-| `androidApp`        | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. |
+| Module              | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/model`        | The types: conversation, message, fact, dashboard.                                                                                                                                                                                                                                                                                                                                                                                          |
+| `core/construct`    | The one interface the screens use for chats, memory and the dashboard, and `FakeConstruct`.                                                                                                                                                                                                                                                                                                                                                 |
+| `core/database`     | The phone's copy in SQLite (SQLDelight), behind the same interface. Sending says "not available yet".                                                                                                                                                                                                                                                                                                                                       |
+| `core/designsystem` | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme.                                                                                                                                                                                                                                |
+| `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`.                                                                                                                                                                                                                                                    |
+| `feature/memory`    | The first feature made from the template: the person's facts as a plain list.                                                                                                                                                                                                                                                                                                                                                               |
+| `shared`            | The one Kotlin framework the iPhone app links (`ConstructShared`): it re-exports the modules above, adds `UiScope` (a main-thread scope Swift can create and close) and uses SKIE, which shows Kotlin flows to Swift as `AsyncSequence`. Its analytics upload is off.                                                                                                                                                                       |
+| `androidApp`        | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not.                                                                                                           |
 | `iosApp`            | The iPhone app in SwiftUI. `project.yml` generates the Xcode project (not committed); Swift files under `App/`, `Core/` and `Features/` are picked up by folder. `Composition.swift` is the one place its objects are built, `Core/FlowState.swift` is the one adapter every feature uses to watch a state holder, `Core/ConstructTheme.swift` maps the shared colours to SwiftUI and holds the iPhone text sizes, radii and control sizes. |
 
 The state holders wrap the one-shot reads of `Construct`: a fact changed elsewhere shows after `refresh()`, not by itself. A read that is still running is dropped when a new one starts. A `Construct` reports a failed read as `Outcome.Failed` and does not throw; run a holder's scope and call `refresh()` on the main thread.
@@ -30,34 +30,136 @@ a field needs no migration; adding a required field or renaming a field or a con
 Targets: Android (minimum API 26, set once in `gradle/libs.versions.toml`), `iosArm64` and
 `iosSimulatorArm64`. Every version lives in `gradle/libs.versions.toml`.
 
-## Build and check
+## Rules
 
-You need a Mac with JDK 17 (`JAVA_HOME` set to it), the Android SDK (through `ANDROID_HOME` or
-`sdk.dir` in an uncommitted `local.properties`) and Xcode. The first Kotlin/Native build downloads
-its toolchain (about 1.6 GB).
+Data flows one way: the store, the state holder, the screen. A screen shows a state and passes on
+the user's actions; it loads nothing. Three rules are checked by `tools/check_structure.py`, which
+reads Kotlin, Gradle and Swift files and prints `file:line: message` for each violation. They fail
+`./gradlew check` and `iosApp/check.sh`; no CI runs either yet, so they fail only when run.
+
+1. A feature uses no other feature. In Gradle: no `project(":feature:x")` or `projects.feature.x` of
+   another feature. In Kotlin: no mention of another feature's package. In Swift: a file under
+   `iosApp/Features/<Name>` names no public top-level type that another feature declares, in Swift
+   (`struct`, `class`, `enum`, `protocol`, `actor`, `typealias`, with any modifiers and attributes
+   in any order but not `private` or `fileprivate`) or in Kotlin (`class`, `interface`, `object`,
+   `typealias`, with any modifiers but not `private`, `internal` or `protected`). Swift sees all
+   Kotlin through `ConstructShared`, so it is matched by name. A type the file declares itself,
+   nested or private, is its own in that file, and a nested Kotlin type is its feature's own: Swift
+   shows it qualified (`Outer.MemoryState`) and the check cannot tell a qualified use from a bare
+   one, so it lets the bare name pass. Name a feature's public types after the feature
+   (`MemoryState`, not `State`),
+   because a bare name that another feature declares also fails in a feature that uses the
+   SwiftUI or core name. A feature may use `core/*`. A feature folder name maps between Kotlin and
+   Swift without `_`, `-` and case: `shopping_cart` is `ShoppingCart`.
+1. A screen names no store, state holder or `Construct` type. A screen is any file with `Screen` in
+   its name: in a feature's `src/*Main` source sets for Kotlin, under `iosApp/Features/<Name>` for
+   Swift. Each feature folder that exists on a side (a `feature/<name>` module, an
+   `iosApp/Features/<Name>` folder) needs at least one there, so a renamed screen or a feature with
+   no screen is an error (`required: …`), not a way out. Names ending in `Construct`, `Holder`, `Api`
+   (but not `Experimental…Api`), `Repository`, `Store`, `Dao`, `Database` or `Model`, and `UiScope`,
+   are refused, and a Kotlin screen imports no `core.construct` or `core.database` package. The
+   holder is built outside the screen (on the iPhone in `<Name>Page.swift`) and the screen gets its
+   state.
+1. A screen has no colour or size literal: no `16.dp`, `14.sp`, `Color(...)`, `0xFF...`,
+   `Color.Red`, `Color(red:...)`, `.red`, `.padding(8)`, `.frame(width: 320)`, `CGFloat(24)`. Colours
+   and spacing come from `core/designsystem`; text sizes, radii and control sizes come from the
+   app's own theme.
+
+A fourth rule, that spacing, colours, text sizes and radii are set once in the theme of each app,
+is reviewed, not checked.
+
+What the checks do not catch: they are regular expressions over text, not a parser. All of these
+pass: a literal that does not look like the patterns above (a size computed from a number, a colour
+from a hex string at run time, `0xFF000000L`, `(8).dp`); a store type with a name outside the list;
+a feature that reaches another feature through a top-level function or a type declared in the middle
+of a line; and code inside a string interpolation (`"${Color.Red}"`, `"\(CGFloat(4))"`), which is
+not scanned. A string whose interpolation holds an escaped quote can also hide the rest of that one
+line. The check fails when it finds no feature or no `iosApp/Features` folder, so a moved folder is
+an error, not a pass.
+
+`./gradlew check` runs the script on the real tree (`checkStructure`) and its tests
+(`checkStructureTests`). The tests show each pattern and each name a pattern lists failing on a small
+fixture tree built in a temporary folder (no real file is touched), what the comment and string
+stripping hides and does not hide, the command's exit status and output, and that a copy of
+`feature/template` passes with no other file changed.
+
+## Add a feature
+
+1. Copy `feature/template` to `feature/<name>` and rename what has `template` or `Template` in its
+   name or text: the folder, the Kotlin package, the namespace in `build.gradle.kts`, and the
+   `TemplateState`, `TemplateHolder` and `TemplateScreen` files and classes. Nothing else needs a
+   change for the checks or for the iPhone framework: `settings.gradle.kts` includes every folder
+   under `feature/` that has a build file, and `shared/build.gradle.kts` links every feature but
+   the template, which is only there to copy.
+1. Fill the state, the holder (what it reads from `Construct`) and the Android screen. Keep the test
+   with `FakeConstruct`.
+1. For the iPhone, copy `iosApp/Features/Memory` to `iosApp/Features/<Name>` and rename it the same
+   way: `<Name>Screen.swift` draws a state, `<Name>Page.swift` builds the holder. The Xcode project
+   picks the files up by folder.
+1. Show it in the app: add the dependency on `:feature:<name>` in `androidApp/build.gradle.kts` and
+   put the screen in the navigation of `MainActivity.kt` and `iosApp/App/RootView.swift`.
+1. Run `./gradlew check` (it runs the structure checks) and `./iosApp/check.sh` (the same checks, then
+   SwiftLint, for a change that touches only Swift).
+
+## What the Mac needs
+
+| Need                                                                                                                                                                                | What it costs                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| An Apple Silicon Mac                                                                                                                                                                |                                                                                                              |
+| Xcode (the app, not only the Command Line Tools) and an iOS simulator runtime                                                                                                       | Xcode 27.2 with the iOS 27.2 runtime; several GB                                                             |
+| JDK 17, with `JAVA_HOME` set to it                                                                                                                                                  | the version the build was proven with                                                                        |
+| The Android SDK (`ANDROID_HOME`, or `sdk.dir` in an uncommitted `local.properties`) with platform 37.2, build tools and the emulator image `android-37.0` `google_apis` `arm64-v8a` | several GB                                                                                                   |
+| `xcodegen` and `swiftlint`: `brew install xcodegen swiftlint`                                                                                                                       | 2.48.0 and 0.65.1 were used                                                                                  |
+| Python 3.9 or newer, for the structure checks                                                                                                                                       |                                                                                                              |
+| Disk for the caches                                                                                                                                                                 | the Gradle caches about 2 GB; the Kotlin/Native toolchain about 1.6 GB, downloaded by the first iPhone build |
+| A network for the first build                                                                                                                                                       | public packages only; no account and no token                                                                |
+
+Every version of a library is in `gradle/libs.versions.toml`.
+
+## Build and check
 
 ```sh
 cd mobile
-./gradlew check                                           # tests, ktlint, detekt
-./gradlew :core:construct:compileKotlinIosSimulatorArm64  # the iPhone simulator target
-./gradlew :shared:linkDebugFrameworkIosSimulatorArm64         # the iPhone framework
-./gradlew :feature:memory:compileKotlinIosSimulatorArm64      # a feature for the iPhone simulator
-./gradlew :androidApp:assembleDebug                      # the Android app
-./gradlew ktlintFormat                                    # fix ktlint findings
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+./gradlew check                                  # tests, ktlint, detekt, the structure checks
+./gradlew ktlintFormat                           # fix ktlint findings
+python3 -I tools/check_structure.py              # only the structure rules, all of them
+./iosApp/check.sh                                # the iPhone check: the structure rules, then SwiftLint
 ```
 
-## The iPhone app
+## Run the Android app
 
-You also need `xcodegen` and `swiftlint` (`brew install xcodegen swiftlint`) and an iPhone simulator.
+Start an emulator (create one first with `avdmanager` or Android Studio from the image above), then
+install and open the app. Debug builds fill an empty copy with the sample data.
+
+```sh
+emulator -avd <name> -no-audio &                 # add -no-window to run it hidden
+adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 1; done'
+cd mobile
+./gradlew :androidApp:installDebug
+adb shell am start -n cf.construct.mobile/cf.construct.mobile.android.MainActivity
+```
+
+## Run the iPhone app
+
 The app links the simulator framework only; a device build needs the `iosArm64` framework or an
-XCFramework, and the path in `iosApp/project.yml` changes then.
+XCFramework, and the path in `iosApp/project.yml` changes then. Xcode builds the Kotlin framework
+first, through Gradle, so `JAVA_HOME` should point at JDK 17 (the version the build was proven
+with) in the shell that runs `xcodebuild`.
+The first build downloads the Kotlin/Native toolchain and is slow.
 
 ```sh
 cd mobile/iosApp
-xcodegen generate                                   # writes Construct.xcodeproj (ignored by git)
-swiftlint lint --strict
+xcodegen generate                                # writes Construct.xcodeproj (ignored by git)
 xcodebuild -project Construct.xcodeproj -scheme Construct \
-  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test
+  -destination 'platform=iOS Simulator,name=<a simulator you have>' test
+xcrun simctl boot '<a simulator you have>'       # skip if it is booted
+xcodebuild -project Construct.xcodeproj -scheme Construct \
+  -destination 'platform=iOS Simulator,name=<a simulator you have>' \
+  -derivedDataPath build build
+xcrun simctl install booted build/Build/Products/Debug-iphonesimulator/Construct.app
+xcrun simctl launch booted cf.construct.mobile
 ```
 
-The build runs the Gradle link of the Kotlin framework first, so `JAVA_HOME` must point at JDK 17.
+`xcrun simctl list devices available` shows the simulator names. Open `Simulator.app` to see the
+screen, or run `xcrun simctl io booted screenshot shot.png`.
