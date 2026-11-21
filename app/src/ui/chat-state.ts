@@ -142,3 +142,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return ended(state, { kind: 'reason', reason: action.reason });
   }
 }
+
+/** How long the window waits before it reads the list again after a read that failed. */
+export const listRetryMs = 2000;

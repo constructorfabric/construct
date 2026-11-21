@@ -2,7 +2,7 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { deleteAll } from '../chat-protocol';
 import type { ChatEvent, ConversationSummary } from '../chat-protocol';
 import { deleteAllChats } from './chat-delete';
-import { chatReducer, initialChatState } from './chat-state';
+import { chatReducer, initialChatState, listRetryMs } from './chat-state';
 import type { ChatState } from './chat-state';
 
 export interface Chat {
@@ -26,13 +26,15 @@ export interface Chat {
  * while the person is on another page; only the app closing ends it, and so do Stop, Delete all
  * and the unmount of the hook.
  */
-export function useChat(): Chat {
+export function useChat(agentRunning: boolean): Chat {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   // What the callbacks below read when they run, so they stay the same function.
   const latest = useRef(state);
   latest.current = state;
   // Callers waiting for the running answer to end.
   const endWaiters = useRef<(() => void)[]>([]);
+  // Whether a read of the list has worked since the window opened.
+  const listed = useRef(false);
 
   /** Reads the list into the state; gives it, or `null` when it could not be read. */
   const refresh = useCallback(async (): Promise<readonly ConversationSummary[] | null> => {
@@ -41,12 +43,40 @@ export function useChat(): Chat {
       dispatch({ type: 'notice', notice: result.error });
       return null;
     }
+    listed.current = true;
     dispatch({ type: 'listed', conversations: result.conversations });
     return result.conversations;
   }, []);
 
+  // The agent may not be ready when the window opens: a read that fails is tried again until one
+  // works, and the agent saying it is running is a reason to read at once.
   useEffect(() => {
-    void refresh();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const readUntilListed = (): void => {
+      if (listed.current) {
+        return;
+      }
+      void refresh().then((conversations) => {
+        if (conversations === null && !stopped) {
+          timer = setTimeout(readUntilListed, listRetryMs);
+        }
+      });
+    };
+    readUntilListed();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    if (agentRunning && !listed.current) {
+      void refresh();
+    }
+  }, [agentRunning, refresh]);
+
+  useEffect(() => {
     return window.constructAgent.onChatEvent((event: ChatEvent) => {
       switch (event.event) {
         case 'start':

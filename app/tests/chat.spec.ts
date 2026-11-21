@@ -7,10 +7,12 @@ import {
   expect,
   openApp,
   windowText,
+  withStandIn,
 } from './fixtures';
 import { ask, assistant, configure, input, rows, test, toolLines } from './chat-helpers';
 import { closedPort, goodKey, goodModel } from './provider';
 import { screenshotBothThemes } from './screenshots';
+import { listRetryMs } from '../src/ui/chat-state';
 
 const reasonDeadlineMs = 15_000;
 const stopDeadlineMs = 2000;
@@ -706,4 +708,112 @@ test('a thread that ends on a tool line stops shimmering when the answer is stop
   await expect(page.locator('#chat-failure')).toContainText('Stopped');
   expect(await roles(page)).toEqual(['user', 'tool']);
   await expect(page.locator('.shimmer')).toHaveCount(0);
+});
+
+const listDeadlineMs = 10_000;
+/** Long enough for two retries of the list to have fired, were they still going. */
+const twoRetriesMs = 2 * listRetryMs + 500;
+const atOnceMs = 2000;
+const keptChat = JSON.stringify({
+  conversations: [{ conversation: 'c-1', title: 'kept chat', time: '2026-01-01T10:00:00Z' }],
+});
+const runningStatus = JSON.stringify({ status: 'running', version: '1.0.0', pid: 1 });
+const notReady = JSON.stringify({ error: 'not ready' });
+
+test('the old chats show once an agent that was not there at the start comes up, with no message sent', async ({
+  session,
+  provider,
+}) => {
+  provider.script = { chunks: ['Fine.'], pauseMs: 0 };
+  const first = await openApp(session);
+  try {
+    await configure(first.page, { address: provider.url });
+    await ask(first.page, 'an old question');
+    await expect(assistant(first.page)).toHaveText('Fine.');
+    await expect(rows(first.page)).toHaveCount(1);
+  } finally {
+    await first.app.close();
+  }
+  await session.stopAgent();
+
+  const second = await openApp(session);
+  try {
+    await expect(second.page.locator('#chat-notice')).toBeVisible();
+    await expect(rows(second.page)).toHaveCount(0);
+    await session.startAgent();
+    await expect(rows(second.page)).toHaveText(['an old question'], { timeout: listDeadlineMs });
+    await expect(second.page.locator('#chat-notice')).toHaveCount(0);
+    await screenshotBothThemes(second.page, 'chat-list-after-late-start');
+    await expectNoPolicyViolations(second.page);
+  } finally {
+    await second.app.close();
+  }
+});
+
+test('a first read of the list that fails shows its reason, and the list shows once the agent answers', async ({
+  session,
+}) => {
+  let reads = 0;
+  await withStandIn(
+    session,
+    (line) => {
+      if (line !== 'chat-list') {
+        return notReady;
+      }
+      reads += 1;
+      return reads === 1 ? JSON.stringify({ error: 'the store is still starting' }) : keptChat;
+    },
+    async (page) => {
+      await expect(page.locator('#chat-notice')).toContainText('the store is still starting');
+      await expect(rows(page)).toHaveText(['kept chat'], { timeout: listDeadlineMs });
+      await expect(page.locator('#chat-notice')).toHaveCount(0);
+      const readsWhenListed = reads;
+      await page.waitForTimeout(twoRetriesMs);
+      // Nothing reads the list again once a read has worked.
+      expect(reads).toBe(readsWhenListed);
+    },
+  );
+});
+
+test('the list is read again as soon as the agent says it is running, not at the next retry', async ({
+  session,
+}) => {
+  const readTimes: number[] = [];
+  await withStandIn(
+    session,
+    (line) => {
+      if (line === 'status') {
+        return runningStatus;
+      }
+      if (line !== 'chat-list') {
+        return notReady;
+      }
+      readTimes.push(Date.now());
+      return readTimes.length === 1
+        ? JSON.stringify({ error: 'the store is still starting' })
+        : keptChat;
+    },
+    async (page) => {
+      await expect(rows(page)).toHaveText(['kept chat'], { timeout: listDeadlineMs });
+      await expect(page.locator('#chat-notice')).toHaveCount(0);
+      // The second read came before the retry was due, so the agent saying it is running made it.
+      const [firstRead = 0, secondRead = Infinity] = readTimes;
+      expect(secondRead - firstRead).toBeLessThan(listRetryMs);
+      // The retry that was waiting does not read again, and no notice comes back over the list.
+      await page.waitForTimeout(twoRetriesMs);
+      expect(readTimes).toHaveLength(2);
+      await expect(page.locator('#chat-notice')).toHaveCount(0);
+    },
+  );
+});
+
+test('against an agent that is up the list shows at once', async ({ session }) => {
+  await withStandIn(
+    session,
+    (line) => (line === 'chat-list' ? keptChat : notReady),
+    async (page) => {
+      await expect(rows(page)).toHaveText(['kept chat'], { timeout: atOnceMs });
+      await expect(page.locator('#chat-notice')).toHaveCount(0);
+    },
+  );
 });
