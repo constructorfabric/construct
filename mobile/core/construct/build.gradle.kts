@@ -12,7 +12,12 @@ kotlin {
                     libs.versions.androidCompileSdk
                         .get()
                         .toInt(),
-                ) { minorApiLevel = 2 }
+                ) {
+                    minorApiLevel =
+                        libs.versions.androidCompileSdkMinor
+                            .get()
+                            .toInt()
+                }
         }
         minSdk =
             libs.versions.androidMinSdk

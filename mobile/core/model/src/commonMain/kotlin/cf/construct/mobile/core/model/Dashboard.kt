@@ -54,12 +54,6 @@ data class DashboardNumbers(
     val groups: List<GroupMinutes>,
 )
 
-/** What the agent answers while it builds the activity time from the history. */
-const val READING_HISTORY_ERROR = "the activity time is being built"
-
-/** Whether the numbers will come and the page should ask again. */
-val Outcome.Failed.isReadingHistory: Boolean get() = error == READING_HISTORY_ERROR
-
 enum class WidgetKind { TOTAL, BARS_PER_DAY, TABLE, DAY_SUMMARY }
 
 enum class GroupBy { PROJECT, TICKET, TOOL, DAY }

@@ -21,14 +21,8 @@ allprojects {
     tasks.withType<Detekt>().configureEach {
         buildUponDefaultConfig = true
         config.setFrom(rootProject.file("config/detekt/detekt.yml"))
-        setSource(
-            files(
-                "src/commonMain/kotlin",
-                "src/commonTest/kotlin",
-                "src/androidMain/kotlin",
-                "src/iosMain/kotlin",
-            ),
-        )
+        // Every source set of the module, whatever its name.
+        setSource(fileTree("src") { include("**/*.kt") })
         exclude("**/build/**")
     }
 }

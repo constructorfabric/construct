@@ -2,10 +2,14 @@ package cf.construct.mobile.core.construct
 
 import cf.construct.mobile.core.model.ChatEvent
 import cf.construct.mobile.core.model.ChatInput
+import cf.construct.mobile.core.model.ChatMessage
+import cf.construct.mobile.core.model.ChatRole
 import cf.construct.mobile.core.model.DELETE_ALL_CONVERSATIONS
 import cf.construct.mobile.core.model.DashboardInput
 import cf.construct.mobile.core.model.DayBounds
+import cf.construct.mobile.core.model.DayMinutes
 import cf.construct.mobile.core.model.EraseStarted
+import cf.construct.mobile.core.model.GroupMinutes
 import cf.construct.mobile.core.model.MemoryFacts
 import cf.construct.mobile.core.model.Outcome
 import cf.construct.mobile.core.model.Whose
@@ -19,7 +23,6 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -33,11 +36,13 @@ class FakeConstructTest {
         return seen
     }
 
+    private suspend fun Construct.conversationIds(): List<String> =
+        listConversations().valueOrNull().orEmpty().map { it.id }
+
     @Test
     fun listsTheSeededConversationsNewestFirst() =
         runTest {
-            val list = fake().listConversations().valueOrNull().orEmpty()
-            assertEquals(listOf("c1", "c2"), list.map { it.id })
+            assertEquals(listOf("c1", "c2"), fake().conversationIds())
         }
 
     @Test
@@ -51,22 +56,9 @@ class FakeConstructTest {
         runTest {
             val construct = fake()
             construct.deleteConversation("c1")
-            assertEquals(
-                listOf("c2"),
-                construct
-                    .listConversations()
-                    .valueOrNull()
-                    .orEmpty()
-                    .map { it.id },
-            )
+            assertEquals(listOf("c2"), construct.conversationIds())
             construct.deleteConversation(DELETE_ALL_CONVERSATIONS)
-            assertTrue(
-                construct
-                    .listConversations()
-                    .valueOrNull()
-                    .orEmpty()
-                    .isEmpty(),
-            )
+            assertTrue(construct.conversationIds().isEmpty())
         }
 
     @Test
@@ -74,40 +66,53 @@ class FakeConstructTest {
         runTest {
             val construct = fake()
             val seen = collectEvents(construct)
-            assertIs<Outcome.Ok<Unit>>(construct.sendMessage(ChatInput("c2", "And Tuesday?")))
+            assertEquals(Outcome.Ok(Unit), construct.sendMessage(ChatInput("c2", "And Tuesday?")))
             advanceUntilIdle()
             assertEquals(
-                listOf(ChatEvent.Start("c2"), ChatEvent.Tool(FakeConstruct.CANNED_TOOL_LINE)) +
-                    FakeConstruct.CANNED_ANSWER.map { ChatEvent.Delta(it) } + ChatEvent.Done(stopped = false),
+                listOf(
+                    ChatEvent.Start("c2"),
+                    ChatEvent.Tool("Looked up your profile"),
+                    ChatEvent.Delta("Here is "),
+                    ChatEvent.Delta("a canned "),
+                    ChatEvent.Delta("answer."),
+                    ChatEvent.Done(stopped = false),
+                ),
                 seen,
             )
-            val thread = construct.getConversation("c2").valueOrNull().orEmpty()
-            assertEquals(FakeConstruct.CANNED_ANSWER.joinToString(""), thread.last().text)
+            assertEquals(
+                listOf(
+                    ChatMessage(ChatRole.USER, "Plan my week"),
+                    ChatMessage(ChatRole.ASSISTANT, "Start with the release notes on Monday."),
+                    ChatMessage(ChatRole.USER, "And Tuesday?"),
+                    ChatMessage(ChatRole.ASSISTANT, "Here is a canned answer."),
+                ),
+                construct.getConversation("c2").valueOrNull(),
+            )
         }
 
     @Test
-    fun anEmptyConversationStartsANewOne() =
+    fun newChatsGetUniqueIdsAndListFirst() =
         runTest {
             val construct = fake()
-            val seen = collectEvents(construct)
             construct.sendMessage(ChatInput("", "Hello"))
             advanceUntilIdle()
-            val started = assertIs<ChatEvent.Start>(seen.first())
+            assertEquals(listOf("new-1", "c1", "c2"), construct.conversationIds())
+            construct.deleteConversation("c1")
+            construct.sendMessage(ChatInput("", "Hello again"))
+            advanceUntilIdle()
+            assertEquals(listOf("new-2", "new-1", "c2"), construct.conversationIds())
             assertEquals(
-                "Hello",
+                "Hello again",
                 construct
                     .listConversations()
                     .valueOrNull()
-                    .orEmpty()
-                    .first {
-                        it.id ==
-                            started.conversation
-                    }.title,
+                    ?.first()
+                    ?.title,
             )
         }
 
     @Test
-    fun stoppingEndsTheAnswerWithAStoppedDone() =
+    fun stoppingMidAnswerEndsItWithAStoppedDone() =
         runTest {
             val construct = fake(deltaDelayMillis = 1_000)
             val seen = collectEvents(construct)
@@ -117,6 +122,47 @@ class FakeConstructTest {
             advanceUntilIdle()
             assertEquals(ChatEvent.Done(stopped = true), seen.last())
             assertTrue(seen.none { it is ChatEvent.Delta })
+            // A stopped answer keeps the user's message and adds no reply.
+            assertEquals(
+                ChatMessage(ChatRole.USER, "Hi"),
+                construct.getConversation("c1").valueOrNull()?.last(),
+            )
+        }
+
+    @Test
+    fun stoppingRightAfterSendingStillEndsWithDone() =
+        runTest {
+            val construct = fake(deltaDelayMillis = 1_000)
+            val seen = collectEvents(construct)
+            construct.sendMessage(ChatInput("c1", "Hi"))
+            construct.stopAnswer()
+            advanceUntilIdle()
+            assertEquals(ChatEvent.Done(stopped = true), seen.last())
+            assertEquals(1, seen.count { it is ChatEvent.Done })
+        }
+
+    @Test
+    fun stoppingRightAfterSendingWithoutADelayStillStops() =
+        runTest {
+            val construct = fake()
+            val seen = collectEvents(construct)
+            construct.sendMessage(ChatInput("c1", "Hi"))
+            construct.stopAnswer()
+            advanceUntilIdle()
+            assertEquals(listOf(ChatEvent.Done(stopped = true)), seen.filterIsInstance<ChatEvent.Done>())
+            assertTrue(seen.none { it is ChatEvent.Delta })
+        }
+
+    @Test
+    fun aNewChatAfterAStopKeepsItsOwnIdAndTime() =
+        runTest {
+            val construct = fake(deltaDelayMillis = 1_000)
+            construct.sendMessage(ChatInput("", "First"))
+            construct.stopAnswer()
+            construct.sendMessage(ChatInput("", "Second"))
+            advanceUntilIdle()
+            val list = construct.listConversations().valueOrNull().orEmpty()
+            assertEquals(listOf("new-2" to "Second", "new-1" to "First"), list.take(2).map { it.id to it.title })
         }
 
     @Test
@@ -153,19 +199,30 @@ class FakeConstructTest {
         }
 
     @Test
-    fun erasingEmptiesTheMemoryAndTheVersion() =
+    fun theVersionIsTheProfilesUntilEverythingIsErased() =
+        runTest {
+            val construct = fake()
+            assertEquals(Outcome.Ok(3L), construct.getMemoryVersion())
+            construct.eraseEverything()
+            assertEquals(Outcome.Ok(null), construct.getMemoryVersion())
+        }
+
+    @Test
+    fun erasingEmptiesTheMemoryAndTheChats() =
         runTest {
             val construct = fake()
             assertEquals(Outcome.Ok(EraseStarted(running = false)), construct.eraseEverything())
             assertEquals(Outcome.Ok(MemoryFacts(emptyList(), null)), construct.getMemoryFacts())
             assertEquals(Outcome.Ok(false), construct.getErasing())
-            assertTrue(
-                construct
-                    .listConversations()
-                    .valueOrNull()
-                    .orEmpty()
-                    .isEmpty(),
-            )
+            assertTrue(construct.conversationIds().isEmpty())
+        }
+
+    @Test
+    fun erasingAgainReportsThatAnErasureWasAlreadyOn() =
+        runTest {
+            val construct = fake()
+            construct.eraseEverything()
+            assertEquals(Outcome.Ok(EraseStarted(running = true)), construct.eraseEverything())
         }
 
     @Test
@@ -177,15 +234,20 @@ class FakeConstructTest {
                     DayBounds("Tue", "2026-01-06T00:00Z", "2026-01-07T00:00Z"),
                 )
             val numbers = fake().getDashboardNumbers(DashboardInput.ForSessions(days, Whose.OWN)).valueOrNull()
-            assertEquals(listOf("Mon", "Tue"), numbers?.days?.map { it.label })
-            assertEquals(numbers?.days?.sumOf { it.minutes }, numbers?.totalMinutes)
+            assertEquals(listOf(DayMinutes("Mon", 60), DayMinutes("Tue", 120)), numbers?.days)
+            assertEquals(180, numbers?.totalMinutes)
+            assertEquals(4, numbers?.sessionCount)
+            assertEquals(
+                listOf(GroupMinutes("alpha", 126, 0.7, 1), GroupMinutes("beta", 54, 0.3, 2)),
+                numbers?.groups,
+            )
         }
 
     @Test
-    fun theSeededDocumentHasWidgets() =
+    fun theSeededDocumentHasItsWidgets() =
         runTest {
             val state = fake().getDashboardDocument().valueOrNull()
-            assertEquals(3, state?.document?.widgets?.size)
+            assertEquals(listOf("total", "days", "by-project"), state?.document?.widgets?.map { it.id })
             assertNull(state?.problem)
         }
 }

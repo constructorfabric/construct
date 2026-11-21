@@ -23,11 +23,14 @@ import cf.construct.mobile.core.model.Position
 import cf.construct.mobile.core.model.Whose
 import cf.construct.mobile.core.model.Widget
 import cf.construct.mobile.core.model.WidgetKind
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -42,18 +45,17 @@ import kotlinx.serialization.json.JsonPrimitive
  * @param scope where the canned answer runs.
  * @param deltaDelayMillis the pause between the pieces of the answer.
  */
+@OptIn(DelicateCoroutinesApi::class)
 class FakeConstruct(
     private val scope: CoroutineScope,
     private val deltaDelayMillis: Long = 0,
-    conversations: Map<ConversationSummary, List<ChatMessage>> = seededConversations,
-    facts: List<MemoryFact> = seededFacts,
-    private val document: DashboardDocument? = seededDocument,
 ) : Construct {
-    private val threads = LinkedHashMap(conversations)
-    private val facts = facts.toMutableList()
+    private val threads = LinkedHashMap(seededConversations)
+    private val facts = seededFacts.toMutableList()
     private val events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = EVENT_BUFFER)
     private var answer: Job? = null
     private var erased = false
+    private var created = 0
 
     override val chatEvents: Flow<ChatEvent> = events.asSharedFlow()
 
@@ -76,8 +78,16 @@ class FakeConstruct(
 
     override suspend fun sendMessage(input: ChatInput): Outcome<Unit> {
         if (answer?.isActive == true) return Outcome.Failed(ANSWER_RUNNING)
-        val id = input.conversation.ifEmpty { "new-${threads.size + 1}" }
-        answer = scope.launch { streamAnswer(id, input) }
+        // The id and the time of a new chat are taken together, here, so two quick sends cannot mix them.
+        val chat =
+            threads.keys.firstOrNull { it.id == input.conversation }
+                ?: ConversationSummary(
+                    id = input.conversation.ifEmpty { "new-${created + 1}" },
+                    title = input.message.take(TITLE_LENGTH),
+                    time = newChatTime(++created),
+                )
+        // ATOMIC: a stop that comes before the body runs still reaches the `finally` below.
+        answer = scope.launch(start = CoroutineStart.ATOMIC) { streamAnswer(chat, input) }
         return Outcome.Ok(Unit)
     }
 
@@ -86,32 +96,42 @@ class FakeConstruct(
     }
 
     private suspend fun streamAnswer(
-        id: String,
+        chat: ConversationSummary,
         input: ChatInput,
     ) {
-        events.emit(ChatEvent.Start(id))
-        events.emit(ChatEvent.Tool(CANNED_TOOL_LINE))
-        var stopped = false
+        var stopped = true
         try {
+            events.emit(ChatEvent.Start(chat.id))
+            events.emit(ChatEvent.Tool(CANNED_TOOL_LINE))
             for (piece in CANNED_ANSWER) {
+                // Without a delay nothing else suspends, so a stop is looked for here.
+                currentCoroutineContext().ensureActive()
                 delay(deltaDelayMillis)
                 events.emit(ChatEvent.Delta(piece))
             }
-        } catch (_: CancellationException) {
-            stopped = true
+            stopped = false
+        } finally {
+            // However the answer ends, the end goes out.
+            withContext(NonCancellable) {
+                record(chat, input, stopped)
+                events.emit(ChatEvent.Done(stopped))
+            }
         }
-        record(id, input, stopped)
-        // The answer may have been cancelled; the end still goes out.
-        withContext(NonCancellable) { events.emit(ChatEvent.Done(stopped)) }
+    }
+
+    /** After the seeded chats; each new chat is a second later than the one before, up to a day. */
+    private fun newChatTime(count: Int): String {
+        val hours = (count / SECONDS_PER_HOUR).toString().padStart(2, '0')
+        val minutes = (count % SECONDS_PER_HOUR / SECONDS_PER_MINUTE).toString().padStart(2, '0')
+        val seconds = (count % SECONDS_PER_MINUTE).toString().padStart(2, '0')
+        return "$NEW_CHAT_DAY$hours:$minutes:${seconds}Z"
     }
 
     private fun record(
-        id: String,
+        summary: ConversationSummary,
         input: ChatInput,
         stopped: Boolean,
     ) {
-        val known = threads.keys.firstOrNull { it.id == id }
-        val summary = known ?: ConversationSummary(id, input.message.take(TITLE_LENGTH), NEW_CHAT_TIME)
         val earlier = threads[summary].orEmpty()
         val reply =
             if (stopped) {
@@ -155,7 +175,8 @@ class FakeConstruct(
         return Outcome.Ok(DashboardNumbers(total, sessionCount = days.size * 2, days = days, groups = groups))
     }
 
-    override suspend fun getDashboardDocument(): Outcome<DocumentState> = Outcome.Ok(DocumentState(document, null))
+    override suspend fun getDashboardDocument(): Outcome<DocumentState> =
+        Outcome.Ok(DocumentState(seededDocument, null))
 
     companion object {
         const val NO_SUCH_CONVERSATION = "no such conversation"
@@ -165,7 +186,10 @@ class FakeConstruct(
 
         private const val EVENT_BUFFER = 64
         private const val TITLE_LENGTH = 60
-        private const val NEW_CHAT_TIME = "2026-01-01T00:00:00Z"
+
+        private const val NEW_CHAT_DAY = "2026-01-03T"
+        private const val SECONDS_PER_MINUTE = 60
+        private const val SECONDS_PER_HOUR = 3600
         private const val FACTS_VERSION = 3L
         private const val MINUTES_PER_DAY = 60
         private const val PERCENT = 100
