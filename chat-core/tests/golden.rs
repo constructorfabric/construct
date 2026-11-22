@@ -1,7 +1,7 @@
 //! The request body of a fixed conversation with a `recall_facts` pair, built over the tool file of
-//! the phone and over the tool file of the desktop, against the files that `origin/main` produced
-//! before the chat core moved out of the agent. The bytes are what the provider's prompt cache
-//! sees, so they may not change.
+//! the phone and over the tool file of the desktop, against stored bodies. The bytes are what the
+//! provider's prompt cache sees: a change to a tool text, to the order, or to the way the body is
+//! written must show here, and is made on purpose or not at all.
 #![allow(clippy::unwrap_used)] // helpers outside #[test] functions use it too
 
 use std::sync::Arc;
@@ -48,7 +48,7 @@ fn body_over(file: &str) -> String {
 }
 
 #[test]
-fn the_phone_list_gives_the_body_it_gave_before() {
+fn the_phone_list_gives_the_stored_body() {
     let body = body_over(include_str!("../../tools/phone.json"));
     assert_eq!(body, stored(include_str!("golden/phone.json")));
     // The phone offers `recall_facts` and nothing else.
@@ -56,7 +56,7 @@ fn the_phone_list_gives_the_body_it_gave_before() {
 }
 
 #[test]
-fn the_desktop_list_gives_the_body_it_gave_before() {
+fn the_desktop_list_gives_the_stored_body() {
     let body = body_over(include_str!("../../tools/desktop.json"));
     assert_eq!(body, stored(include_str!("golden/desktop.json")));
 }

@@ -570,9 +570,38 @@ fn read_answer(response: reqwest::blocking::Response) -> Result<Option<Vec<u8>>,
     Ok((answer.len() as u64 <= MAX_ANSWER).then_some(answer))
 }
 
+/// One request, and the answer to it. The whole request has `deadline` as the limit, and the
+/// answer is read to `deadline` from the thread that waits for it (see [`send`]).
 fn send(probe: &Probe, body: &str, deadline: Duration) -> Result<Answered, Outcome> {
-    // The whole request, the body included, has the one deadline. Redirects are never followed and
-    // no proxy is used, so the key goes only to the address that was checked.
+    // The client's own timeout covers only the wait for the head of the answer: every read of the
+    // body gets the whole time again, so a server that sends a byte now and then could hold a
+    // reader for a long while. The one limit on the whole request is the wait here; the thread that
+    // does the request is left to end by itself, within the client's limits and the cap of the
+    // answer.
+    let (url, key, body) = (
+        probe.url.clone(),
+        probe.key.map(str::to_owned),
+        body.to_owned(),
+    );
+    let (done, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(exchange(&url, key.as_deref(), &body, deadline));
+    });
+    match answer.recv_timeout(deadline) {
+        Ok(answered) => answered,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(Outcome::Timeout),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(Outcome::Unreachable),
+    }
+}
+
+fn exchange(
+    url: &Url,
+    key: Option<&str>,
+    body: &str,
+    deadline: Duration,
+) -> Result<Answered, Outcome> {
+    // Redirects are never followed and no proxy is used, so the key goes only to the address that
+    // was checked.
     let client = reqwest::blocking::Client::builder()
         .timeout(deadline)
         .redirect(reqwest::redirect::Policy::none())
@@ -580,10 +609,10 @@ fn send(probe: &Probe, body: &str, deadline: Duration) -> Result<Answered, Outco
         .build()
         .map_err(|_| Outcome::Unreachable)?;
     let mut request = client
-        .post(probe.url.clone())
+        .post(url.clone())
         .header(header::CONTENT_TYPE, "application/json")
         .body(body.to_string());
-    if let Some(key) = probe.key {
+    if let Some(key) = key {
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {key}")).map_err(|_| Outcome::Unreachable)?;
         authorization.set_sensitive(true);

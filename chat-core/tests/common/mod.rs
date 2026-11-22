@@ -20,6 +20,10 @@ pub enum Reply {
     Events(Vec<String>),
     /// Read the request and say nothing.
     Hang,
+    /// Answer 302 to this address.
+    Redirect(String),
+    /// A 200 that promises a long body and sends one byte every 100 ms.
+    Drip,
 }
 
 pub struct Fake {
@@ -60,6 +64,27 @@ impl Fake {
                         let _ = stream.write_all(text.as_bytes());
                     }
                     Reply::Hang => open.push(stream),
+                    Reply::Redirect(to) => {
+                        let preamble = format!(
+                            "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        );
+                        let _ = stream.write_all(preamble.as_bytes());
+                    }
+                    Reply::Drip => {
+                        thread::spawn(move || {
+                            let preamble = "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n";
+                            let mut stream = stream;
+                            if stream.write_all(preamble.as_bytes()).is_err() {
+                                return;
+                            }
+                            for _ in 0..100 {
+                                thread::sleep(Duration::from_millis(100));
+                                if stream.write_all(b"x").is_err() {
+                                    return;
+                                }
+                            }
+                        });
+                    }
                 }
             }
         });

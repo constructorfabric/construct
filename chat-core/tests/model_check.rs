@@ -95,3 +95,42 @@ fn no_model_set_is_a_plain_error_and_nothing_is_sent() {
     let lines = test_call(&Model::default(), Duration::from_secs(1));
     assert_eq!(last(&lines), &json!({ "error": "no model address is set" }));
 }
+
+#[test]
+fn a_provider_that_sends_the_answer_a_byte_at_a_time_is_a_timeout_on_time() {
+    let provider = Fake::start(vec![Reply::Drip]);
+    let started = std::time::Instant::now();
+    let lines = test_call(&model_at(provider.addr), Duration::from_millis(500));
+    failed_with(last(&lines), "timeout");
+    // One limit for the whole request: not the limit again for every byte that comes.
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_redirect_is_not_followed_so_the_key_goes_to_the_checked_address_only() {
+    let elsewhere = Fake::start(vec![Reply::Status(200, "{}")]);
+    let provider = Fake::start(vec![Reply::Redirect(format!(
+        "http://127.0.0.1:{}/v1/chat/completions",
+        elsewhere.addr.port()
+    ))]);
+    let lines = test_call(&model_at(provider.addr), Duration::from_secs(10));
+    let answer = last(&lines);
+    assert_eq!(answer["result"], "error", "{answer}");
+    assert_eq!(answer["status"], 302, "{answer}");
+    assert!(elsewhere.bodies.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_answer_over_the_limit_is_dropped_and_is_no_completion() {
+    let big: &'static str =
+        Box::leak(format!(r#"{{"x":"{}"}}"#, "a".repeat(70 * 1024)).into_boxed_str());
+    let provider = Fake::start(vec![Reply::Status(200, big)]);
+    let lines = test_call(&model_at(provider.addr), Duration::from_secs(10));
+    let answer = last(&lines);
+    assert_eq!(answer["result"], "error", "{answer}");
+    assert_eq!(answer["status"], 200, "{answer}");
+}

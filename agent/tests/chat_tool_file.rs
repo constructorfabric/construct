@@ -1,6 +1,6 @@
 //! The tool file of the desktop against the tools of the code: every tool the chat and the setup
-//! offer has an entry, and the request they make is the one `origin/main` made before the texts moved
-//! into the file.
+//! offer has an entry, and the request they make is the stored one (the one the golden test of the
+//! `chat-core` crate checks over the same file).
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)] // helpers outside #[test] functions use it too
 
@@ -35,7 +35,7 @@ fn body(tools: &ChatTools) -> String {
 }
 
 #[test]
-fn the_setup_list_makes_the_request_it_made_before() {
+fn the_setup_list_makes_the_stored_request() {
     let (dir, workspace) = workspace();
     let tools = setup_list(setup_tools(&workspace, Some(render_tool(&workspace))), true).unwrap();
     let stored = include_str!("../../chat-core/tests/golden/desktop.json");
