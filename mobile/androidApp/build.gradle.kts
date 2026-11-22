@@ -22,8 +22,8 @@ android {
     }
 
     defaultConfig {
-        // The one place the application id is written, until the app has its final id.
-        applicationId = "cf.construct.mobile"
+        // The id and the flag that says it is final live in gradle.properties, which the release script reads too.
+        applicationId = providers.gradleProperty("constructApplicationId").get()
         minSdk =
             libs.versions.androidMinSdk
                 .get()
@@ -32,8 +32,8 @@ android {
             libs.versions.androidCompileSdk
                 .get()
                 .toInt()
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.gradleProperty("constructVersionCode").get().toInt()
+        versionName = providers.gradleProperty("constructVersionName").get()
     }
 
     testOptions {
@@ -41,9 +41,30 @@ android {
         unitTests.isReturnDefaultValues = true
     }
 
+    // The release key comes only from the environment. Without the keystore path the release APK is built
+    // unsigned; scripts/release-android.sh checks for the key first and refuses to build without it.
+    val keystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
+    val keystoreSecret = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
+    val keyAliasName = providers.environmentVariable("ANDROID_KEY_ALIAS")
+    signingConfigs {
+        if (keystorePath.isPresent && keystoreSecret.isPresent && keyAliasName.isPresent) {
+            create("release") {
+                storeFile = file(keystorePath.get())
+                storePassword = keystoreSecret.get()
+                keyAlias = keyAliasName.get()
+                // A PKCS12 keystore has one password for the store and the key.
+                keyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orElse(keystoreSecret).get()
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = false
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 }
