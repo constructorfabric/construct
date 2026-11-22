@@ -1,0 +1,125 @@
+name: mobile
+
+# Runs the commands `mobile/README.md` gives a developer. It does not run `scripts/build-ios.sh`,
+# which sends a build to TestFlight: nothing here is signed or uploaded, and no secret is used.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile.yml'
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: mobile
+
+jobs:
+  android:
+    name: shared tests, lint, structure checks, Android build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      # The Gradle home, keyed by the files that decide which libraries and which Gradle it holds.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('mobile/gradle/libs.versions.toml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+      # The Android Gradle plugin downloads the platform and the build tools it needs once the
+      # licences are accepted. The runner image does not promise that they are.
+      - name: Accept the Android SDK licences
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses < <(yes) > /dev/null'
+      - name: Tests, ktlint, detekt and the structure checks
+        run: ./gradlew check --console=plain
+      - name: Build the Android app
+        run: ./gradlew :androidApp:assembleDebug --console=plain
+
+  ios:
+    name: framework link, Simulator build, SwiftLint
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('mobile/gradle/libs.versions.toml', 'mobile/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+      # The Kotlin/Native toolchain, which the first iPhone link downloads; its version is the Kotlin
+      # version in the same file.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('mobile/gradle/libs.versions.toml') }}
+      # The newest release Xcode the runner image has (not a beta or a release candidate).
+      - name: Select Xcode
+        working-directory: .
+        run: |
+          xcode="$(ls -d /Applications/Xcode_*.app | grep -v -i -E 'beta|rc|preview' | sort -V | tail -n 1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+      # Homebrew installs one version of a formula, so the versions the README names are checked
+      # after the install: a newer formula fails here, with both versions in the log, and the
+      # versions below are raised together with the README.
+      - name: Install xcodegen and swiftlint
+        working-directory: .
+        env:
+          XCODEGEN_VERSION: 2.48.0
+          SWIFTLINT_VERSION: 0.65.1
+        run: |
+          brew install xcodegen swiftlint
+          test "$(xcodegen --version | grep -o '[0-9][0-9.]*' | head -n 1)" = "$XCODEGEN_VERSION"
+          test "$(swiftlint version)" = "$SWIFTLINT_VERSION"
+      - name: Link the Kotlin framework for the Simulator
+        run: ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64 --console=plain
+      - name: Generate the Xcode project
+        working-directory: mobile/iosApp
+        run: xcodegen generate
+      # The first single-screen iPhone of the newest iOS runtime the runner has; the foldable
+      # "iPhone Duo" is left out, as `scripts/build-ios.sh` does. The step fails when there is none.
+      - name: Build the app for the Simulator
+        working-directory: mobile/iosApp
+        run: |
+          simulator="$(xcrun simctl list devices available --json | python3 -I -c '
+          import json, re, sys
+          found = []
+          for runtime, devices in json.load(sys.stdin)["devices"].items():
+              match = re.search(r"SimRuntime\.iOS-([0-9-]+)$", runtime)
+              names = [d["name"] for d in devices if d["name"].startswith("iPhone") and "Duo" not in d["name"]]
+              if match and names:
+                  found.append(([int(n) for n in match.group(1).split("-")], names[0]))
+          if found:
+              print(max(found)[1])
+          ')"
+          test -n "$simulator" || { echo "No iPhone simulator is available"; exit 1; }
+          echo "Simulator: $simulator"
+          xcodebuild -project Construct.xcodeproj -scheme Construct \
+            -destination "platform=iOS Simulator,name=$simulator" \
+            -derivedDataPath build build
+      - name: Structure checks and SwiftLint
+        run: ./iosApp/check.sh
