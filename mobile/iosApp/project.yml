@@ -10,17 +10,20 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     # The bundle id of the app, set here and nowhere else.
-    APP_BUNDLE_ID: cf.construct.mobile
+    APP_BUNDLE_ID: tech.constructor.construct
     # Whether that id is the final one. While it is "NO", scripts/build-ios.sh only builds for the
-    # Simulator and publishes nothing.
-    APP_BUNDLE_ID_IS_FINAL: "NO"
-    # The shared Kotlin framework for the simulator, built by the Gradle project one folder up. A
-    # device build needs the iosArm64 framework or an XCFramework instead.
+    # Simulator and publishes nothing; when it is "YES", the script sends the build to TestFlight.
+    APP_BUNDLE_ID_IS_FINAL: "YES"
+    # The shared Kotlin framework, built by the Gradle project one folder up: the debug framework
+    # for the Simulator, the release iosArm64 framework for a device.
     KOTLIN_FRAMEWORK_DIR: $(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework
+    "KOTLIN_FRAMEWORK_DIR[sdk=iphoneos*]": $(SRCROOT)/../shared/build/bin/iosArm64/releaseFramework
     EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
     # The framework is static, so what the Kotlin code needs from the system is linked here.
     OTHER_LDFLAGS: -lsqlite3
-    CODE_SIGNING_ALLOWED: "NO"
+    "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": "NO"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: JNCXJMSX3P
     # Off because the Gradle build phase writes the framework outside any declared output.
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
 targets:
@@ -35,7 +38,8 @@ targets:
       - name: Build the Kotlin framework
         basedOnDependencyAnalysis: false
         script: |
-          cd "$SRCROOT/.." && ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64 --console=plain
+          if [ "$PLATFORM_NAME" = iphoneos ]; then task=linkReleaseFrameworkIosArm64; else task=linkDebugFrameworkIosSimulatorArm64; fi
+          cd "$SRCROOT/.." && ./gradlew :shared:$task --console=plain
       - name: SwiftLint
         basedOnDependencyAnalysis: false
         script: |
@@ -53,9 +57,12 @@ targets:
         GENERATE_INFOPLIST_FILE: "YES"
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
         INFOPLIST_KEY_CFBundleDisplayName: Construct
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.1"
+        # <YYMMDD>.<count of the day>: scripts/build-ios.sh raises it with every upload.
+        CURRENT_PROJECT_VERSION: "261122.1"
   ConstructTests:
     type: bundle.unit-test
     platform: iOS

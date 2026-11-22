@@ -142,10 +142,10 @@ adb shell am start -n cf.construct.mobile/cf.construct.mobile.android.MainActivi
 
 ## Run the iPhone app
 
-The app links the simulator framework only; a device build needs the `iosArm64` framework or an
-XCFramework, and the path in `iosApp/project.yml` changes then. Xcode builds the Kotlin framework
-first, through Gradle, so `JAVA_HOME` should point at JDK 17 (the version the build was proven
-with) in the shell that runs `xcodebuild`.
+A Simulator build links the debug `iosSimulatorArm64` framework and a device build the release
+`iosArm64` framework (`KOTLIN_FRAMEWORK_DIR` in `iosApp/project.yml`). Xcode builds the Kotlin
+framework first, through Gradle, so `JAVA_HOME` should point at JDK 17 (the version the build was
+proven with) in the shell that runs `xcodebuild`.
 The first build downloads the Kotlin/Native toolchain and is slow.
 
 ```sh
@@ -158,7 +158,7 @@ xcodebuild -project Construct.xcodeproj -scheme Construct \
   -destination 'platform=iOS Simulator,name=<a simulator you have>' \
   -derivedDataPath build build
 xcrun simctl install booted build/Build/Products/Debug-iphonesimulator/Construct.app
-xcrun simctl launch booted cf.construct.mobile
+xcrun simctl launch booted "$(sed -n 's/^ *APP_BUNDLE_ID: *//p' project.yml)"
 ```
 
 `xcrun simctl list devices available` shows the simulator names. Open `Simulator.app` to see the
@@ -196,12 +196,36 @@ cd mobile
 scripts/build-ios.sh
 ```
 
-The script builds the app for an iPhone simulator, installs and launches it, and saves a light and a
-dark screenshot in a folder it prints. It boots the simulator when none is running and shuts it down
-afterwards. `IOS_SIMULATOR='<name>'` picks the simulator; by default it is the first single-screen
-iPhone (`xcrun simctl list devices available` lists them). `JAVA_HOME` should point at JDK 17;
-without it the script looks for one.
-
 The bundle id and the flag that says whether it is the final one are in `iosApp/project.yml`
-(`APP_BUNDLE_ID`, `APP_BUNDLE_ID_IS_FINAL`). While the id is not final nothing is sent to Apple and
-no key is read. When it is final the script stops: building for a device is not supported yet.
+(`APP_BUNDLE_ID`, `APP_BUNDLE_ID_IS_FINAL`), with the Apple team (`DEVELOPMENT_TEAM`). `JAVA_HOME`
+should point at JDK 17; without it the script looks for one, also in Homebrew.
+
+- While the id is not final, nothing is sent to Apple and no key is read. The script builds the app
+  for an iPhone simulator, installs and launches it, and saves a light and a dark screenshot in a
+  folder it prints. It boots the simulator when none is running and shuts it down afterwards.
+  `IOS_SIMULATOR='<name>'` picks the simulator; by default it is the first single-screen iPhone
+  (`xcrun simctl list devices available` lists them).
+- When the id is final, the script archives the Release build for a device with automatic signing
+  and sends it to TestFlight. The build number is `<YYMMDD>.<count of the day>` (the UTC day, as in
+  `261122.2`): one more than `CURRENT_PROJECT_VERSION` in `iosApp/project.yml` when that is from the
+  same day, `.1` otherwise; after the upload the script writes it there. Raise `MARKETING_VERSION`
+  for a new version. The upload uses the App Store Connect API key when `APP_STORE_CONNECT_KEY_PATH`
+  (the `.p8` file, kept outside the repository), `APP_STORE_CONNECT_KEY_ID` and
+  `APP_STORE_CONNECT_ISSUER_ID` are all set, and otherwise the Apple account Xcode is signed in with
+  (Xcode, Settings, Accounts). With neither, or with only some of the three variables, it stops
+  before building. The key values are passed to `xcodebuild` and never printed.
+
+App Store Connect processes a build for some minutes. It then shows in TestFlight for the testers of
+an internal group; with automatic distribution on that group, every new build reaches them by
+itself. A tester installs it from the TestFlight app on the iPhone.
+
+The first upload from a Mac needs a person once:
+
+- Xcode is signed in with the Apple ID of a member of the team. The Developer role is enough: the
+  build is signed for distribution by the team's cloud-managed certificate, so no distribution key
+  is on the Mac. If that signing is refused, the role lacks "Access to Cloud Managed Distribution
+  Certificate" (App Store Connect, Users and Access).
+- The archive signs with the person's local "Apple Development" key, and macOS asks for the login
+  keychain password. Click "Always Allow": "Allow" covers one signing only, so the next build asks
+  again, and a build with nobody at the Mac waits for it. A new development certificate asks once
+  more.
