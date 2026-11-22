@@ -201,12 +201,11 @@ abstract class ChatCoreTestCases {
             )
         assertEquals(keys.keys, desktopReasons.keys)
         keys.forEach { (result, key) -> assertEquals(text(key), desktopReasons[result], result) }
-        // The two texts with a value in them, filled in the way `interpretModelTest` fills them.
-        assertEquals(
-            text("OutcomeMessage.Status").replace("{{status}}", "503"),
-            "error: the provider answered with status 503.",
-        )
-        assertEquals("Not done: {{reason}}", text("OutcomeMessage.Refused"))
+        // The two texts with a value in them, filled in and compared with what the core's answers give.
+        val status = text("OutcomeMessage.Status").replace("{{status}}", "503")
+        assertEquals(status, failed(testAgainst(Reply.Status(503, echoesKey))))
+        val refused = text("OutcomeMessage.Refused").replace("{{reason}}", "invalid api_key")
+        assertEquals(refused, failed(core.testModel("https://models.example.com/v1", MODEL, "bad\nkey")))
     }
 
     @Test

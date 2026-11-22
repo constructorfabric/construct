@@ -7,6 +7,9 @@
 //! Text crosses as UTF-8 C strings; every string the library returns is freed with
 //! [`cf_chat_free`].
 //!
+//! The one other way in is the JNI function of the Android certificate check (`android_tls`): it
+//! hands the JVM to the TLS stack and is not part of the C header.
+//!
 //! The key crosses as an argument of [`cf_chat_test_model`] and nowhere else: it is never logged,
 //! stored or put in a returned text.
 
@@ -30,18 +33,12 @@ pub fn fixed_request_body(tools_file: &str) -> Result<String, String> {
 /// `{"result":"works",...}`, `{"result":"key refused",...}` or `{"error":"..."}`.
 #[must_use]
 pub fn test_model(base_url: &str, model: &str, api_key: &str) -> String {
-    last_line(base_url, model, api_key, false)
+    last_line(&json!({ "base_url": base_url, "model": model, "api_key": api_key }))
 }
 
-/// The last line the Test writes. With `progress` it writes a line for every check first, and the
-/// answer is still the last one.
-fn last_line(base_url: &str, model: &str, api_key: &str, progress: bool) -> String {
-    let request = json!({
-        "base_url": base_url,
-        "model": model,
-        "api_key": api_key,
-        "progress": progress,
-    });
+/// The last line the Test writes for `request`: the answer is always the last one, and with
+/// `"progress": true` in the request a line for every check comes before it.
+fn last_line(request: &serde_json::Value) -> String {
     let mut last = String::new();
     model_test::run(
         &request.to_string(),
@@ -56,7 +53,12 @@ fn last_line(base_url: &str, model: &str, api_key: &str, progress: bool) -> Stri
 }
 
 /// The answer for a panic inside the core, which must not unwind across the C border.
-const INTERNAL_ERROR: &str = r#"{"error":"internal error"}"#;
+const INTERNAL_ERROR: &str = "internal error";
+
+/// Runs `work`; a panic in it gives `fallback()` instead of unwinding into the host app.
+fn guarded<T>(work: impl FnOnce() -> T, fallback: impl FnOnce() -> T) -> T {
+    catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|_| fallback())
+}
 
 /// The system's certificate check on Android needs the JVM: Kotlin calls this once, with the app's
 /// context, before the first request to an `https` address.
@@ -118,7 +120,10 @@ pub unsafe extern "C" fn cf_chat_fixed_request_body(
     }
     // SAFETY: the caller promises a valid string.
     let result = match unsafe { argument(tools_file) } {
-        Some(file) => fixed_request_body(&file),
+        Some(file) => guarded(
+            || fixed_request_body(&file),
+            || Err(INTERNAL_ERROR.to_string()),
+        ),
         None => Err("the tool file is not text".to_string()),
     };
     let (code, text) = match result {
@@ -144,10 +149,10 @@ pub unsafe extern "C" fn cf_chat_test_model(
     // SAFETY: the caller promises valid strings.
     let (url, name, key) = unsafe { (argument(base_url), argument(model), argument(api_key)) };
     match (url, name, key) {
-        (Some(url), Some(name), Some(key)) => c_string(
-            &catch_unwind(AssertUnwindSafe(|| test_model(&url, &name, &key)))
-                .unwrap_or_else(|_| INTERNAL_ERROR.to_string()),
-        ),
+        (Some(url), Some(name), Some(key)) => c_string(&guarded(
+            || test_model(&url, &name, &key),
+            || json!({ "error": INTERNAL_ERROR }).to_string(),
+        )),
         _ => c_string(r#"{"error":"invalid argument"}"#),
     }
 }
@@ -180,11 +185,26 @@ mod tests {
             .port();
         let url = format!("http://127.0.0.1:{port}");
         for progress in [false, true] {
-            let line = last_line(&url, "m", "sk-fake", progress);
+            let request = json!({
+                "base_url": url,
+                "model": "m",
+                "api_key": "sk-fake",
+                "progress": progress,
+            });
+            let line = last_line(&request);
             let answer: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(answer["result"], "unreachable", "{line}");
             assert!(!line.contains("sk-fake"));
         }
+    }
+
+    #[test]
+    fn a_panic_in_the_core_is_an_answer_and_not_an_unwind() {
+        let answer = guarded(
+            || -> String { panic!("a failure inside the core") },
+            || json!({ "error": INTERNAL_ERROR }).to_string(),
+        );
+        assert_eq!(answer, r#"{"error":"internal error"}"#);
     }
 
     #[test]

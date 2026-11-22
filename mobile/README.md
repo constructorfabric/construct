@@ -47,7 +47,8 @@ code calls that through `core/chat`:
 
 Why a C interface: Kotlin/Native cannot load the Kotlin bindings that Rust bridge generators write,
 and a C header is read by cinterop as it is. Android calls the same functions by name through JNA
-(no glue code to write for JNI). One interface, no generator, and a streamed answer will cross the
+(no glue code to write for JNI; the one exception is the JNI function that gives Android's certificate
+check the JVM, see `https` on Android below). One interface, no generator, and a streamed answer will cross the
 same way, as a C function pointer with a context.
 
 `scripts/build-core.sh [ios|android|all]` builds the core once for each target into a folder outside
@@ -81,17 +82,21 @@ by hand: the workflow only compiles them, because it starts no emulator. `./grad
 :core:chat:iosSimulatorArm64Test` runs them in the iPhone Simulator, and the workflow runs that one.
 
 The Android minimum API level and the iPhone deployment target of the Rust build are read from
-`gradle/libs.versions.toml` and `iosApp/project.yml`. The script stops when the crates the library is
-built from are not the ones `rustSources` in `build.gradle.kts` and the paths of the workflow list.
+`gradle/libs.versions.toml` and `iosApp/project.yml`, and both files are inputs of the Gradle tasks.
+`rustSources` in `build.gradle.kts` and the paths of the workflow list the crates the library is built
+from. The script stops when `cargo metadata` shows other crates than `chat-bridge`, `chat-core` and
+`connectors` (the list it keeps), so a new path dependency cannot leave those two lists stale.
 
 `https` on Android: the TLS stack checks certificates through Android's own trust store, which it
 reaches through the JVM. The app calls `initChatCore(context)` (`core/chat`, in `Application.onCreate`)
-once, which hands the context to the Rust library through one JNI function. The Kotlin part of the
+once, which hands the context to the Rust library through one JNI function. If the library does not
+load or the init fails, the app logs it and goes on, since the memory screens do not need the core. The Kotlin part of the
 check, `org.rustls:rustls-platform-verifier`, is an AAR that its authors publish as a Maven repository
 on GitHub (`settings.gradle.kts` limits that repository to its own group). Its version is read from
 `Cargo.lock`, so it follows the crate. A call made before the init fails as "unreachable".
-`AndroidTlsTest` shows the system check at work: a local TLS server with a certificate no phone
-trusts is refused with a TLS alert. No test reaches a real provider.
+`AndroidTlsTest` shows the system check at work (and that `ConstructApp` started it): a local TLS
+server with a certificate no phone trusts is refused with a TLS alert. The Gradle build stops when
+`Cargo.lock` holds two copies of the verifier. No test reaches a real provider.
 
 ## Rules
 

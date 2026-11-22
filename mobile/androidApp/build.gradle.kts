@@ -117,6 +117,8 @@ val testKeystore = layout.buildDirectory.file("generated/testAssets/untrusted-se
 val generateTestKeystore =
     tasks.register<Exec>("generateTestKeystore") {
         outputs.file(testKeystore)
+        // No inputs: it is made again for every build, so the 30-day certificate never goes stale.
+        outputs.upToDateWhen { false }
         doFirst {
             testKeystore
                 .get()

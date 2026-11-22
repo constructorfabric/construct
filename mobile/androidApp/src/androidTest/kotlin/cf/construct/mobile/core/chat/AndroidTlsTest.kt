@@ -15,14 +15,16 @@ import kotlin.test.assertTrue
 /**
  * An `https` address on Android: the chat core asks the system to check the certificate, through the
  * JVM that [initChatCore] hands over. The server here has a certificate no phone trusts, so the
- * system must refuse it: the client then ends the handshake with a TLS alert. A core that was not
+ * system must refuse it: the client then ends the handshake with the TLS alert `unknown_ca`. A core that was not
  * given the JVM fails otherwise (without an alert), which is what this test tells apart.
  */
 class AndroidTlsTest {
     @Test
     fun aCertificateNoPhoneTrustsIsRefusedByTheSystemCheck() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        initChatCore(instrumentation.targetContext)
+        // The test runs inside the app, whose `Application.onCreate` has run: nothing here starts the
+        // core, so the test fails if that call is gone.
+        assertTrue(chatCoreIsReady(), "ConstructApp did not start the chat core")
 
         val keys = KeyStore.getInstance("PKCS12")
         instrumentation.context.assets
@@ -55,7 +57,7 @@ class AndroidTlsTest {
             )
             val message = assertNotNull(failure, "the client did not start a handshake").message.orEmpty()
             assertTrue(
-                message.contains("alert", ignoreCase = true),
+                message.contains("UNKNOWN_CA"),
                 "the client did not refuse the certificate: $message",
             )
         } finally {

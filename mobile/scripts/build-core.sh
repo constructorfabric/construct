@@ -19,7 +19,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
-root=$PWD
+root=$(pwd -P)
 
 fail() {
   echo "error: $*" >&2

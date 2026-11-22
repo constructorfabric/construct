@@ -75,6 +75,11 @@ val platformVerifierVersion: String =
         .asFile
         .readLines()
         .let { lines ->
+            // The init and the request stack must be one copy of the verifier: with two versions in the
+            // lock file the AAR could be the wrong one, so the build stops.
+            check(lines.count { it.trim() == "name = \"rustls-platform-verifier\"" } == 1) {
+                "Cargo.lock must hold exactly one rustls-platform-verifier"
+            }
             val at = lines.indexOfFirst { it.trim() == "name = \"rustls-platform-verifier-android\"" }
             check(at >= 0) { "rustls-platform-verifier-android is not in Cargo.lock" }
             lines

@@ -74,6 +74,9 @@ fun buildChatCore(
     description = "Builds the chat core for $what with scripts/build-core.sh."
     inputs.files(rustSources)
     inputs.file("scripts/build-core.sh")
+    // The platform versions the script reads.
+    inputs.file("gradle/libs.versions.toml")
+    inputs.file("iosApp/project.yml")
     inputs.property("buildDir", chatCoreBuildDir.map { it.path })
     outputs.files(chatCoreBuildDir.map { dir -> libraries.map { File(dir, it) } })
     commandLine("scripts/build-core.sh", what)
