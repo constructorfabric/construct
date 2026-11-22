@@ -182,18 +182,18 @@ The agent in it carries the requirement from the signing step, which is what kee
 Fresh install:
 
 1. Drag **Construct Browser** onto **Applications**.
-2. The app is not notarized. Remove the quarantine mark:
+1. The app is not notarized. Remove the quarantine mark:
    `xattr -dr com.apple.quarantine "/Applications/Construct Browser.app"`
    (or right-click the app > Open, then **System Settings > Privacy & Security > Open Anyway**).
-3. Open the app. Its first start registers the background agent.
-4. Add the agent to Accessibility once, as described above.
+1. Open the app. Its first start registers the background agent.
+1. Add the agent to Accessibility once, as described above.
 
 Reinstall or update:
 
 1. Quit the app. Drag the new **Construct Browser** onto **Applications** and choose **Replace**.
-2. Remove the quarantine mark again (step 2 above): every downloaded disk image has it.
-3. Open the app. The new agent replaces the old one within a few seconds.
-4. Do nothing in **Privacy & Security** when the old and the new disk image were both signed with the requirement:
+1. Remove the quarantine mark again (step 2 above): every downloaded disk image has it.
+1. Open the app. The new agent replaces the old one within a few seconds.
+1. Do nothing in **Privacy & Security** when the old and the new disk image were both signed with the requirement:
    the grant holds. If the old build was signed without it, remove its `construct-agent` row from the Accessibility
    list and add the agent again, once.
 
