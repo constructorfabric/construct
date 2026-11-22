@@ -62,7 +62,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.1.1"
         # <YYMMDD>.<count of the day>: scripts/build-ios.sh raises it with every upload.
-        CURRENT_PROJECT_VERSION: "261122.3"
+        CURRENT_PROJECT_VERSION: "261122.4"
   ConstructTests:
     type: bundle.unit-test
     platform: iOS
