@@ -1,43 +1,15 @@
 import ConstructShared
 import SwiftUI
 
-/// The Memory page: the person's facts as a plain list. It shows the state of the shared holder and
-/// loads nothing itself.
+/// The Memory screen: the person's facts as a plain list. It shows the state it is given and loads
+/// nothing itself.
 struct MemoryScreen: View {
-    @StateObject private var model: MemoryModel
-
-    init(construct: Construct) {
-        _model = StateObject(wrappedValue: MemoryModel(construct: construct))
-    }
-
-    var body: some View {
-        MemoryWatcher(state: model.state)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ConstructTheme.color(.background))
-    }
-}
-
-/// Redraws `MemoryContent` each time the adapter publishes a new state.
-private struct MemoryWatcher: View {
     @ObservedObject var state: FlowState<MemoryState>
 
     var body: some View {
         MemoryContent(state: state.value)
-    }
-}
-
-/// Owns the holder and the scope its reads run in, and closes the scope with the page.
-@MainActor
-final class MemoryModel: ObservableObject {
-    let state: FlowState<MemoryState>
-    private let scope = UiScope()
-
-    init(construct: Construct) {
-        state = FlowState(MemoryHolder(construct: construct, scope: scope).state)
-    }
-
-    deinit {
-        scope.close()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ConstructTheme.color(.background))
     }
 }
 

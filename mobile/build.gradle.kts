@@ -2,6 +2,7 @@ import io.gitlab.arturbosch.detekt.Detekt
 import org.jlleitschuh.gradle.ktlint.KtlintExtension
 
 plugins {
+    base
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.android.kotlin.multiplatform.library) apply false
     alias(libs.plugins.kotlin.multiplatform) apply false
@@ -31,3 +32,17 @@ allprojects {
         exclude("**/build/**")
     }
 }
+
+// The structure rules read Kotlin, Gradle and Swift files, so one small script checks them all; its
+// own tests break each rule on a fixture. `check` runs both.
+val structureChecks =
+    listOf("checkStructure" to "check_structure.py", "checkStructureTests" to "test_check_structure.py")
+        .map { (taskName, script) ->
+            tasks.register<Exec>(taskName) {
+                group = "verification"
+                description = "Runs tools/$script."
+                commandLine("python3", "-I", "tools/$script")
+            }
+        }
+
+tasks.named("check") { dependsOn(structureChecks) }
