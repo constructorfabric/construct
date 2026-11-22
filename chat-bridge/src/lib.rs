@@ -11,6 +11,7 @@
 //! stored or put in a returned text.
 
 use std::ffi::{CStr, CString, c_char};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use chat_core::fixture::request_body_over;
 use chat_core::model::Model;
@@ -52,6 +53,32 @@ fn last_line(base_url: &str, model: &str, api_key: &str, progress: bool) -> Stri
         },
     );
     last
+}
+
+/// The answer for a panic inside the core, which must not unwind across the C border.
+const INTERNAL_ERROR: &str = r#"{"error":"internal error"}"#;
+
+/// The system's certificate check on Android needs the JVM: Kotlin calls this once, with the app's
+/// context, before the first request to an `https` address.
+#[cfg(target_os = "android")]
+mod android_tls {
+    use jni::EnvUnowned;
+    use jni::errors::{Error, ThrowRuntimeExAndDefault};
+    use jni::objects::JObject;
+
+    /// `AndroidTls.nativeInit(context)` of the Kotlin module.
+    #[unsafe(no_mangle)]
+    #[allow(non_snake_case)]
+    pub extern "system" fn Java_cf_construct_mobile_core_chat_AndroidTls_nativeInit<'caller>(
+        mut env: EnvUnowned<'caller>,
+        _this: JObject<'caller>,
+        context: JObject<'caller>,
+    ) {
+        env.with_env(|env| -> Result<(), Error> {
+            rustls_platform_verifier::android::init_with_env(env, context)
+        })
+        .resolve::<ThrowRuntimeExAndDefault>();
+    }
 }
 
 /// A C string from `text`; a text with a NUL byte (none of ours has one) comes out empty.
@@ -117,7 +144,10 @@ pub unsafe extern "C" fn cf_chat_test_model(
     // SAFETY: the caller promises valid strings.
     let (url, name, key) = unsafe { (argument(base_url), argument(model), argument(api_key)) };
     match (url, name, key) {
-        (Some(url), Some(name), Some(key)) => c_string(&test_model(&url, &name, &key)),
+        (Some(url), Some(name), Some(key)) => c_string(
+            &catch_unwind(AssertUnwindSafe(|| test_model(&url, &name, &key)))
+                .unwrap_or_else(|_| INTERNAL_ERROR.to_string()),
+        ),
         _ => c_string(r#"{"error":"invalid argument"}"#),
     }
 }

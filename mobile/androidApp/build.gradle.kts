@@ -48,6 +48,7 @@ android {
         // The chat core's tests run on the emulator from here, because this module packs the library.
         getByName("androidTest").kotlin.directories.add("../core/chat/src/commonTest/kotlin")
         getByName("androidTest").kotlin.directories.add("../core/chat/build/generated/fixtures")
+        getByName("androidTest").assets.directories.add("build/generated/testAssets")
     }
 
     testOptions {
@@ -108,4 +109,44 @@ dependencies {
 tasks.configureEach {
     if (name.startsWith("merge") && name.endsWith("JniLibFolders")) dependsOn(":buildChatCoreAndroid")
     if (name.contains("AndroidTest") && name.startsWith("compile")) dependsOn(":core:chat:generateFixtures")
+}
+
+// A TLS server with a certificate no phone trusts, for the test that an https address is refused by the
+// system's check and not by a crash. It is made for each build with the JDK's keytool and not stored.
+val testKeystore = layout.buildDirectory.file("generated/testAssets/untrusted-server.p12")
+val generateTestKeystore =
+    tasks.register<Exec>("generateTestKeystore") {
+        outputs.file(testKeystore)
+        doFirst {
+            testKeystore
+                .get()
+                .asFile
+                .apply { parentFile.mkdirs() }
+                .delete()
+        }
+        commandLine(
+            File(System.getProperty("java.home"), "bin/keytool").path,
+            "-genkeypair",
+            "-alias",
+            "server",
+            "-keyalg",
+            "RSA",
+            "-keysize",
+            "2048",
+            "-validity",
+            "30",
+            "-dname",
+            "CN=127.0.0.1",
+            "-ext",
+            "san=ip:127.0.0.1",
+            "-storetype",
+            "PKCS12",
+            "-storepass",
+            "untrusted",
+            "-keystore",
+            testKeystore.get().asFile.path,
+        )
+    }
+tasks.configureEach {
+    if (name.contains("AndroidTest") && name.endsWith("Assets")) dependsOn(generateTestKeystore)
 }

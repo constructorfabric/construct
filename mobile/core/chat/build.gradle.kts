@@ -67,6 +67,23 @@ val generateFixtures =
         }
     }
 
+// The Kotlin part of the certificate check must be the version of the Rust crate it belongs to, so it
+// is read from the lock file (the crate `rustls-platform-verifier-android` carries it).
+val platformVerifierVersion: String =
+    repoRoot
+        .file("Cargo.lock")
+        .asFile
+        .readLines()
+        .let { lines ->
+            val at = lines.indexOfFirst { it.trim() == "name = \"rustls-platform-verifier-android\"" }
+            check(at >= 0) { "rustls-platform-verifier-android is not in Cargo.lock" }
+            lines
+                .drop(at + 1)
+                .first { it.startsWith("version = ") }
+                .substringAfter('"')
+                .substringBefore('"')
+        }
+
 kotlin {
     android {
         namespace = "cf.construct.mobile.core.chat"
@@ -110,6 +127,7 @@ kotlin {
         }
         androidMain.dependencies {
             implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
+            implementation("org.rustls:rustls-platform-verifier:$platformVerifierVersion")
         }
         commonTest {
             kotlin.srcDir(generateFixtures.map { it.outputs.files.singleFile.parentFile })

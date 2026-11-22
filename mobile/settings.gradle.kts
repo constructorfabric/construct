@@ -17,6 +17,16 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // The Kotlin part of the Rust TLS stack's certificate check on Android, published by its
+        // authors as a plain Maven repository. Only its own group comes from here.
+        exclusiveContent {
+            forRepository {
+                maven(
+                    "https://github.com/rustls/rustls-platform-verifier/raw/maven-archive/android-release-support/maven/",
+                )
+            }
+            filter { includeGroup("org.rustls") }
+        }
     }
 }
 

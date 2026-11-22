@@ -1862,6 +1862,8 @@ name = "chat-bridge"
 version = "0.1.0"
 dependencies = [
  "chat-core",
+ "jni",
+ "rustls-platform-verifier",
  "serde_json",
 ]
 

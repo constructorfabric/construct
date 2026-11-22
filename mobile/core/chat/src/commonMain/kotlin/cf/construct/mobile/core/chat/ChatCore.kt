@@ -17,8 +17,7 @@ interface ChatCore {
      * Tests a model setting. The key is an argument: it is in no log and in no returned text.
      * [ModelTestResult.Failed] carries the desktop's words for the reason.
      *
-     * Not yet shown on Android for an `https` address: the certificate check may need an initialisation
-     * that is not made, and the answer would then be "unreachable". Only `http` on localhost is tested.
+     * On Android the app calls `initChatCore` first, or an `https` address comes back as unreachable.
      */
     fun testModel(
         baseUrl: String,

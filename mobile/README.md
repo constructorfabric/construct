@@ -84,10 +84,14 @@ The Android minimum API level and the iPhone deployment target of the Rust build
 `gradle/libs.versions.toml` and `iosApp/project.yml`. The script stops when the crates the library is
 built from are not the ones `rustSources` in `build.gradle.kts` and the paths of the workflow list.
 
-Known gap: the Android build has not been shown to call an `https` address. The TLS stack checks
-certificates through the system verifier, which on Android may need an initialisation call from
-Kotlin that is not made yet, so a real provider may come back as "unreachable". Every test uses `http`
-on localhost.
+`https` on Android: the TLS stack checks certificates through Android's own trust store, which it
+reaches through the JVM. The app calls `initChatCore(context)` (`core/chat`, in `Application.onCreate`)
+once, which hands the context to the Rust library through one JNI function. The Kotlin part of the
+check, `org.rustls:rustls-platform-verifier`, is an AAR that its authors publish as a Maven repository
+on GitHub (`settings.gradle.kts` limits that repository to its own group). Its version is read from
+`Cargo.lock`, so it follows the crate. A call made before the init fails as "unreachable".
+`AndroidTlsTest` shows the system check at work: a local TLS server with a certificate no phone
+trusts is refused with a TLS alert. No test reaches a real provider.
 
 ## Rules
 
