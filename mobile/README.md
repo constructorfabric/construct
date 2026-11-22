@@ -188,3 +188,20 @@ The application id and the flag that says whether it is the final one are in `gr
   script stops when the tree has changes, the commit is not pushed, the release already exists, or the version code is not higher than that of an earlier release.
   Raise `constructVersionName` and `constructVersionCode` in `gradle.properties` for each release.
   With `RELEASE_DRAFT=1` (or `true`, `yes`) the release is a draft.
+
+## iPhone build
+
+```sh
+cd mobile
+scripts/build-ios.sh
+```
+
+The script builds the app for an iPhone simulator, installs and launches it, and saves a light and a
+dark screenshot in a folder it prints. It boots the simulator when none is running and shuts it down
+afterwards. `IOS_SIMULATOR='<name>'` picks the simulator; by default it is the first single-screen
+iPhone (`xcrun simctl list devices available` lists them). `JAVA_HOME` should point at JDK 17;
+without it the script looks for one.
+
+The bundle id and the flag that says whether it is the final one are in `iosApp/project.yml`
+(`APP_BUNDLE_ID`, `APP_BUNDLE_ID_IS_FINAL`). While the id is not final nothing is sent to Apple and
+no key is read. When it is final the script stops: building for a device is not supported yet.

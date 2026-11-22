@@ -11,6 +11,9 @@ settings:
     SWIFT_VERSION: "5.0"
     # The bundle id of the app, set here and nowhere else.
     APP_BUNDLE_ID: cf.construct.mobile
+    # Whether that id is the final one. While it is "NO", scripts/build-ios.sh only builds for the
+    # Simulator and publishes nothing.
+    APP_BUNDLE_ID_IS_FINAL: "NO"
     # The shared Kotlin framework for the simulator, built by the Gradle project one folder up. A
     # device build needs the iosArm64 framework or an XCFramework instead.
     KOTLIN_FRAMEWORK_DIR: $(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework
