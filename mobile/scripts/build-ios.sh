@@ -5,7 +5,9 @@
 # installed and launched, and two screenshots, light and dark, are saved in a folder this script
 # prints. Nothing is sent to Apple and no key is read.
 #
-# When it is "YES" the app is archived for a device and the build is sent to TestFlight. The upload
+# When it is "YES" the same Simulator build and screenshots come first, for readers without the
+# TestFlight build; then the app is archived for a device and the build is sent to TestFlight, so a
+# failed screenshot stops the run before anything is sent. The upload
 # uses the App Store Connect API key when APP_STORE_CONNECT_KEY_PATH, APP_STORE_CONNECT_KEY_ID and
 # APP_STORE_CONNECT_ISSUER_ID are set, and otherwise the Apple account Xcode is signed in with. The
 # build number is <YYMMDD>.<count of the day>; the script writes it into the spec after the upload.
@@ -47,13 +49,12 @@ if [ -z "${JAVA_HOME:-}" ]; then
   export JAVA_HOME
 fi
 
-# Archive for a device and send the build to TestFlight.
-upload() {
-  local team auth key_vars name set_count today current build version out
+# Choose how the upload signs in, before anything is built. The key values go to xcodebuild only;
+# they are never printed.
+choose_upload_auth() {
+  local key_vars name set_count
   team=$(prop DEVELOPMENT_TEAM)
   [ -n "$team" ] || fail "DEVELOPMENT_TEAM is not set in $spec"
-
-  # The key values go to xcodebuild only; they are never printed.
   auth=(-allowProvisioningUpdates)
   key_vars=(APP_STORE_CONNECT_KEY_PATH APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID)
   set_count=0
@@ -73,6 +74,11 @@ upload() {
   else
     fail "no App Store Connect API key (${key_vars[*]}) and no Apple account in Xcode (Xcode, Settings, Accounts)"
   fi
+}
+
+# Archive for a device and send the build to TestFlight.
+upload() {
+  local today current build version out
 
   # The build number is <UTC day as YYMMDD>.<count of the day>: the number in the spec plus one on the
   # same day, the first of the day otherwise. It is written back after the upload.
@@ -117,8 +123,7 @@ EOF
 }
 
 if [ "$is_final" = YES ]; then
-  upload
-  exit 0
+  choose_upload_auth
 fi
 
 # Pick the simulator: the one named, or the first available iPhone.
@@ -181,3 +186,7 @@ for mode in light dark; do
   [ "$same" -ge 2 ] || fail "the screen did not settle within 60 seconds; no screenshot was saved for the $mode theme"
 done
 echo "Screenshots: $shots"
+
+if [ "$is_final" = YES ]; then
+  upload
+fi
