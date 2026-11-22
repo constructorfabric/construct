@@ -1,16 +1,21 @@
 import SwiftUI
 
-/// The shell: the theme's background and the page the app opens on. A page is a folder under
-/// `Features/`; when the app has more than one, the navigation goes here.
+/// The shell: the frame and the page each tab shows. A page with a feature is a folder under
+/// `Features/`; one without is a `PlaceholderPage` until its feature takes it over.
 struct RootView: View {
     let composition: Composition
 
+    init(composition: Composition) {
+        self.composition = composition
+        ConstructTheme.styleBars()
+    }
+
     var body: some View {
-        NavigationStack {
-            MemoryPage(construct: composition.construct)
-                .navigationTitle("Memory")
-                .navigationBarTitleDisplayMode(.inline)
+        AppFrame(connection: ConnectionState.current()) { page in
+            switch page {
+            case .memory: MemoryPage(construct: composition.construct)
+            default: PlaceholderPage(page: page)
+            }
         }
-        .tint(ConstructTheme.color(.primary))
     }
 }

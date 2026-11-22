@@ -36,6 +36,7 @@ final class ConstructThemeTests: XCTestCase {
         XCTAssertEqual(ConstructTheme.ControlSize.touch, 44)
         XCTAssertEqual(ConstructTheme.ControlSize.icon, 24)
         XCTAssertEqual(ConstructTheme.ControlSize.iconLarge, 40)
+        XCTAssertEqual(ConstructTheme.ControlSize.dot, 8)
     }
 
     func testTheSpacingStepsAreTheAgreedOnes() {
