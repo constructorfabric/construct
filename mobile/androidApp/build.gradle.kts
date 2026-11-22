@@ -35,6 +35,9 @@ android {
         versionCode = providers.gradleProperty("constructVersionCode").get().toInt()
         versionName = providers.gradleProperty("constructVersionName").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // The chat core is built for these two only; this keeps the 32-bit libraries of the JNA AAR out, so
+        // a device of another ABI cannot install an app whose core would not load.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     sourceSets {

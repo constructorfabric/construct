@@ -96,8 +96,9 @@ Kotlin part of the check, `org.rustls:rustls-platform-verifier`, is an AAR that 
 on GitHub (`settings.gradle.kts` limits that repository to its own group). Its version is read from
 `Cargo.lock`, so it follows the crate. A call made before a successful init
 answers "unreachable" for an `https` address. If the library itself did not load, every call throws
-`UnsatisfiedLinkError`: the library is built for `arm64-v8a` and `x86_64` only, so a 32-bit device
-cannot install the app.
+`UnsatisfiedLinkError`: the library is built for `arm64-v8a` and `x86_64` only, so the app keeps only
+those two (`abiFilters` in `androidApp/build.gradle.kts`, which also drops the 32-bit libraries of JNA) and a
+32-bit device cannot install it.
 
 The first `https` call of a process was slow on the emulator: 10 s, and once more than the core's
 15 s deadline, so it came back as `timeout`; the next calls took under half a second. The emulator has
