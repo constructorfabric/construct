@@ -163,3 +163,28 @@ xcrun simctl launch booted cf.construct.mobile
 
 `xcrun simctl list devices available` shows the simulator names. Open `Simulator.app` to see the
 screen, or run `xcrun simctl io booted screenshot shot.png`.
+
+## Android release
+
+```sh
+cd mobile
+scripts/release-android.sh
+```
+
+The script builds the release APK, signs it, and checks the signature with `apksigner`. The key
+comes only from the environment (the keystore path must be absolute): `ANDROID_KEYSTORE_PATH`, `ANDROID_KEY_ALIAS`,
+`ANDROID_KEYSTORE_PASSWORD` and, for a keystore whose key has its own password,
+`ANDROID_KEY_PASSWORD`. Without the key the script stops and leaves no APK. Only the v2 signature
+scheme is used.
+
+The application id and the flag that says whether it is the final one are in `gradle.properties`
+(`constructApplicationId`, `constructApplicationIdIsFinal`).
+
+- While the id is not final, nothing is published. The script installs the APK on the running
+  emulator or device (it first uninstalls the app, because an APK signed with another key cannot be installed over it; that erases its data) and
+  saves a light and a dark screenshot in a folder it prints.
+- When the id is final, the script publishes the signed APK as a GitHub pre-release. The tag is
+  `android-v<constructVersionName>` and points at the pushed commit the APK was built from; the
+  script stops when the tree has changes, the commit is not pushed, the release already exists, or the version code is not higher than that of an earlier release.
+  Raise `constructVersionName` and `constructVersionCode` in `gradle.properties` for each release.
+  With `RELEASE_DRAFT=1` (or `true`, `yes`) the release is a draft.
