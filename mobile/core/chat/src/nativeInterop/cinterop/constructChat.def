@@ -1,0 +1,6 @@
+headers = construct_chat.h
+headerFilter = construct_chat.h
+package = cf.construct.mobile.core.chat.bridge
+staticLibraries = libconstruct_chat_bridge.a
+# What the static Rust library needs from the system (TLS roots, DNS).
+linkerOpts = -framework Security -framework CoreFoundation -framework SystemConfiguration -lresolv -lc++

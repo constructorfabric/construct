@@ -46,3 +46,47 @@ val structureChecks =
         }
 
 tasks.named("check") { dependsOn(structureChecks) }
+
+// The chat core is Rust (the `chat-bridge` crate). scripts/build-core.sh builds it into one folder
+// outside the repository; these tasks run it only when a Rust source, the lock file or the script
+// changed, so a Gradle or Xcode build with unchanged sources does not start cargo.
+val chatCoreBuildDir: Provider<File> =
+    providers
+        .environmentVariable("CONSTRUCT_CORE_BUILD_DIR")
+        .orElse(providers.systemProperty("user.home").map { "$it/Library/Caches/construct-chat-core" })
+        .map { file(it) }
+extra["coreBuildDir"] = chatCoreBuildDir
+
+val rustSources =
+    layout.projectDirectory.dir("..").asFileTree.matching {
+        include("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
+        include("chat-bridge/Cargo.toml", "chat-bridge/include/**", "chat-bridge/src/**")
+        include("chat-core/Cargo.toml", "chat-core/src/**")
+        include("connectors/Cargo.toml", "connectors/build.rs", "connectors/src/**")
+    }
+
+fun buildChatCore(
+    name: String,
+    what: String,
+    libraries: List<String>,
+) = tasks.register<Exec>(name) {
+    group = "build"
+    description = "Builds the chat core for $what with scripts/build-core.sh."
+    inputs.files(rustSources)
+    inputs.file("scripts/build-core.sh")
+    inputs.property("buildDir", chatCoreBuildDir.map { it.path })
+    outputs.files(chatCoreBuildDir.map { dir -> libraries.map { File(dir, it) } })
+    commandLine("scripts/build-core.sh", what)
+    environment("CONSTRUCT_CORE_BUILD_DIR", chatCoreBuildDir.get().path)
+}
+
+buildChatCore(
+    "buildChatCoreIos",
+    "ios",
+    listOf("ios/device/libconstruct_chat_bridge.a", "ios/simulator/libconstruct_chat_bridge.a"),
+)
+buildChatCore(
+    "buildChatCoreAndroid",
+    "android",
+    listOf("android/arm64-v8a/libconstruct_chat_bridge.so", "android/x86_64/libconstruct_chat_bridge.so"),
+)

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use chat_core::tool::{ChatTools, ToolConfig, ToolHandler};
 use chat_core::wire::request_body;
 
-#[path = "golden/conversation.rs"]
+#[path = "../../chat-bridge/src/conversation.rs"]
 mod conversation;
 
 /// A handler that is never run: the body only has the list.

@@ -1,4 +1,4 @@
-//! The fixed conversation of the golden tests: a user turn, the `recall_facts` pair, a tool call and
+//! The fixed conversation of the golden tests and of the phone apps build checks: a user turn, the `recall_facts` pair, a tool call and
 //! its result, an answer, and a second user turn. It has accents, quotes and a newline, so the
 //! escapes of the body are part of what is compared.
 
@@ -41,6 +41,7 @@ fn result(id: &str, text: &str) -> Record {
     })
 }
 
+#[must_use]
 pub fn conversation() -> Vec<Record> {
     vec![
         turn(Role::User, "What do I know about \"Ünï\" today?"),

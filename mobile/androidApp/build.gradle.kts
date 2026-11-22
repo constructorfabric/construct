@@ -34,6 +34,20 @@ android {
                 .toInt()
         versionCode = providers.gradleProperty("constructVersionCode").get().toInt()
         versionName = providers.gradleProperty("constructVersionName").get()
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    sourceSets {
+        // The Rust library of each ABI, built outside the repository by scripts/build-core.sh.
+        getByName("main").jniLibs.directories.add(
+            rootProject.extra
+                .get("coreBuildDir")
+                .let { (it as Provider<*>).get() }
+                .toString() + "/android",
+        )
+        // The chat core's tests run on the emulator from here, because this module packs the library.
+        getByName("androidTest").kotlin.directories.add("../core/chat/src/commonTest/kotlin")
+        getByName("androidTest").kotlin.directories.add("../core/chat/build/generated/fixtures")
     }
 
     testOptions {
@@ -75,6 +89,7 @@ androidComponents {
 }
 
 dependencies {
+    implementation(project(":core:chat"))
     implementation(project(":core:construct"))
     implementation(project(":core:database"))
     implementation(project(":core:designsystem"))
@@ -83,5 +98,14 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.activity)
     testImplementation(libs.kotlin.test.junit)
+    androidTestImplementation(libs.kotlin.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     testImplementation(libs.sqldelight.sqlite.driver)
+}
+
+// The Rust library is built before the app packs it, and the fixtures of the chat core's tests are
+// written before the tests compile.
+tasks.configureEach {
+    if (name.startsWith("merge") && name.endsWith("JniLibFolders")) dependsOn(":buildChatCoreAndroid")
+    if (name.contains("AndroidTest") && name.startsWith("compile")) dependsOn(":core:chat:generateFixtures")
 }

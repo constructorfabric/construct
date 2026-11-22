@@ -25,6 +25,7 @@ rootProject.name = "construct-mobile"
 include(":core:model")
 include(":core:construct")
 include(":core:database")
+include(":core:chat")
 include(":core:designsystem")
 // Every folder under feature/ with a build file is a feature, so a copy of feature/template needs
 // no line here.

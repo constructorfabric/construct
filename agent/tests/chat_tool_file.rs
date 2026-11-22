@@ -14,7 +14,7 @@ use construct_agent::workspace::Workspace;
 
 mod common;
 
-#[path = "../../chat-core/tests/golden/conversation.rs"]
+#[path = "../../chat-bridge/src/conversation.rs"]
 mod conversation;
 
 use common::sessions::render_tool;

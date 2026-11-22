@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- The chat core calls the model's address from the phone. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".ConstructApp"
         android:allowBackup="false"
