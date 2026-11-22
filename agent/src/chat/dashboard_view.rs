@@ -455,18 +455,11 @@ impl ChatTool for RenderDashboard {
     }
 
     fn description(&self) -> &'static str {
-        "Looks at the person's dashboard as text and changes nothing. With no arguments it gives \
-every widget of the dashboard with its id, kind, period and sessions and the numbers the page shows: a \
-total, a table of groups with time, share and sessions, the time of each day. With period and \
-group_by (and optionally source, sessions and filter) it gives only that table, for a question the \
-dashboard does not show. When the dashboard file has errors it gives them with their places and \
-says that the page keeps the last good version: call it after every edit of the file. The schema \
-of the dashboard file is in dashboard.schema.json and a guide to editing it, with examples, is in \
-dashboard.md, both in the workspace."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"period":{"type":"string","enum":["today","this_week","last_week","this_month","last_month","last_7_days","last_30_days"],"description":"The period of the table. Give it with group_by."},"source":{"type":"string","enum":["ai_sessions","on_screen"],"description":"What the time is of: the sessions of the AI tools, or the time each application and site was in front. ai_sessions when left out."},"sessions":{"type":"string","enum":["own","unattended","all"],"description":"Whose sessions to count; own when left out. For ai_sessions only."},"group_by":{"type":"string","enum":["project","ticket","tool","collection","day","app","site"],"description":"What the table groups by. Give it with period. tool and collection are for ai_sessions, app and site for on_screen."},"filter":{"type":"object","properties":{"projects":{"type":"array","items":{"type":"string"}},"tickets":{"type":"array","items":{"type":"string"}},"tools":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"Keeps only what it lists; a list left out means no limit."}},"additionalProperties":false}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {

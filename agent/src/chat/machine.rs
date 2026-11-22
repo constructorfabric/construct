@@ -337,13 +337,11 @@ impl ChatTool for ReadFile {
     }
 
     fn description(&self) -> &'static str {
-        "Reads a text file of the user's machine, in one of the folders of the user. The result has one \
-         line for each line of the file, as a line number, a tab and the text. Use `offset` (the number \
-         of the first line) and `limit` (the most lines) to read a part of a long file. This only reads."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"The full path of the file."},"offset":{"type":"integer","description":"The number of the first line to read. The first line of the file is 1."},"limit":{"type":"integer","description":"The most lines to read."}},"required":["path"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {
@@ -378,13 +376,11 @@ impl ChatTool for ListFolder {
     }
 
     fn description(&self) -> &'static str {
-        "Lists a folder of the user's machine, in one of the folders of the user: one name for each \
-         line, sorted, with a / after the name of a folder. Names that may hold keys or credentials \
-         are left out. This only reads."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"path":{"type":"string","description":"The full path of the folder."}},"required":["path"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {
@@ -434,13 +430,11 @@ impl ChatTool for FindFiles {
     }
 
     fn description(&self) -> &'static str {
-        "Finds files under a folder of the user's machine by a glob pattern such as `**/*.md`, matched \
-         against the path from that folder. The result is one full path for each line, sorted. Links, \
-         `.git` and names that may hold keys or credentials are left out. This only reads."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"pattern":{"type":"string","description":"The glob pattern, for example **/*.txt."},"path":{"type":"string","description":"The full path of the folder to search in."}},"required":["pattern","path"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {
@@ -502,14 +496,11 @@ impl ChatTool for SearchText {
     }
 
     fn description(&self) -> &'static str {
-        "Searches the text of the files in a folder of the user's machine (or of one file) for a regular \
-         expression. The result has one line for each match, as the full path, the line number and the \
-         line. `glob` limits the search to files whose name matches, such as `*.md`. Links, `.git`, \
-         binary files and names that may hold keys or credentials are left out. This only reads."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"pattern":{"type":"string","description":"The regular expression."},"path":{"type":"string","description":"The full path of a folder or a file."},"glob":{"type":"string","description":"Only files whose name matches, for example *.rs."},"ignore_case":{"type":"boolean","description":"Ignore the case of letters. The default is false."}},"required":["pattern","path"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {

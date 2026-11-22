@@ -1,0 +1,7 @@
+[
+  {
+    "name": "recall_facts",
+    "description": "The facts known about the user, as one list. The list replaces every earlier list of facts.",
+    "schema": {"type":"object","properties":{},"additionalProperties":false}
+  }
+]

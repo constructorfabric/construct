@@ -55,16 +55,7 @@ pub struct Progress {
     pub files: BTreeMap<String, FileProgress>,
 }
 
-/// One session of a source, as listed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionInfo {
-    /// The real id, read from the file, not its file name.
-    pub session: String,
-    /// The time of the last record (UTC RFC 3339).
-    pub last_time: String,
-    /// The text of the first user turn; empty when there is none.
-    pub first_user_text: String,
-}
+pub use chat_core::records::SessionInfo;
 
 /// What the readers write to and the rest of the agent reads from.
 pub trait Sink {

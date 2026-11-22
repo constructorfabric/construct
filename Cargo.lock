@@ -1858,6 +1858,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "chat-core"
+version = "0.1.0"
+dependencies = [
+ "connectors",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2073,6 +2087,7 @@ dependencies = [
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
+ "chat-core",
  "chrono",
  "chrono-tz",
  "connectors",

@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub use chat_core::model::Model;
+use chat_core::model::{check_base_url, check_key};
 use serde::{Deserialize, Serialize};
-use url::{Host, Url};
 
 use crate::ipc::absolute_env_path;
 
@@ -25,26 +26,6 @@ use crate::ipc::absolute_env_path;
 pub const FILE_NAME: &str = "settings.json";
 /// Format version written into the file.
 pub const VERSION: u32 = 1;
-
-/// The model the user connected.
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Model {
-    pub base_url: String,
-    pub model: String,
-    /// Never printed: `Debug` hides it, and the socket answers only whether it is set.
-    pub api_key: Option<String>,
-}
-
-impl fmt::Debug for Model {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Model")
-            .field("base_url", &self.base_url)
-            .field("model", &self.model)
-            .field("api_key_set", &self.api_key.is_some())
-            .finish()
-    }
-}
 
 /// The tools that have a switch of their own, by the name their sessions carry in the store.
 pub const TOOLS: [&str; 2] = ["claude-code", "codex"];
@@ -145,6 +126,15 @@ impl Error {
     }
 }
 
+impl From<chat_core::model::Error> for Error {
+    fn from(error: chat_core::model::Error) -> Self {
+        match error {
+            chat_core::model::Error::InvalidBaseUrl => Error::InvalidBaseUrl,
+            chat_core::model::Error::InvalidKey => Error::InvalidKey,
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -239,37 +229,6 @@ pub fn config_dir() -> io::Result<PathBuf> {
         cfg!(target_os = "macos"),
     )
     .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))
-}
-
-/// Check the model address: `https`, or `http` only for the host `localhost` or `127.0.0.1`,
-/// and no user name or password. The host is compared after parsing. An empty address means
-/// no model.
-pub(crate) fn check_base_url(raw: &str) -> Result<(), Error> {
-    if raw.is_empty() {
-        return Ok(());
-    }
-    let url = Url::parse(raw).map_err(|_| Error::InvalidBaseUrl)?;
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(Error::InvalidBaseUrl);
-    }
-    let local = match url.host() {
-        Some(Host::Domain(name)) => name == "localhost",
-        Some(Host::Ipv4(ip)) => ip.octets() == [127, 0, 0, 1],
-        _ => false,
-    };
-    match url.scheme() {
-        "https" if url.host().is_some() => Ok(()),
-        "http" if local => Ok(()),
-        _ => Err(Error::InvalidBaseUrl),
-    }
-}
-
-/// Check a key: no control character. Shared by `settings-set` and `settings-test`.
-pub(crate) fn check_key(key: &str) -> Result<(), Error> {
-    if key.chars().any(char::is_control) {
-        return Err(Error::InvalidKey);
-    }
-    Ok(())
 }
 
 /// Apply `update` to `data`; `data` is untouched on an error.

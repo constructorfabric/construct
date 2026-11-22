@@ -61,14 +61,11 @@ impl ChatTool for Read {
     }
 
     fn description(&self) -> &'static str {
-        "Reads a text file from the workspace folder. The result has one line for each line of the \
-         file, as a line number, a tab and the text. Use `offset` (the number of the first line) and \
-         `limit` (the most lines) to read a part of a long file. A long result is cut, and its last \
-         line says which offset to continue with."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"file_path":{"type":"string","description":"The path of the file, relative to the workspace folder."},"offset":{"type":"integer","description":"The number of the first line to read. The first line of the file is 1."},"limit":{"type":"integer","description":"The most lines to read."}},"required":["file_path"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {
@@ -138,13 +135,11 @@ impl ChatTool for Write {
     }
 
     fn description(&self) -> &'static str {
-        "Writes a text file in the workspace folder. It replaces the file when it exists and creates \
-         it, with its folders, when it does not. Give the text of the file as it is, with no line \
-         numbers."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"file_path":{"type":"string","description":"The path of the file, relative to the workspace folder."},"content":{"type":"string","description":"The whole text of the file."}},"required":["file_path","content"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {
@@ -181,13 +176,11 @@ impl ChatTool for Edit {
     }
 
     fn description(&self) -> &'static str {
-        "Replaces text in a file of the workspace folder. `old_string` must occur once in the file, \
-         unless `replace_all` is true, which replaces every occurrence. Give both strings as they \
-         are in the file, with no line numbers."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"file_path":{"type":"string","description":"The path of the file, relative to the workspace folder."},"old_string":{"type":"string","description":"The text to replace."},"new_string":{"type":"string","description":"The text to put in its place. It must differ from old_string."},"replace_all":{"type":"boolean","description":"Replace every occurrence of old_string. The default is false."}},"required":["file_path","old_string","new_string"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {
@@ -222,12 +215,11 @@ impl ChatTool for Glob {
     }
 
     fn description(&self) -> &'static str {
-        "Finds files of the workspace folder by a glob pattern such as `**/*.md`. The result is one \
-         path for each line, sorted."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"pattern":{"type":"string","description":"The glob pattern, for example **/*.txt."},"path":{"type":"string","description":"The folder to search in, relative to the workspace folder. The default is the whole workspace."}},"required":["pattern"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {

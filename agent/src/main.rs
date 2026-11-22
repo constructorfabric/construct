@@ -482,7 +482,7 @@ fn with_file_tools(
     dir: &std::path::Path,
     render_tool: Option<std::sync::Arc<dyn construct_agent::chat::tool::ChatTool>>,
 ) -> construct_agent::chat::Chat {
-    use construct_agent::chat::tool::ChatTools;
+    use construct_agent::chat::tool::{chat_list, setup_list};
     let workspace = match construct_agent::workspace::Workspace::open(dir) {
         Ok(workspace) => std::sync::Arc::new(workspace),
         Err(e) => {
@@ -490,10 +490,12 @@ fn with_file_tools(
             return chat;
         }
     };
-    let setup = ChatTools::new(construct_agent::chat::tool::setup_tools(
-        &workspace,
-        render_tool.clone(),
-    ));
+    // The names, texts and order of the tools are in the tool file, read here once.
+    let render = render_tool.is_some();
+    let setup = setup_list(
+        construct_agent::chat::tool::setup_tools(&workspace, render_tool.clone()),
+        render,
+    );
     let chat = match setup {
         Ok(tools) => chat.with_setup_tools(tools),
         Err(e) => {
@@ -501,10 +503,10 @@ fn with_file_tools(
             chat
         }
     };
-    match ChatTools::new(construct_agent::chat::tool::standard_tools(
-        &workspace,
-        render_tool,
-    )) {
+    match chat_list(
+        construct_agent::chat::tool::standard_tools(&workspace, render_tool),
+        render,
+    ) {
         Ok(tools) => chat.with_tools(tools),
         Err(e) => {
             eprintln!("file tools unavailable: {e}");

@@ -1,59 +1,11 @@
-//! The provider's wire format: the request body written from the stored records, the answer
-//! stream as bytes for the event parser, and the chunk of a streamed answer.
+//! The provider's wire format: the request body written from the stored records, and the chunk
+//! of a streamed answer.
 
-use std::io;
-
-use bytes::Bytes;
 use connectors::{Record, Role, ToolCall, ToolResult, Turn};
-use oagw_sdk::Body;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::INSTRUCTION;
-
-/// The response as an `http` response over a byte stream made of `Response::chunk()`. The stream
-/// ends with a [`WireCap`] error at `limit` bytes: the parser does not limit its buffer.
-pub(super) fn into_http(response: reqwest::Response, limit: usize) -> http::Response<Body> {
-    let status = response.status();
-    let headers = response.headers().clone();
-    let stream = futures_util::stream::unfold(Some((response, 0_usize)), move |state| async move {
-        let (mut response, total) = state?;
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                let total = total + chunk.len();
-                if total > limit {
-                    return Some((Err(Box::new(WireCap) as oagw_sdk::body::BoxError), None));
-                }
-                Some((
-                    Ok::<Bytes, oagw_sdk::body::BoxError>(chunk),
-                    Some((response, total)),
-                ))
-            }
-            Ok(None) => None,
-            Err(_) => Some((Err(stream_error()), None)),
-        }
-    });
-    let mut out = http::Response::new(Body::Stream(Box::pin(stream)));
-    *out.status_mut() = status;
-    *out.headers_mut() = headers;
-    out
-}
-
-/// The error of a stream that went past the wire cap.
-#[derive(Debug)]
-pub(super) struct WireCap;
-
-impl std::fmt::Display for WireCap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the answer stream is over its size cap")
-    }
-}
-
-impl std::error::Error for WireCap {}
-
-fn stream_error() -> oagw_sdk::body::BoxError {
-    Box::new(io::Error::other("the answer stream broke"))
-}
+use crate::chat::INSTRUCTION;
 
 /// A list that may be missing or `null`: some gateways write `null` for what they have nothing to
 /// say about, and a chunk that does not parse is skipped whole, text and all.
@@ -303,7 +255,7 @@ fn provider_order(records: &[Record]) -> Vec<usize> {
 }
 
 /// The same as [`request_body`], with `instruction` as the system message.
-pub(super) fn request_body_with(
+pub(crate) fn request_body_with(
     instruction: &str,
     model: &str,
     records: &[Record],
