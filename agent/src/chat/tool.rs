@@ -116,7 +116,10 @@ fn listed(
 ) -> Vec<Arc<dyn ChatTool>> {
     let mut tools = super::files::file_tools(workspace);
     if machine {
-        tools = tools.into_iter().map(super::setup::guarded).collect();
+        tools = tools
+            .into_iter()
+            .map(|tool| super::setup::guarded(tool, workspace))
+            .collect();
         tools.extend(super::machine::machine_tools(workspace));
     }
     tools.extend(render_tool);

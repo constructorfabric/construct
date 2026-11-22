@@ -183,6 +183,7 @@ impl Chat {
             target,
             cancel,
             usage,
+            ..
         } = *run;
         let mut records = vec![record_turn(Role::User, start)];
         loop {
@@ -230,7 +231,10 @@ impl Chat {
                     Some(nested) if call.name == NAME => {
                         self.run_subagent(run, &call.arguments, nested, emit).await
                     }
-                    _ => self.run_tool(tools, &call.name, &call.arguments).await,
+                    _ => {
+                        self.run_tool(run.tools, tools, &call.name, &call.arguments)
+                            .await
+                    }
                 };
                 records.push(Record::ToolResult(ToolResult {
                     tool: SOURCE.into(),

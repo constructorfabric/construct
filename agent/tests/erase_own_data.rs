@@ -631,36 +631,51 @@ fn a_plain_switch_off_and_on_still_drops_what_the_tools_wrote_meanwhile() {
 }
 
 #[test]
-fn a_running_chat_answer_is_stopped_and_waited_for_before_the_conversations_go() {
-    // The provider never answers: the answer runs until it is stopped.
-    let (addr, bodies) = provider(vec![Scripted::Silence]);
+fn running_chat_answers_are_all_stopped_and_waited_for_before_the_conversations_go() {
+    // The provider never answers: the answers run until they are stopped.
+    let (addr, bodies) = provider(vec![Scripted::Silence, Scripted::Silence]);
     let stand = Stand::new(&format!("http://{addr}/v1"));
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
-    let asking = {
+    let asking: Vec<_> = [
+        "a question that gets no answer",
+        "another question without answer",
+    ]
+    .into_iter()
+    .map(|message| {
         let (chat, events) = (stand.chat.clone(), Arc::clone(&events));
         thread::spawn(move || {
-            chat.send(
-                &json!({ "message": "a question that gets no answer" }).to_string(),
-                &mut |line| {
-                    events.lock().unwrap().push(line.to_owned());
-                    true
-                },
-            );
+            chat.send(&json!({ "message": message }).to_string(), &mut |line| {
+                events.lock().unwrap().push(line.to_owned());
+                true
+            });
         })
-    };
-    wait_for("the request to the provider", || {
-        !bodies.lock().unwrap().is_empty()
+    })
+    .collect();
+    wait_for("the requests to the provider", || {
+        bodies.lock().unwrap().len() == 2
     });
     assert!(stand.chat.list().contains("a question that gets no answer"));
+    assert!(
+        stand
+            .chat
+            .list()
+            .contains("another question without answer")
+    );
 
     OwnStore::erase(&stand.chat).unwrap();
 
-    // The answer had ended when the erasure returned, and it left nothing behind.
-    wait_for("the answer to end", || asking.is_finished());
-    asking.join().unwrap();
+    // Both answers had ended when the erasure returned, and they left nothing behind.
+    for asking in asking {
+        wait_for("the answer to end", || asking.is_finished());
+        asking.join().unwrap();
+    }
     let events = events.lock().unwrap().clone();
-    assert!(
-        events.last().unwrap().contains(r#""stopped":true"#),
+    assert_eq!(
+        events
+            .iter()
+            .filter(|line| line.contains(r#""stopped":true"#))
+            .count(),
+        2,
         "{events:?}"
     );
     assert_eq!(

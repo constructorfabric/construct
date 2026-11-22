@@ -21,7 +21,8 @@ use serde::Deserialize;
 
 use super::subagent::Halt;
 use super::tool::{ChatTool, ChatTools};
-use super::{Chat, Counter, Piece, Run, Target, machine, subagent};
+use super::{Chat, Counter, Piece, Run, Target, ToolCount, machine, subagent};
+use crate::workspace::Workspace;
 
 /// The name of the run, which [`Chat::stop`] takes to stop it. It is no id a chat conversation can
 /// have, so the chat never meets it.
@@ -99,20 +100,22 @@ impl Chat {
         self
     }
 
-    /// Run the setup session to its end. It takes the place of an answer, so nothing else is
-    /// answering meanwhile. The caller has written the session files first.
+    /// Run the setup session to its end. It is a model call like any other: answers of the chat
+    /// run beside it. The caller has written the session files first.
     ///
     /// # Errors
-    /// The plain reason the run did not happen or failed: `no model`, `no tools`, `busy`, or a
+    /// The plain reason the run did not happen or failed: `no model`, `no tools`, or a
     /// reason of a failed answer (`key refused`, `timeout` and the like).
     pub fn setup(&self) -> Result<Outcome, String> {
-        self.setup_with(false, &Counter::default(), &|| false)
+        self.setup_with(false, &Counter::default(), &ToolCount::default(), &|| false)
     }
 
     /// [`Chat::setup`], for a run that is `again` one that has run before, with `meter` counting
     /// the bytes it sends and receives as it goes, so a caller that keeps a clone of it sees the
-    /// size so far. `stopped` is asked once the run holds its slot: a stop that came before it
-    /// could be taken by the slot ends the run at once, as [`Chat::stop`] would have.
+    /// size so far. `tools` counts the tool calls of the run that are on threads of their own,
+    /// so the caller can wait for those of this run alone. `stopped` is asked once the run holds
+    /// its slot: a stop that came before it could be taken by the slot ends the run at once, as
+    /// [`Chat::stop`] would have.
     ///
     /// # Errors
     /// As [`Chat::setup`].
@@ -120,17 +123,19 @@ impl Chat {
         &self,
         again: bool,
         meter: &Counter,
+        tools: &ToolCount,
         stopped: &(dyn Fn() -> bool + Sync),
     ) -> Result<Outcome, String> {
         self.inner
             .handle
-            .block_on(self.setup_async(again, meter, stopped))
+            .block_on(self.setup_async(again, meter, tools, stopped))
     }
 
     async fn setup_async(
         &self,
         again: bool,
         meter: &Counter,
+        tools: &ToolCount,
         stopped: &(dyn Fn() -> bool + Sync),
     ) -> Result<Outcome, String> {
         let inner = &self.inner;
@@ -140,9 +145,7 @@ impl Chat {
         if inner.setup_tools.listing().is_none() {
             return Err("no tools".into());
         }
-        let Some((slot, cancel)) = self.acquire(CONVERSATION) else {
-            return Err("busy".into());
-        };
+        let (slot, cancel) = self.acquire(CONVERSATION);
         if stopped() {
             drop(slot);
             return Ok(Outcome::Stopped);
@@ -152,6 +155,7 @@ impl Chat {
             target: &target,
             cancel: &cancel,
             usage: &usage,
+            tools,
         };
         let own = (INSTRUCTION, &inner.setup_tools);
         let nested = (SUBAGENT_INSTRUCTION, &inner.setup_sub_tools);
@@ -199,15 +203,16 @@ const READ_ONLY_DIR: &str = "history";
 
 /// `tool` for the setup session: `Write` and `Edit` refuse a path in [`READ_ONLY_DIR`]; every other
 /// tool is as it is.
-pub(super) fn guarded(tool: Arc<dyn ChatTool>) -> Arc<dyn ChatTool> {
+pub(super) fn guarded(tool: Arc<dyn ChatTool>, workspace: &Arc<Workspace>) -> Arc<dyn ChatTool> {
     if matches!(tool.name(), "Write" | "Edit") {
-        Arc::new(Guarded(tool))
+        Arc::new(Guarded(tool, Arc::clone(workspace)))
     } else {
         tool
     }
 }
 
-struct Guarded(Arc<dyn ChatTool>);
+/// A file tool of the setup session: it notes what it leaves in the workspace.
+struct Guarded(Arc<dyn ChatTool>, Arc<Workspace>);
 
 /// Whether `path`, as the workspace would resolve it, is in the read-only folder. The names are
 /// compared whatever their case, since a file system may not tell them apart.
@@ -257,6 +262,12 @@ impl ChatTool for Guarded {
                 "the folder {READ_ONLY_DIR} is only for reading in this session"
             ));
         }
-        self.0.run(arguments)
+        let result = self.0.run(arguments);
+        if result.is_ok()
+            && let Ok(Path { file_path }) = serde_json::from_str::<Path>(arguments)
+        {
+            self.1.note_left(&file_path);
+        }
+        result
     }
 }

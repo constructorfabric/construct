@@ -405,8 +405,6 @@ fn a_stop_ends_the_run_and_keeps_what_was_written() {
     wait_for("the second request", || {
         stand.bodies.lock().unwrap().len() == 2
     });
-    // One run at a time, and the chat is not answering meanwhile.
-    assert_eq!(stand.chat.setup(), Err("busy".to_string()));
     assert!(stand.chat.stop(CONVERSATION));
     assert_eq!(run.join().unwrap(), Ok(Outcome::Stopped));
 
@@ -414,6 +412,33 @@ fn a_stop_ends_the_run_and_keeps_what_was_written() {
     assert!(stand.read("findings.json").contains("alpha"));
     // The slot is free again.
     assert!(!stand.chat.stop(CONVERSATION));
+}
+
+#[test]
+fn a_chat_answer_and_a_setup_run_at_once_neither_is_refused() {
+    // The setup's request is the first and gets no answer; the chat's is the second.
+    let stand = Stand::new(vec![Turn::Silence, Turn::Text("chat reply")]);
+    let chat = stand.chat.clone();
+    let run = thread::spawn(move || chat.setup());
+    wait_for("the setup's request", || {
+        stand.bodies.lock().unwrap().len() == 1
+    });
+
+    let mut lines = Vec::<String>::new();
+    stand.chat.send(
+        &json!({ "message": "a question beside the setup" }).to_string(),
+        &mut |line| {
+            lines.push(line.to_owned());
+            true
+        },
+    );
+    assert!(lines.iter().any(|l| l.contains("chat reply")), "{lines:?}");
+    assert_eq!(lines.last().unwrap(), r#"{"event":"done"}"#, "{lines:?}");
+
+    // The setup run is still going, and still stops by its own name.
+    assert!(!run.is_finished());
+    assert!(stand.chat.stop(CONVERSATION));
+    assert_eq!(run.join().unwrap(), Ok(Outcome::Stopped));
 }
 
 #[test]

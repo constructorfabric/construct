@@ -260,6 +260,48 @@ pub fn request_body(
     request_body_with(INSTRUCTION, model, records, tools)
 }
 
+/// The order the records are sent in: the stored order, except that a result stored after a
+/// turn that came later than its call is moved up to stand before that turn. Calls of one model
+/// call run while another message of the conversation is stored, and a provider refuses a call
+/// whose reply is not the next message.
+fn provider_order(records: &[Record]) -> Vec<usize> {
+    let mut order = Vec::with_capacity(records.len());
+    let mut moved = vec![false; records.len()];
+    // The calls sent so far whose result has not been sent.
+    let mut waiting: Vec<(usize, &str)> = Vec::new();
+    for (at, record) in records.iter().enumerate() {
+        match record {
+            Record::ToolCall(call) => {
+                order.push(at);
+                waiting.push((at, &call.call_id));
+            }
+            Record::ToolResult(result) => {
+                if moved[at] {
+                    continue;
+                }
+                waiting.retain(|(_, id)| *id != result.call_id);
+                order.push(at);
+            }
+            Record::Turn(_) => {
+                for (call, id) in std::mem::take(&mut waiting) {
+                    let found = records[call..]
+                        .iter()
+                        .position(|r| matches!(r, Record::ToolResult(t) if t.call_id == id));
+                    if let Some(found) = found
+                        && !moved[call + found]
+                    {
+                        moved[call + found] = true;
+                        order.push(call + found);
+                    }
+                }
+                order.push(at);
+            }
+            Record::Mark(_) => order.push(at),
+        }
+    }
+    order
+}
+
 /// The same as [`request_body`], with `instruction` as the system message.
 pub(super) fn request_body_with(
     instruction: &str,
@@ -268,7 +310,8 @@ pub(super) fn request_body_with(
     tools: Option<&RawValue>,
 ) -> Result<String, serde_json::Error> {
     let mut messages = vec![plain("system", instruction)];
-    for (at, record) in records.iter().enumerate() {
+    for at in provider_order(records) {
+        let record = &records[at];
         match record {
             Record::Turn(Turn { role, text, .. }) => messages.push(plain(
                 match role {
@@ -499,5 +542,43 @@ mod tests {
             )
         );
         assert!(without.ends_with(r#""stream":true}"#));
+    }
+
+    #[test]
+    fn a_result_stored_after_a_later_turn_is_sent_right_after_its_call() {
+        let call = Record::ToolCall(ToolCall {
+            tool: SOURCE.into(),
+            session: "s".into(),
+            time: "2026-11-13T10:00:00.001Z".into(),
+            call_id: "x".into(),
+            name: "lookup".into(),
+            arguments: "{}".into(),
+        });
+        let result = Record::ToolResult(ToolResult {
+            tool: SOURCE.into(),
+            session: "s".into(),
+            time: "2026-11-13T10:00:00.003Z".into(),
+            call_id: "x".into(),
+            text: "found".into(),
+        });
+        let records = [
+            turn(Role::User, "one"),
+            call,
+            turn(Role::User, "two"),
+            result,
+            turn(Role::Assistant, "done"),
+        ];
+        let body = request_body("m", &records, None).unwrap();
+        let roles: Vec<String> =
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["role"].as_str().unwrap().to_owned())
+                .collect();
+        assert_eq!(
+            roles,
+            ["system", "user", "assistant", "tool", "user", "assistant"]
+        );
     }
 }
