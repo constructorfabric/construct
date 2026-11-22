@@ -126,8 +126,14 @@ fn a_redirect_is_not_followed_so_the_key_goes_to_the_checked_address_only() {
 
 #[test]
 fn an_answer_over_the_limit_is_dropped_and_is_no_completion() {
-    let big: &'static str =
-        Box::leak(format!(r#"{{"x":"{}"}}"#, "a".repeat(70 * 1024)).into_boxed_str());
+    // A whole completion, so only the cap keeps it from being read as one that works.
+    let big: &'static str = Box::leak(
+        format!(
+            r#"{{"choices":[{{"message":{{"content":"{}"}}}}]}}"#,
+            "a".repeat(70 * 1024)
+        )
+        .into_boxed_str(),
+    );
     let provider = Fake::start(vec![Reply::Status(200, big)]);
     let lines = test_call(&model_at(provider.addr), Duration::from_secs(10));
     let answer = last(&lines);

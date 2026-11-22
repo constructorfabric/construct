@@ -560,14 +560,27 @@ fn unread(error: &std::io::Error) -> Unanswered {
     }
 }
 
-/// Read at most `MAX_ANSWER` bytes of the answer; `None` for one that is longer.
-fn read_answer(response: reqwest::blocking::Response) -> Result<Option<Vec<u8>>, Unanswered> {
+/// Read at most `MAX_ANSWER` bytes of the answer; `None` for one that is longer. The read stops
+/// with a timeout once `until` has passed, whatever the client's own limit says of each read.
+fn read_answer(
+    mut response: reqwest::blocking::Response,
+    until: Instant,
+) -> Result<Option<Vec<u8>>, Unanswered> {
     let mut answer = Vec::new();
-    response
-        .take(MAX_ANSWER + 1)
-        .read_to_end(&mut answer)
-        .map_err(|e| unread(&e))?;
-    Ok((answer.len() as u64 <= MAX_ANSWER).then_some(answer))
+    let mut chunk = [0_u8; 8192];
+    loop {
+        if Instant::now() >= until {
+            return Err(Unanswered::Timeout);
+        }
+        let n = response.read(&mut chunk).map_err(|e| unread(&e))?;
+        if n == 0 {
+            return Ok(Some(answer));
+        }
+        answer.extend_from_slice(&chunk[..n]);
+        if answer.len() as u64 > MAX_ANSWER {
+            return Ok(None);
+        }
+    }
 }
 
 /// One request, and the answer to it. The whole request has `deadline` as the limit, and the
@@ -600,6 +613,7 @@ fn exchange(
     body: &str,
     deadline: Duration,
 ) -> Result<Answered, Outcome> {
+    let started = Instant::now();
     // Redirects are never followed and no proxy is used, so the key goes only to the address that
     // was checked.
     let client = reqwest::blocking::Client::builder()
@@ -620,7 +634,7 @@ fn exchange(
     }
     let response = request.send().map_err(|e| failure(&e))?;
     let status = response.status().as_u16();
-    let body = match read_answer(response) {
+    let body = match read_answer(response, started + deadline) {
         Ok(Some(answer)) => answer,
         // Too long to be a completion, and not worth reading on.
         Ok(None) => Vec::new(),
