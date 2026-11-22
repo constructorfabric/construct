@@ -63,7 +63,8 @@ cargo cache is too unless `CARGO_TARGET_DIR` is set:
 
 The Gradle tasks `buildChatCoreIos` and `buildChatCoreAndroid` run the script, and the iPhone
 framework and the Android app depend on them, so Xcode and Gradle builds build the core first. Their
-inputs are the Rust sources, `Cargo.lock` and the script, and their outputs are the libraries, so a
+inputs are the Rust sources, `Cargo.lock`, the script and the two files it reads the platform versions
+from, and their outputs are the libraries, so a
 build with unchanged sources does not start cargo. Nothing compiled is committed.
 
 What a Mac needs for the Rust part, in addition to the list below:
@@ -89,11 +90,19 @@ from. The script stops when `cargo metadata` shows other crates than `chat-bridg
 
 `https` on Android: the TLS stack checks certificates through Android's own trust store, which it
 reaches through the JVM. The app calls `initChatCore(context)` (`core/chat`, in `Application.onCreate`)
-once, which hands the context to the Rust library through one JNI function. If the library does not
-load or the init fails, the app logs it and goes on, since the memory screens do not need the core. The Kotlin part of the
-check, `org.rustls:rustls-platform-verifier`, is an AAR that its authors publish as a Maven repository
+once, which hands the context to the Rust library through one JNI function. If the init fails, or the
+library does not load, the app logs it and goes on, since the memory screens do not need the core. The
+Kotlin part of the check, `org.rustls:rustls-platform-verifier`, is an AAR that its authors publish as a Maven repository
 on GitHub (`settings.gradle.kts` limits that repository to its own group). Its version is read from
-`Cargo.lock`, so it follows the crate. A call made before the init fails as "unreachable".
+`Cargo.lock`, so it follows the crate. A call made before a successful init
+answers "unreachable" for an `https` address. If the library itself did not load, every call throws
+`UnsatisfiedLinkError`: the library is built for `arm64-v8a` and `x86_64` only, so a 32-bit device
+cannot install the app.
+
+The first `https` call of a process was slow on the emulator: 10 s, and once more than the core's
+15 s deadline, so it came back as `timeout`; the next calls took under half a second. The emulator has
+no DNS, and it is not known whether a real phone has the stall. Check it on a device before the chat
+depends on it.
 `AndroidTlsTest` shows the system check at work (and that `ConstructApp` started it): a local TLS
 server with a certificate no phone trusts is refused with a TLS alert. The Gradle build stops when
 `Cargo.lock` holds two copies of the verifier. No test reaches a real provider.

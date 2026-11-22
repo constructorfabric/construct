@@ -13,8 +13,9 @@ class ConstructApp : Application() {
     override fun onCreate() {
         super.onCreate()
         // The chat core checks the certificate of an https model address through Android. A failure
-        // here must not take the app down (the memory screens do not need the core): https addresses
-        // then come back as unreachable, and the log says why.
+        // here must not take the app down (the memory screens do not need the core). If the init failed,
+        // https addresses come back as unreachable; if the library did not load, a call to the core
+        // throws. The log says why.
         try {
             initChatCore(this)
         } catch (e: UnsatisfiedLinkError) {

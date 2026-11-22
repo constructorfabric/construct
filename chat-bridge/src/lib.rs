@@ -52,7 +52,7 @@ fn last_line(request: &serde_json::Value) -> String {
     last
 }
 
-/// The answer for a panic inside the core, which must not unwind across the C border.
+/// The text of the answer when the core panics: a panic must not unwind across the C border.
 const INTERNAL_ERROR: &str = "internal error";
 
 /// Runs `work`; a panic in it gives `fallback()` instead of unwinding into the host app.
