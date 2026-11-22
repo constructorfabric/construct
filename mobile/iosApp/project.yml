@@ -11,8 +11,8 @@ settings:
     SWIFT_VERSION: "5.0"
     # The bundle id of the app, set here and nowhere else.
     APP_BUNDLE_ID: tech.constructor.construct
-    # Whether that id is the final one. While it is "NO", scripts/build-ios.sh only builds for the
-    # Simulator and publishes nothing; when it is "YES", the script sends the build to TestFlight.
+    # Whether that id is the final one. scripts/build-ios.sh always builds for the Simulator and takes
+    # the screenshots; when it is "YES", it also sends the build to TestFlight.
     APP_BUNDLE_ID_IS_FINAL: "YES"
     # The shared Kotlin framework, built by the Gradle project one folder up: the debug framework
     # for the Simulator, the release iosArm64 framework for a device.
@@ -62,7 +62,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.1.1"
         # <YYMMDD>.<count of the day>: scripts/build-ios.sh raises it with every upload.
-        CURRENT_PROJECT_VERSION: "261122.1"
+        CURRENT_PROJECT_VERSION: "261122.3"
   ConstructTests:
     type: bundle.unit-test
     platform: iOS
