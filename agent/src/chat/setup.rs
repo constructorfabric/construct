@@ -19,9 +19,11 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use super::subagent::Halt;
+use chat_core::subagent::Halt;
+use chat_core::{Piece, Run};
+
 use super::tool::{ChatTool, ChatTools};
-use super::{Chat, Counter, Piece, Run, Target, ToolCount, machine, subagent};
+use super::{Chat, Counter, ToolCount, machine, subagent};
 use crate::workspace::Workspace;
 
 /// The name of the run, which [`Chat::stop`] takes to stop it. It is no id a chat conversation can
@@ -93,10 +95,8 @@ impl Chat {
     /// is cloned.
     #[must_use]
     pub fn with_setup_tools(mut self, tools: ChatTools) -> Self {
-        if let Some(inner) = Arc::get_mut(&mut self.inner) {
-            inner.setup_sub_tools = tools.without(subagent::NAME);
-            inner.setup_tools = tools;
-        }
+        self.setup_sub_tools = tools.without(subagent::NAME);
+        self.setup_tools = tools;
         self
     }
 
@@ -126,8 +126,8 @@ impl Chat {
         tools: &ToolCount,
         stopped: &(dyn Fn() -> bool + Sync),
     ) -> Result<Outcome, String> {
-        self.inner
-            .handle
+        self.core
+            .handle()
             .block_on(self.setup_async(again, meter, tools, stopped))
     }
 
@@ -138,14 +138,13 @@ impl Chat {
         tools: &ToolCount,
         stopped: &(dyn Fn() -> bool + Sync),
     ) -> Result<Outcome, String> {
-        let inner = &self.inner;
-        let Some(target) = Target::from_settings(&inner.settings.model()) else {
+        let Some(target) = self.core.target() else {
             return Err("no model".into());
         };
-        if inner.setup_tools.listing().is_none() {
+        if self.setup_tools.listing().is_none() {
             return Err("no tools".into());
         }
-        let (slot, cancel) = self.acquire(CONVERSATION);
+        let (slot, cancel) = self.core.acquire(CONVERSATION);
         if stopped() {
             drop(slot);
             return Ok(Outcome::Stopped);
@@ -157,14 +156,14 @@ impl Chat {
             usage: &usage,
             tools,
         };
-        let own = (INSTRUCTION, &inner.setup_tools);
-        let nested = (SUBAGENT_INSTRUCTION, &inner.setup_sub_tools);
+        let own = (INSTRUCTION, &self.setup_tools);
+        let nested = (SUBAGENT_INSTRUCTION, &self.setup_sub_tools);
         let mut quiet = |_: Piece<'_>| true;
         // A stop also ends a call that is running: it goes on in its thread, as in the chat.
         let end = tokio::select! {
             biased;
             () = cancel.cancelled() => Err(Halt::Stopped),
-            end = self.converse(
+            end = self.core.converse(
                 &run,
                 own,
                 Some(nested),
@@ -173,9 +172,7 @@ impl Chat {
             ) => end,
         };
         let usage = usage.total();
-        if let Some(report) = &inner.usage {
-            report(usage);
-        }
+        self.core.report(usage);
         let outcome = match end {
             Ok(_) => Ok(Outcome::Done),
             Err(Halt::Stopped) => Ok(Outcome::Stopped),

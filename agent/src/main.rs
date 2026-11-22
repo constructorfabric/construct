@@ -475,14 +475,15 @@ fn with_setup_job(
 /// `chat` with the file tools over the workspace folder in `dir`, the dashboard tool when there is
 /// one, and the sub-agent tool after them.
 /// Without the folder the chat has
-/// no tools, and the reason (never a path) is logged.
+/// no tools, and the reason (never a path) is logged. A tool file that does not fit the tools stops
+/// the start.
 #[cfg(unix)]
 fn with_file_tools(
     chat: construct_agent::chat::Chat,
     dir: &std::path::Path,
     render_tool: Option<std::sync::Arc<dyn construct_agent::chat::tool::ChatTool>>,
 ) -> construct_agent::chat::Chat {
-    use construct_agent::chat::tool::ChatTools;
+    use construct_agent::chat::tool::{chat_list, setup_list};
     let workspace = match construct_agent::workspace::Workspace::open(dir) {
         Ok(workspace) => std::sync::Arc::new(workspace),
         Err(e) => {
@@ -490,27 +491,31 @@ fn with_file_tools(
             return chat;
         }
     };
-    let setup = ChatTools::new(construct_agent::chat::tool::setup_tools(
-        &workspace,
-        render_tool.clone(),
-    ));
+    // The names, texts and order of the tools are in the tool file, read here once.
+    let render = render_tool.is_some();
+    let setup = setup_list(
+        construct_agent::chat::tool::setup_tools(&workspace, render_tool.clone()),
+        render,
+    );
     let chat = match setup {
         Ok(tools) => chat.with_setup_tools(tools),
-        Err(e) => {
-            eprintln!("setup tools unavailable: {e}");
-            chat
-        }
+        Err(e) => tool_file_refused(&e),
     };
-    match ChatTools::new(construct_agent::chat::tool::standard_tools(
-        &workspace,
-        render_tool,
-    )) {
+    match chat_list(
+        construct_agent::chat::tool::standard_tools(&workspace, render_tool),
+        render,
+    ) {
         Ok(tools) => chat.with_tools(tools),
-        Err(e) => {
-            eprintln!("file tools unavailable: {e}");
-            chat
-        }
+        Err(e) => tool_file_refused(&e),
     }
+}
+
+/// The agent does not start with a tool file that does not fit its tools: that is a broken build,
+/// not a state a person can mend, and a chat with no tools would look like one that works.
+#[cfg(unix)]
+fn tool_file_refused(reason: &str) -> ! {
+    eprintln!("the tool file cannot be used: {reason}");
+    std::process::exit(1)
 }
 
 /// Serve the settings commands from `settings`; without them they answer an error.

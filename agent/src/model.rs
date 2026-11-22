@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use http::{HeaderValue, Method, Request, Response, StatusCode, header};
+use http::{HeaderValue, Method, Request, Response, StatusCode};
 use oagw_sdk::{
     Body, CreateRouteRequest, CreateUpstreamRequest, ListQuery, Route, ServiceGatewayClientV1,
     UpdateRouteRequest, UpdateUpstreamRequest, Upstream,
@@ -28,7 +28,10 @@ use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::settings::{Model, Settings, check_base_url};
+use crate::settings::Settings;
+pub use chat_core::model::ANSWER_LIMIT;
+pub(crate) use chat_core::model::Target;
+use chat_core::model::{Model, read_capped, refuses_tools_with_reasoning, without_reasoning};
 
 /// The upstream alias Construct is told to call. Its own gateway is the only one that answers it.
 pub const UPSTREAM_ALIAS: &str = "model";
@@ -39,8 +42,6 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Attempts for one call: the first and the retries after a failure that may pass.
 const ATTEMPTS: u32 = 3;
 const RETRY_PAUSE: Duration = Duration::from_millis(500);
-/// The most bytes of an answer the gateway reads.
-pub const ANSWER_LIMIT: usize = 1 << 20;
 
 /// The limit Construct puts on the whole model call: it wraps `proxy_request`, which makes
 /// up to [`ATTEMPTS`] attempts of [`ATTEMPT_TIMEOUT`] each with the pauses between them. Giving
@@ -61,108 +62,6 @@ pub fn construct_section() -> serde_json::Value {
         "model": START_MODEL,
         "timeout": format!("{}s", call_budget_secs()),
     })
-}
-
-/// A model the settings describe completely, checked for one call.
-pub(crate) struct Target {
-    /// The API root, without a trailing `/`: the path `/chat/completions` is added to it.
-    base_url: String,
-    pub(crate) model: String,
-    /// `Bearer <key>`, marked sensitive.
-    pub(crate) authorization: HeaderValue,
-}
-
-impl Target {
-    /// `None` when the address, the model name or the key is missing or cannot be used. The
-    /// address is checked here too: a file edited by hand, or written by an older agent, must
-    /// not make the key go out over plain `http` to another host.
-    pub(crate) fn from_settings(model: &Model) -> Option<Self> {
-        let base_url = model.base_url.trim().trim_end_matches('/');
-        let key = model.api_key.as_deref()?.trim();
-        let name = model.model.as_str();
-        if base_url.is_empty()
-            || check_base_url(base_url).is_err()
-            || key.is_empty()
-            || name.is_empty()
-            || name.len() > 128
-            || name.contains(|c: char| c.is_whitespace() || c.is_control())
-        {
-            return None;
-        }
-        // The key goes into a header: it must be a legal value.
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {key}")).ok()?;
-        authorization.set_sensitive(true);
-        Some(Self {
-            base_url: base_url.to_string(),
-            model: name.to_string(),
-            authorization,
-        })
-    }
-
-    fn url(&self) -> String {
-        format!("{}/chat/completions", self.base_url)
-    }
-
-    /// The POST to the chat-completions address with the key as a sensitive header: the one
-    /// place that decides where the key goes. `accept` is the media type the caller reads.
-    pub(crate) fn request(
-        &self,
-        client: &reqwest::Client,
-        accept: &'static str,
-        body: impl Into<reqwest::Body>,
-    ) -> reqwest::RequestBuilder {
-        client
-            .post(self.url())
-            .header(header::AUTHORIZATION, self.authorization.clone())
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, accept)
-            .body(body)
-    }
-}
-
-/// The models (address and name) the API refused function tools for next to a reasoning effort.
-/// A request with tools to one of them carries `reasoning_effort: "none"` from then on, so the
-/// refusal costs one extra request per model and run.
-static TOOLS_WITHOUT_REASONING: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
-
-impl Target {
-    /// `body` with `reasoning_effort: "none"` when this model refused tools next to a reasoning
-    /// effort before; `None` when the body goes out as it is.
-    pub(crate) fn prepared(&self, body: &[u8]) -> Option<Vec<u8>> {
-        let known = crate::sync::lock(&TOOLS_WITHOUT_REASONING)
-            .iter()
-            .any(|(url, model)| *url == self.base_url && *model == self.model);
-        if known { without_reasoning(body) } else { None }
-    }
-
-    /// Note that this model refused tools next to a reasoning effort.
-    pub(crate) fn refused_tools_with_reasoning(&self) {
-        let mut known = crate::sync::lock(&TOOLS_WITHOUT_REASONING);
-        let entry = (self.base_url.clone(), self.model.clone());
-        if !known.contains(&entry) {
-            known.push(entry);
-        }
-    }
-}
-
-/// Whether the API answered that function tools and a reasoning effort do not go together (the
-/// newer models do this in `/chat/completions`, and accept the tools with `none`).
-pub(crate) fn refuses_tools_with_reasoning(status: u16, answer: &[u8]) -> bool {
-    status == StatusCode::BAD_REQUEST.as_u16() && {
-        let answer = String::from_utf8_lossy(answer);
-        answer.contains("tools") && answer.contains("reasoning_effort")
-    }
-}
-
-/// `body` with `reasoning_effort: "none"`; `None` for a request without tools, which that
-/// refusal is not about, and for a body that is not a JSON object.
-pub(crate) fn without_reasoning(body: &[u8]) -> Option<Vec<u8>> {
-    let Ok(serde_json::Value::Object(mut map)) = serde_json::from_slice(body) else {
-        return None;
-    };
-    map.get("tools")?;
-    map.insert("reasoning_effort".into(), "none".into());
-    serde_json::to_vec(&map).ok()
 }
 
 /// What the agent knows of its model, shown in `status` as `model_state`.
@@ -213,7 +112,7 @@ impl ModelState {
             return ModelHealth::NotConfigured;
         };
         match &self.lock().rejected {
-            Some((url, key)) if *url == target.base_url && *key == target.authorization => {
+            Some((url, key)) if *url == target.base_url() && *key == target.authorization => {
                 ModelHealth::KeyRejected
             }
             _ => ModelHealth::Configured,
@@ -221,7 +120,7 @@ impl ModelState {
     }
 
     fn reject(&self, target: &Target) {
-        self.lock().rejected = Some((target.base_url.clone(), target.authorization.clone()));
+        self.lock().rejected = Some((target.base_url().to_owned(), target.authorization.clone()));
     }
 
     fn accept(&self) {
@@ -281,7 +180,7 @@ impl ModelGateway {
             .send()
             .await?;
         let status = response.status();
-        let answer = read_capped(response, ANSWER_LIMIT).await?;
+        let answer = Bytes::from(read_capped(response, ANSWER_LIMIT).await?);
         Ok((status, answer))
     }
 }
@@ -295,23 +194,6 @@ fn with_model(body: Bytes, model: &str) -> Bytes {
         }
         _ => body,
     }
-}
-
-/// The body, up to `limit`. A body over it is cut there (one byte past the limit is kept, so
-/// the caller can tell), which makes it a bad answer instead of memory for the host.
-pub(crate) async fn read_capped(
-    mut response: reqwest::Response,
-    limit: usize,
-) -> Result<Bytes, reqwest::Error> {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        bytes.extend_from_slice(&chunk);
-        if bytes.len() > limit {
-            bytes.truncate(limit + 1);
-            break;
-        }
-    }
-    Ok(Bytes::from(bytes))
 }
 
 /// A failure that may pass on its own: the next attempt can work.

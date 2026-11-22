@@ -4,14 +4,13 @@
 //! profile must always give the same bytes. Only the reason a read failed is logged, never what was
 //! read: the body and the text hold the person's facts.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 use connectors::Record;
 use serde::Deserialize;
 use tokio::time::timeout;
-
-use crate::host::Connection;
-use crate::model::read_capped;
 
 /// The name of the tool the facts come as.
 pub(super) const NAME: &str = "recall_facts";
@@ -23,7 +22,8 @@ const HEADER: &str =
     "These are the facts known about the user. This list replaces all earlier lists of facts.";
 /// The whole read, connect to last byte.
 const DEADLINE: Duration = Duration::from_secs(1);
-const BODY_LIMIT: usize = 1024 * 1024;
+/// Most bytes of a profile body a host reads for [`Facts::profile`].
+pub const BODY_LIMIT: usize = 1024 * 1024;
 /// Most bytes of the facts text. It is stored once and replayed in every later request, and the
 /// gear does not bound a profile, so the facts past this (in the fixed order) are left out.
 const TEXT_LIMIT: usize = 32 * 1024;
@@ -52,33 +52,34 @@ struct Fact {
     stored_at: String,
 }
 
+/// What the host gives the chat as the person's facts.
+pub trait Facts: Send + Sync {
+    /// Whether the person's facts may be read at all: the all-collection switch. While it is off the
+    /// chat tells the model that memory is off.
+    fn enabled(&self) -> bool;
+
+    /// The person's profile as the Construct host answers it (a JSON body with `categories`), read
+    /// with `client`; `Ok(None)` when the host is not ready. The chat bounds the wait to one second
+    /// and only logs the reason of an `Err`, never what was read.
+    ///
+    /// # Errors
+    /// The reason the read failed, in a few plain words and without any of the body.
+    fn profile<'a>(&'a self, client: &'a reqwest::Client) -> ProfileRead<'a>;
+}
+
+/// The future of [`Facts::profile`].
+pub type ProfileRead<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, String>> + Send + 'a>>;
+
 /// The facts of the person, or [`NO_FACTS`] when Construct is not ready, answers with anything
 /// but 200, has nothing, or is slower than the deadline. A failure is logged by its reason only,
 /// so an operator can tell a dead host from a person with no facts; never by what was read.
-pub(super) async fn facts(client: &reqwest::Client, connection: Option<&Connection>) -> String {
-    let Some(connection) = connection else {
-        eprintln!("chat: recall: construct not ready");
-        return NO_FACTS.into();
-    };
-    let read = async {
-        let response = client
-            .get(connection.profile_url())
-            .bearer_auth(&connection.token)
-            .send()
-            .await
-            .map_err(|_| "unreachable".to_string())?;
-        let code = response.status();
-        if code != http::StatusCode::OK {
-            return Err(format!("status {}", code.as_u16()));
-        }
-        read_capped(response, BODY_LIMIT)
-            .await
-            .map_err(|_| "unreadable".to_string())
-    };
-    match timeout(DEADLINE, read).await {
+pub(super) async fn facts(client: &reqwest::Client, source: &dyn Facts) -> String {
+    match timeout(DEADLINE, source.profile(client)).await {
         Err(_) => eprintln!("chat: recall: timeout"),
         Ok(Err(reason)) => eprintln!("chat: recall: {reason}"),
-        Ok(Ok(body)) => match render(&body) {
+        Ok(Ok(None)) => eprintln!("chat: recall: construct not ready"),
+        Ok(Ok(Some(body))) => match render(&body) {
             Ok(Some(text)) => return text,
             Ok(None) => {}
             Err(_) => eprintln!("chat: recall: not a profile"),

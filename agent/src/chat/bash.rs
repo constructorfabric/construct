@@ -143,15 +143,11 @@ impl ChatTool for Bash {
     }
 
     fn description(&self) -> &'static str {
-        "Runs one read-only command on the user's machine, in a folder of the user, and returns its \
-         output. It runs with no shell, so pipes, redirects, variables and globs do not work. The first \
-         word must be one of: git, ls, cat, grep, find, jq. For git: remote, branch, tag, log, show, \
-         diff, status, ls-files, rev-parse, shortlog and describe, to read only. Paths must be inside \
-         the folders of the user. A long output is cut."
+        super::tool::description(self.name())
     }
 
     fn schema(&self) -> &'static str {
-        r#"{"type":"object","properties":{"command":{"type":"string","description":"The command, for example: git log --oneline -n 10"},"directory":{"type":"string","description":"The full path of the folder to run it in."}},"required":["command","directory"]}"#
+        super::tool::schema(self.name())
     }
 
     fn line(&self, arguments: &str) -> String {

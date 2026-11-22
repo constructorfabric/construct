@@ -1,0 +1,29 @@
+[package]
+name = "chat-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "The chat loop of Construct: the conversation with a model, its tools and its settings, with the host behind traits"
+license.workspace = true
+publish = false
+
+# Plain Rust: serde, tokio, reqwest with rustls and a few small crates for the clock, the ids and
+# the stop. No agent, no gateway, no database, nothing specific to one operating system, so the
+# crate can run in the desktop agent and in an app on a phone. The host gives it the records, the
+# facts and the tool handlers as traits (see `lib.rs`).
+[dependencies]
+connectors = { path = "../connectors" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+tokio = { version = "1.54.1", features = ["rt", "macros", "sync", "time"] }
+tokio-util = { version = "0.7", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The tests drive the loop from a thread of their own, as a host does.
+tokio = { version = "1.54.1", features = ["rt-multi-thread"] }
