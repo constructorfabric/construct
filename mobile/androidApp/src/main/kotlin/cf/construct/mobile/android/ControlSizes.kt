@@ -4,11 +4,15 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/** Sizes of controls, in dp. A placeholder scale. */
+/** Sizes of controls and icons, in dp. */
 data class ControlSizes(
-    val small: Dp = 32.dp,
-    val medium: Dp = 40.dp,
-    val large: Dp = 48.dp,
+    /** The smallest area a tap may land on. */
+    val touch: Dp = 48.dp,
+    /** The round action button above the navigation bar. */
+    val button: Dp = 56.dp,
+    val icon: Dp = 24.dp,
+    /** The icon in the middle of an empty page. */
+    val iconLarge: Dp = 40.dp,
 )
 
 val LocalControlSizes = staticCompositionLocalOf { ControlSizes() }

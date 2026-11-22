@@ -1,6 +1,6 @@
 package cf.construct.mobile.core.designsystem
 
-/** The spacing steps both apps use, in points (dp on Android, pt on iPhone). A placeholder scale. */
+/** The spacing steps both apps use, in points (dp on Android, pt on iPhone). The agreed base scale. */
 object Spacing {
     const val XS = 4
     const val S = 8
