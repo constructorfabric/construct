@@ -26,6 +26,26 @@ final class ConstructThemeTests: XCTestCase {
         assertColor(dark, red: 0x0F, green: 0x17, blue: 0x2A)
     }
 
+    func testTheSizesAreTheAgreedOnes() {
+        XCTAssertEqual(ConstructTheme.TextSize.body, 16)
+        XCTAssertEqual(ConstructTheme.TextSize.secondary, 14)
+        XCTAssertEqual(ConstructTheme.TextSize.caption, 12)
+        XCTAssertEqual(ConstructTheme.Radius.small, 8)
+        XCTAssertEqual(ConstructTheme.Radius.medium, 12)
+        XCTAssertEqual(ConstructTheme.Radius.large, 16)
+        XCTAssertEqual(ConstructTheme.ControlSize.touch, 44)
+        XCTAssertEqual(ConstructTheme.ControlSize.icon, 24)
+        XCTAssertEqual(ConstructTheme.ControlSize.iconLarge, 40)
+    }
+
+    func testTheSpacingStepsAreTheAgreedOnes() {
+        let steps = [
+            ConstructTheme.Space.extraSmall, ConstructTheme.Space.small, ConstructTheme.Space.medium,
+            ConstructTheme.Space.large, ConstructTheme.Space.extraLarge, ConstructTheme.Space.extraExtraLarge
+        ]
+        XCTAssertEqual(steps, [4, 8, 12, 16, 24, 32])
+    }
+
     private func assertColor(
         _ color: UIColor,
         red: Int,

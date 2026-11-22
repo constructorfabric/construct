@@ -3,8 +3,9 @@ import SwiftUI
 import UIKit
 
 /// The iPhone theme. The colours come from the tokens both apps share and follow the light or dark
-/// appearance of the phone. The text sizes, radii and control sizes below are placeholders until the
-/// design of the mobile apps sets them.
+/// appearance of the phone. The text sizes, radii and control sizes below are the agreed base look of
+/// the phone apps. The navigation bar and the tab bar keep the heights and the title size the system
+/// gives them.
 enum ConstructTheme {
     /// A shared colour role, in the light or the dark values depending on the appearance.
     static func color(_ role: ColorRole) -> Color {
@@ -27,22 +28,23 @@ enum ConstructTheme {
     }
 
     enum TextSize {
-        static let title: CGFloat = 22
         static let body: CGFloat = 16
         static let secondary: CGFloat = 14
         static let caption: CGFloat = 12
     }
 
     enum Radius {
-        static let small: CGFloat = 4
-        static let medium: CGFloat = 8
-        static let large: CGFloat = 12
+        static let small: CGFloat = 8
+        static let medium: CGFloat = 12
+        static let large: CGFloat = 16
     }
 
     enum ControlSize {
-        static let small: CGFloat = 32
-        static let medium: CGFloat = 40
-        static let large: CGFloat = 48
+        /// The smallest area a tap may land on.
+        static let touch: CGFloat = 44
+        static let icon: CGFloat = 24
+        /// The icon in the middle of an empty page.
+        static let iconLarge: CGFloat = 40
     }
 
     /// The spacing steps of the shared tokens, in points.
@@ -51,5 +53,7 @@ enum ConstructTheme {
         static let small = CGFloat(Spacing.shared.S)
         static let medium = CGFloat(Spacing.shared.M)
         static let large = CGFloat(Spacing.shared.L)
+        static let extraLarge = CGFloat(Spacing.shared.XL)
+        static let extraExtraLarge = CGFloat(Spacing.shared.XXL)
     }
 }
