@@ -27,6 +27,32 @@ enum ConstructTheme {
         )
     }
 
+    /// Paints the navigation bar and the tab bar with the surface colour and a hairline, in both
+    /// appearances. Their heights, the title size and the selected state stay the system's.
+    static func styleBars() {
+        let surface = UIColor(color(.surface))
+        let hairline = UIColor(color(.border))
+        let muted = UIColor(color(.mutedForeground))
+
+        let navigation = UINavigationBarAppearance()
+        navigation.configureWithOpaqueBackground()
+        navigation.backgroundColor = surface
+        navigation.shadowColor = hairline
+        UINavigationBar.appearance().standardAppearance = navigation
+        UINavigationBar.appearance().scrollEdgeAppearance = navigation
+
+        let tabs = UITabBarAppearance()
+        tabs.configureWithOpaqueBackground()
+        tabs.backgroundColor = surface
+        tabs.shadowColor = hairline
+        for item in [tabs.stackedLayoutAppearance, tabs.inlineLayoutAppearance, tabs.compactInlineLayoutAppearance] {
+            item.normal.iconColor = muted
+            item.normal.titleTextAttributes = [.foregroundColor: muted]
+        }
+        UITabBar.appearance().standardAppearance = tabs
+        UITabBar.appearance().scrollEdgeAppearance = tabs
+    }
+
     enum TextSize {
         static let body: CGFloat = 16
         static let secondary: CGFloat = 14
@@ -45,6 +71,8 @@ enum ConstructTheme {
         static let icon: CGFloat = 24
         /// The icon in the middle of an empty page.
         static let iconLarge: CGFloat = 40
+        /// The dot of the connection line.
+        static let dot: CGFloat = 8
     }
 
     /// The spacing steps of the shared tokens, in points.
