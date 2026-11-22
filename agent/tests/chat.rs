@@ -107,6 +107,9 @@ fn blocking(only: Option<&'static str>) -> (Runner, mpsc::Receiver<()>, mpsc::Se
 /// What the fake provider does with one request: write to the connection.
 type Script = Arc<dyn Fn(usize, &mut TcpStream) + Send + Sync>;
 
+/// As [`Script`], told the body of the request.
+type BodyScript = Arc<dyn Fn(usize, &str, &mut TcpStream) + Send + Sync>;
+
 struct Fake {
     addr: SocketAddr,
     bodies: Arc<Mutex<Vec<String>>>,
@@ -115,6 +118,11 @@ struct Fake {
 
 impl Fake {
     fn start(script: Script) -> Self {
+        Self::start_for(Arc::new(move |n, _, s| script(n, s)))
+    }
+
+    /// As [`Fake::start`], the script told the body of the request too.
+    fn start_for(script: BodyScript) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let bodies = Arc::new(Mutex::new(Vec::new()));
@@ -129,7 +137,8 @@ impl Fake {
                 a.lock().unwrap().push(authorization);
                 let n = count.fetch_add(1, Ordering::SeqCst) as usize;
                 let script = Arc::clone(&script);
-                thread::spawn(move || script(n, &mut stream));
+                let body = b.lock().unwrap()[n].clone();
+                thread::spawn(move || script(n, &body, &mut stream));
             }
         });
         Self { addr, bodies, auth }
@@ -509,7 +518,7 @@ fn a_slow_but_steady_answer_is_kept_whole_and_a_silent_one_is_cut() {
 }
 
 #[test]
-fn a_second_send_while_one_runs_is_busy() {
+fn a_send_while_one_runs_is_answered_and_a_delete_of_the_running_one_is_refused() {
     let fake = Fake::start(Arc::new(|n, s| {
         head(s);
         chunk(s, "x");
@@ -525,19 +534,208 @@ fn a_second_send_while_one_runs_is_busy() {
         .unwrap()
         .to_string();
     first.next().unwrap();
-    assert_eq!(reason(&env.send("", "second").rest()), "busy");
+    // Another conversation is answered beside the running one.
+    let (other, _, last) = summary(&env.send("", "second").rest());
+    assert_eq!(last, json!({ "event": "done" }));
+    assert_eq!(
+        env.connect(&format!("chat-delete {conversation}")).rest(),
+        vec![json!({ "error": "busy" })]
+    );
     assert_eq!(
         env.connect("chat-delete all").rest(),
         vec![json!({ "error": "busy" })]
     );
-    assert_eq!(fake.bodies().len(), 1);
+    assert_eq!(
+        env.connect(&format!("chat-delete {other}")).rest(),
+        vec![json!({ "deleted": 1 })]
+    );
     env.connect(&format!("chat-stop {conversation}")).rest();
     first.rest();
-    // The slot is free again.
     assert_eq!(
         env.send("", "third").rest().last().unwrap(),
         &json!({ "event": "done" })
     );
+}
+
+/// A provider that answers each request with `reply(body)`, once `parties` requests are in: the
+/// answers it gives overlap. The first `skip` requests (a conversation's opening) are answered
+/// at once and are not counted.
+fn together(parties: usize, skip: usize, reply: fn(&str) -> String) -> Fake {
+    let arrived = Arc::new(AtomicU32::new(0));
+    Fake::start_for(Arc::new(move |n, body, s| {
+        if n >= skip {
+            arrived.fetch_add(1, Ordering::SeqCst);
+            let by = Instant::now() + Duration::from_secs(5);
+            while (arrived.load(Ordering::SeqCst) as usize) < parties && Instant::now() < by {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+        head(s);
+        chunk(s, &reply(body));
+        done(s);
+    }))
+}
+
+#[test]
+fn two_answers_at_once_in_two_conversations_end_whole_with_their_own_text() {
+    let fake = together(2, 0, |body| {
+        if body.contains("about alpha") {
+            "alpha answer".into()
+        } else {
+            "beta answer".into()
+        }
+    });
+    let env = Env::new("two-conversations", &fake.url(), short());
+    let (a, b) = thread::scope(|scope| {
+        let a = scope.spawn(|| env.send("", "question about alpha").rest());
+        let b = scope.spawn(|| env.send("", "question about beta").rest());
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    let ((a_id, a_text, a_last), (b_id, b_text, b_last)) = (summary(&a), summary(&b));
+    assert_eq!(a_last, json!({ "event": "done" }));
+    assert_eq!(b_last, json!({ "event": "done" }));
+    assert_ne!(a_id, b_id);
+    assert_eq!(a_text, "alpha answer");
+    assert_eq!(b_text, "beta answer");
+    let texts = |id: &str| -> Vec<String> {
+        env.get(id)
+            .iter()
+            .map(|r| r["text"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(texts(&a_id), ["question about alpha", "alpha answer"]);
+    assert_eq!(texts(&b_id), ["question about beta", "beta answer"]);
+}
+
+#[test]
+fn two_messages_at_once_in_one_conversation_are_both_answered_in_stored_order() {
+    let fake = together(2, 1, |_| "answer".into());
+    let env = Env::new("one-conversation", &fake.url(), short());
+    let (conversation, ..) = summary(&env.send("", "opening").rest());
+    let (a, b) = thread::scope(|scope| {
+        let a = scope.spawn(|| env.send(&conversation, "left message").rest());
+        let b = scope.spawn(|| env.send(&conversation, "right message").rest());
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!(a.last().unwrap(), &json!({ "event": "done" }));
+    assert_eq!(b.last().unwrap(), &json!({ "event": "done" }));
+    let records = env.get(&conversation);
+    let texts: Vec<&str> = records
+        .iter()
+        .map(|r| r["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts.len(), 6, "{texts:?}");
+    assert_eq!(&texts[..2], ["opening", "answer"]);
+    for wanted in ["left message", "right message"] {
+        assert_eq!(
+            texts.iter().filter(|t| **t == wanted).count(),
+            1,
+            "{texts:?}"
+        );
+    }
+    assert_eq!(
+        texts.iter().filter(|t| **t == "answer").count(),
+        3,
+        "{texts:?}"
+    );
+    // The history is in the order it was stored: the record that is stored later has the later
+    // time, so two turns that overlap never share a time or swap places. A record stored with a
+    // time of its own call's clock, which knows nothing of the other call, would fail this.
+    for pair in records.windows(2) {
+        assert_eq!(
+            compare_times(
+                pair[1]["time"].as_str().unwrap(),
+                pair[0]["time"].as_str().unwrap()
+            ),
+            std::cmp::Ordering::Greater,
+            "{records:?}"
+        );
+    }
+}
+
+#[test]
+fn the_same_text_sent_twice_at_once_is_two_messages_not_a_retry() {
+    let fake = together(2, 1, |_| "answer".into());
+    let env = Env::new("same-twice", &fake.url(), short());
+    let (conversation, ..) = summary(&env.send("", "opening").rest());
+    thread::scope(|scope| {
+        let a = scope.spawn(|| env.send(&conversation, "again").rest());
+        let b = scope.spawn(|| env.send(&conversation, "again").rest());
+        for lines in [a.join().unwrap(), b.join().unwrap()] {
+            assert_eq!(lines.last().unwrap(), &json!({ "event": "done" }));
+        }
+    });
+    let roles: Vec<String> = env
+        .get(&conversation)
+        .iter()
+        .map(|r| r["role"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        roles.iter().filter(|r| *r == "user").count(),
+        3,
+        "{roles:?}"
+    );
+    assert_eq!(
+        roles.iter().filter(|r| *r == "assistant").count(),
+        3,
+        "{roles:?}"
+    );
+}
+
+#[test]
+fn chat_stop_stops_the_answers_of_its_conversation_and_no_other() {
+    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let late = Arc::clone(&gate);
+    let fake = Fake::start_for(Arc::new(move |_, body, s| {
+        head(s);
+        chunk(s, "part");
+        if body.contains("stay") {
+            let by = Instant::now() + Duration::from_secs(10);
+            while !late.load(Ordering::SeqCst) && Instant::now() < by {
+                thread::sleep(Duration::from_millis(10));
+            }
+            chunk(s, " whole");
+            done(s);
+        } else {
+            hold(s);
+        }
+    }));
+    let env = Env::new("stop-one", &fake.url(), short());
+    let mut stopped = env.send("", "stop me");
+    let stop_id = stopped.next().unwrap()["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(stopped.next().unwrap()["text"], "part");
+    let mut staying = env.send("", "stay");
+    let stay_id = staying.next().unwrap()["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(staying.next().unwrap()["text"], "part");
+
+    assert_eq!(
+        env.connect(&format!("chat-stop {stop_id}")).rest(),
+        vec![json!({ "stopped": true })]
+    );
+    assert_eq!(
+        stopped.rest(),
+        vec![json!({ "event": "done", "stopped": true })]
+    );
+    // The other conversation's answer was not touched, and it still goes to its end.
+    gate.store(true, Ordering::SeqCst);
+    assert_eq!(
+        staying.rest(),
+        vec![
+            json!({ "event": "delta", "text": " whole" }),
+            json!({ "event": "done" })
+        ]
+    );
+    assert_eq!(
+        assistant_text(&env.get(&stay_id)).as_deref(),
+        Some("part whole")
+    );
+    assert_eq!(assistant_text(&env.get(&stop_id)).as_deref(), Some("part"));
 }
 
 #[test]
@@ -831,7 +1029,7 @@ fn a_stream_past_the_wire_cap_is_cut_even_before_any_text() {
 }
 
 #[test]
-fn a_client_that_goes_away_stops_the_answer_and_frees_the_slot() {
+fn a_client_that_goes_away_stops_the_answer() {
     let fake = Fake::start(Arc::new(|n, s| {
         head(s);
         if n == 0 {
@@ -852,16 +1050,17 @@ fn a_client_that_goes_away_stops_the_answer_and_frees_the_slot() {
         .to_string();
     lines.next().unwrap();
     drop(lines);
+    // The part the client got is stored when the answer ends, which a failed write brings about.
     let started = Instant::now();
-    loop {
-        let events = env.send(&conversation, "again").rest();
-        if events.last().unwrap()["event"] == "done" {
-            break;
-        }
-        assert_eq!(reason(&events), "busy");
-        assert!(started.elapsed() < Duration::from_secs(5), "slot not freed");
+    while env.get(&conversation).len() < 2 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "answer not ended"
+        );
         thread::sleep(Duration::from_millis(50));
     }
+    let events = env.send(&conversation, "again").rest();
+    assert_eq!(events.last().unwrap()["event"], "done");
     // The part the client got is stored before the new turn.
     let records = env.get(&conversation);
     assert_eq!(records[1]["role"], "assistant");
@@ -1863,4 +2062,127 @@ fn a_refusal_of_tools_with_reasoning_that_none_does_not_cure_is_an_error_400() {
     let events = env.send("", MESSAGE).rest();
     assert_eq!(reason(&events), "error 400");
     assert_eq!(fake.bodies().len(), 2);
+}
+
+/// Whether every call of `messages` is answered by the tool messages that follow it at once, and
+/// no tool message stands anywhere else: what a provider accepts.
+fn calls_and_results_pair_up(messages: &[Value]) -> bool {
+    let mut open: Vec<String> = Vec::new();
+    for message in messages {
+        match message["role"].as_str().unwrap() {
+            "tool" => {
+                let id = message["tool_call_id"].as_str().unwrap();
+                match open.iter().position(|o| o == id) {
+                    Some(at) => {
+                        open.remove(at);
+                    }
+                    None => return false,
+                }
+            }
+            _ if !open.is_empty() => return false,
+            "assistant" => {
+                open = message["tool_calls"]
+                    .as_array()
+                    .map(|calls| {
+                        calls
+                            .iter()
+                            .map(|c| c["id"].as_str().unwrap().to_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+            _ => {}
+        }
+    }
+    open.is_empty()
+}
+
+#[test]
+fn a_message_stored_while_a_tool_runs_does_not_split_the_call_from_its_result() {
+    let (runner, started, release) = blocking(Some("slow"));
+    let fake = Fake::start_for(Arc::new(|_, body, s| {
+        head(s);
+        let chunks = if body.contains("\"role\":\"tool\"") {
+            vec![text_chunk("first reply"), finish("stop")]
+        } else if body.contains("second message") {
+            vec![text_chunk("second reply"), finish("stop")]
+        } else {
+            whole_call("call_s", "slow", "{}")
+        };
+        for chunk in chunks {
+            raw_chunk(s, &chunk);
+        }
+        done(s);
+    }));
+    let env = Env::with_tools("split-call", &fake.url(), runner);
+    let mut first = env.send("", "first message");
+    let conversation = first.next().unwrap()["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The tool of the first answer is running; a second message is stored and answered now.
+    let second = env.send(&conversation, "second message").rest();
+    assert_eq!(second.last().unwrap(), &json!({ "event": "done" }));
+    release.send(()).unwrap();
+    assert_eq!(first.rest().last().unwrap(), &json!({ "event": "done" }));
+
+    // The result is stored after the second turn, and every request sent is still valid.
+    env.send(&conversation, "third message").rest();
+    let bodies = fake.bodies();
+    assert!(bodies.len() >= 4, "{}", bodies.len());
+    for body in &bodies {
+        assert!(calls_and_results_pair_up(&messages(body)), "{body}");
+    }
+    let sent = messages(bodies.last().unwrap());
+    assert!(sent.iter().any(|m| m["role"] == "tool"), "{sent:?}");
+}
+
+#[test]
+fn a_failed_answer_is_retried_with_the_same_text_while_another_call_runs() {
+    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let late = Arc::clone(&gate);
+    let failures = Arc::new(AtomicU32::new(0));
+    let fake = Fake::start_for(Arc::new(move |_, body, s| {
+        if body.contains("slow one") && !body.contains("retry me") {
+            head(s);
+            chunk(s, "slow");
+            let by = Instant::now() + Duration::from_secs(10);
+            while !late.load(Ordering::SeqCst) && Instant::now() < by {
+                thread::sleep(Duration::from_millis(10));
+            }
+            done(s);
+        } else if failures.fetch_add(1, Ordering::SeqCst) == 0 {
+            status(s, 500, "{}");
+        } else {
+            head(s);
+            chunk(s, "fine");
+            done(s);
+        }
+    }));
+    let env = Env::new("retry-beside", &fake.url(), short());
+    let mut slow = env.send("", "slow one");
+    let conversation = slow.next().unwrap()["conversation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    slow.next().unwrap();
+    // The first try fails, and the same text again answers that turn, beside the slow answer.
+    assert_eq!(
+        reason(&env.send(&conversation, "retry me").rest()),
+        "error 500"
+    );
+    assert_eq!(
+        env.send(&conversation, "retry me").rest().last().unwrap(),
+        &json!({ "event": "done" })
+    );
+    gate.store(true, Ordering::SeqCst);
+    slow.rest();
+    let users: Vec<String> = env
+        .get(&conversation)
+        .iter()
+        .filter(|r| r["role"] == "user")
+        .map(|r| r["text"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(users, ["slow one", "retry me"]);
 }

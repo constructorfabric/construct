@@ -94,10 +94,18 @@ impl From<io::Error> for Error {
     }
 }
 
+/// The name a file is noted under: the names are compared whatever their case, since a file system
+/// may not tell them apart.
+fn left_key(path: &Path) -> String {
+    path.to_string_lossy().to_ascii_lowercase()
+}
+
 /// The open workspace folder.
 #[derive(Debug)]
 pub struct Workspace {
     root: Dir,
+    /// What the setup session left in the files it wrote, by file; see [`Self::note_left`].
+    left: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl Workspace {
@@ -111,7 +119,35 @@ impl Workspace {
         create_private_dir(&path)?;
         Ok(Self {
             root: Dir::open_ambient_dir(&path, ambient_authority())?,
+            left: std::sync::Mutex::default(),
         })
+    }
+
+    /// Notes the text of `path` as the setup session has just left it, so that the end of a run
+    /// that failed puts back only what the run wrote and only while the file is still as the
+    /// run left it. A file that cannot be read is not noted.
+    pub fn note_left(&self, path: &str) {
+        let Ok(key) = relative(path).map(|p| left_key(&p)) else {
+            return;
+        };
+        let text = self.read_whole(path, u64::MAX).ok();
+        let mut left = crate::sync::lock(&self.left);
+        match text {
+            Some(text) => left.insert(key, text),
+            None => left.remove(&key),
+        };
+    }
+
+    /// What the setup session left in `path`, if it wrote it since [`Self::forget_left`].
+    #[must_use]
+    pub fn left(&self, path: &str) -> Option<String> {
+        let key = relative(path).map(|p| left_key(&p)).ok()?;
+        crate::sync::lock(&self.left).get(&key).cloned()
+    }
+
+    /// Forgets what was noted: a new setup run starts with nothing written.
+    pub fn forget_left(&self) {
+        crate::sync::lock(&self.left).clear();
     }
 
     /// Returns the lines of a file. `offset` is the number of the first line to return (the first

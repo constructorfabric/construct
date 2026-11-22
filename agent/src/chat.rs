@@ -29,9 +29,10 @@
 //! No log line, event or error holds the key, a message text or a fact: failures are named by reason
 //! only, and the provider's error body is read for one question and dropped.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -130,6 +131,8 @@ struct Run<'a> {
     target: &'a Target,
     cancel: &'a CancellationToken,
     usage: &'a Counter,
+    /// The tool calls of this model call that run on threads of their own.
+    tools: &'a ToolCount,
 }
 
 /// The calls of a turn as records of `session`. A call with no id gets one, and one with no
@@ -231,9 +234,13 @@ impl Link {
     }
 }
 
+/// One model call that goes: a chat answer or a setup run.
 struct Running {
+    id: u64,
     conversation: String,
     cancel: CancellationToken,
+    /// The time of the user turn this call answers, once it is stored.
+    turn: Option<String>,
 }
 
 struct Inner {
@@ -251,9 +258,15 @@ struct Inner {
     setup_tools: ChatTools,
     setup_sub_tools: ChatTools,
     usage: Option<Arc<dyn Fn(Usage) + Send + Sync>>,
-    running: Mutex<Option<Running>>,
-    /// The tool calls that run on their own threads, a stopped answer's too.
-    calls_in_flight: Arc<AtomicUsize>,
+    /// Every model call that goes, in any number.
+    running: Mutex<Vec<Running>>,
+    next_call: AtomicU64,
+    /// Held while a message is checked against the stored turns and its own turn is stored, so
+    /// that two messages of one conversation are told apart and stored one after the other.
+    intake: Mutex<()>,
+    /// The time of the last record stored for each conversation: the times of one conversation
+    /// only grow, whichever call stores.
+    clock: Mutex<HashMap<String, i64>>,
 }
 
 /// The chat commands. Cheap to clone.
@@ -262,13 +275,34 @@ pub struct Chat {
     inner: Arc<Inner>,
 }
 
+/// The tool calls of one model call that run on threads of their own. A stopped call leaves the
+/// one it was waiting for running, so what that call writes lands later: whoever must see it
+/// land waits on the count of its own call. Clones share the count.
+#[derive(Clone, Default)]
+pub struct ToolCount(Arc<AtomicUsize>);
+
+impl ToolCount {
+    /// Waits until none is left, at most `limit`. Answers whether none is.
+    #[must_use]
+    pub fn wait(&self, limit: Duration) -> bool {
+        let end = std::time::Instant::now() + limit;
+        while self.0.load(Ordering::SeqCst) > 0 {
+            if std::time::Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+}
+
 /// One tool call that runs; it is counted until this is dropped, a panic of the tool included.
 struct InFlight(Arc<AtomicUsize>);
 
 impl InFlight {
-    fn start(count: &Arc<AtomicUsize>) -> Self {
-        count.fetch_add(1, Ordering::SeqCst);
-        Self(Arc::clone(count))
+    fn start(count: &ToolCount) -> Self {
+        count.0.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(&count.0))
     }
 }
 
@@ -278,13 +312,15 @@ impl Drop for InFlight {
     }
 }
 
+/// The place of one model call among the calls that go; it is free when dropped.
 struct Slot {
     inner: Arc<Inner>,
+    id: u64,
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        *lock(&self.inner.running) = None;
+        lock(&self.inner.running).retain(|r| r.id != self.id);
     }
 }
 
@@ -331,8 +367,10 @@ impl Chat {
                 setup_tools: ChatTools::default(),
                 setup_sub_tools: ChatTools::default(),
                 usage: None,
-                running: Mutex::new(None),
-                calls_in_flight: Arc::new(AtomicUsize::new(0)),
+                running: Mutex::new(Vec::new()),
+                next_call: AtomicU64::new(0),
+                intake: Mutex::new(()),
+                clock: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -410,21 +448,6 @@ impl Chat {
         self
     }
 
-    /// Waits until no tool call is running on a thread of its own, at most `limit`: a stopped
-    /// answer leaves the call it was waiting for running, and what that call writes lands later.
-    /// Answers whether none is left.
-    #[must_use]
-    pub fn wait_for_tools(&self, limit: std::time::Duration) -> bool {
-        let end = std::time::Instant::now() + limit;
-        while self.inner.calls_in_flight.load(Ordering::SeqCst) > 0 {
-            if std::time::Instant::now() >= end {
-                return false;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        true
-    }
-
     /// Run `chat-send` with `argument` (a JSON object). Every line to the client goes through
     /// `out`, which returns `false` when the client is gone.
     pub fn send(&self, argument: &str, out: &mut dyn FnMut(&str) -> bool) {
@@ -460,14 +483,14 @@ impl Chat {
             out(&event_error("no model"));
             return;
         };
-        let Some((slot, cancel)) = self.acquire(&conversation) else {
-            out(&event_error("busy"));
-            return;
-        };
+        let (slot, cancel) = self.acquire(&conversation);
+        // One message at a time is checked and stored: the second sees the first's turn.
+        let intake = lock(&inner.intake);
         // Read once the slot is held: a `chat-delete` cannot slip in between.
         let history = match self.history(&conversation, new) {
             Ok(history) => history,
             Err(reason) => {
+                drop(intake);
                 drop(slot);
                 out(&event_error(reason));
                 return;
@@ -481,10 +504,18 @@ impl Chat {
         // turn is the last record and stays part of the conversation, so the same text then is
         // a new message: the model sees user, partial answer, user.
         // A `recall_facts` pair stored after that user turn does not make it another message.
-        let retry = matches!(
-            history.iter().rfind(|r| !matches!(r, Record::ToolCall(_) | Record::ToolResult(_))),
-            Some(Record::Turn(t)) if t.role == Role::User && t.text == request.message
-        );
+        // A turn that another call is answering right now is not a failed one: the same text is
+        // then a new message.
+        let retried = match history
+            .iter()
+            .rfind(|r| !matches!(r, Record::ToolCall(_) | Record::ToolResult(_)))
+        {
+            Some(Record::Turn(t)) if t.role == Role::User && t.text == request.message => {
+                Some(t.time.clone())
+            }
+            _ => None,
+        }
+        .filter(|time| !self.answering(&conversation, time));
         let user = Record::Turn(Turn {
             tool: SOURCE.into(),
             session: conversation.clone(),
@@ -496,11 +527,18 @@ impl Chat {
             text: request.message,
             tools: Vec::new(),
         });
-        if !retry && self.store(&user).is_err() {
+        let turn = match retried {
+            Some(time) => Ok(time),
+            None => self.store(&user),
+        };
+        let Ok(turn) = turn else {
+            drop(intake);
             drop(slot);
             out(&event_error("cannot save"));
             return;
-        }
+        };
+        self.claim(slot.id, turn);
+        drop(intake);
         if !out(&json!({ "event": "start", "conversation": conversation }).to_string()) {
             return;
         }
@@ -519,12 +557,14 @@ impl Chat {
             return;
         };
         let usage = Counter::default();
+        let tools = ToolCount::default();
         let end = self
             .answer(
                 Run {
                     target: &target,
                     cancel: &cancel,
                     usage: &usage,
+                    tools: &tools,
                 },
                 &conversation,
                 records,
@@ -548,8 +588,8 @@ impl Chat {
             "chat: answer ended: {line}, sent {} bytes, received {} bytes",
             usage.sent, usage.received
         );
-        // Free the slot before the last line: a client that sends again on seeing it must not
-        // meet `busy`.
+        // Free the slot before the last line: a client that deletes the conversation on seeing it
+        // must not meet `busy`.
         drop(slot);
         out(&line);
     }
@@ -579,7 +619,8 @@ impl Chat {
             call_id: call_id.clone(),
             name: recall::NAME.into(),
             arguments: "{}".into(),
-        }))?;
+        }))
+        .map(|_| ())?;
         self.store_result(conversation, last, &call_id, &text)
     }
 
@@ -599,23 +640,38 @@ impl Chat {
         }
     }
 
-    /// The answer slot, or `None` while another answer runs.
-    fn acquire(&self, conversation: &str) -> Option<(Slot, CancellationToken)> {
-        let mut running = lock(&self.inner.running);
-        if running.is_some() {
-            return None;
-        }
+    /// A place for a new model call named `conversation`, with its own stop. There is no limit
+    /// on the number of calls.
+    fn acquire(&self, conversation: &str) -> (Slot, CancellationToken) {
+        let id = self.inner.next_call.fetch_add(1, Ordering::SeqCst);
         let cancel = CancellationToken::new();
-        *running = Some(Running {
+        lock(&self.inner.running).push(Running {
+            id,
             conversation: conversation.to_string(),
             cancel: cancel.clone(),
+            turn: None,
         });
-        Some((
+        (
             Slot {
                 inner: Arc::clone(&self.inner),
+                id,
             },
             cancel,
-        ))
+        )
+    }
+
+    /// Records that call `id` answers the user turn stored at `turn`.
+    fn claim(&self, id: u64, turn: String) {
+        if let Some(call) = lock(&self.inner.running).iter_mut().find(|r| r.id == id) {
+            call.turn = Some(turn);
+        }
+    }
+
+    /// Whether a call that goes answers the user turn of `conversation` stored at `turn`.
+    fn answering(&self, conversation: &str, turn: &str) -> bool {
+        lock(&self.inner.running)
+            .iter()
+            .any(|r| r.conversation == conversation && r.turn.as_deref() == Some(turn))
     }
 
     fn read(&self, conversation: &str) -> io::Result<Vec<Record>> {
@@ -623,11 +679,29 @@ impl Chat {
     }
 
     /// Appends one record and makes it durable (the session only, never the readers' progress).
-    fn store(&self, record: &Record) -> io::Result<()> {
+    /// The record is stored after every record of its conversation that is stored already, and
+    /// its time is later than theirs, whichever call stored them. Answers the time it got.
+    fn store(&self, record: &Record) -> io::Result<String> {
         use crate::records::Sink;
+        let mut clock = lock(&self.inner.clock);
+        let mut record = record.clone();
+        let session = record.session().to_owned();
+        let seen = clock.get(&session).copied();
+        let mut at = millis(record.time());
+        if let Some(seen) = seen
+            && at.is_none_or(|at| at <= seen)
+        {
+            at = Some(seen);
+            let time = next_time(&mut at);
+            set_time(&mut record, time);
+        }
+        if let Some(at) = millis(record.time()) {
+            clock.insert(session.clone(), at);
+        }
         let mut sink = lock(&self.inner.sink);
-        sink.append(record)?;
-        sink.flush_session(SOURCE, record.session())
+        sink.append(&record)?;
+        sink.flush_session(SOURCE, &session)?;
+        Ok(record.time().to_owned())
     }
 
     /// The answer: one request to the provider per model turn, and between two turns the tool calls
@@ -646,6 +720,7 @@ impl Chat {
             target,
             cancel,
             usage,
+            ..
         } = run;
         loop {
             let Ok(body) = request_body(&target.model, &records, self.inner.tools.listing()) else {
@@ -700,6 +775,7 @@ impl Chat {
             text,
             tools: Vec::new(),
         }))
+        .map(|_| ())
     }
 
     /// Store `calls`, then run them in order, storing each result. When the answer is stopped, every
@@ -770,6 +846,7 @@ impl Chat {
             call_id: call_id.into(),
             text: text.into(),
         }))
+        .map(|_| ())
     }
 
     /// One call of the answer: the sub-agent tool, when the list has it, runs here in the chat;
@@ -784,13 +861,14 @@ impl Chat {
             let nested = (subagent::INSTRUCTION, &self.inner.sub_tools);
             return self.run_subagent(run, &call.arguments, nested, emit).await;
         }
-        self.run_tool(&self.inner.tools, &call.name, &call.arguments)
+        self.run_tool(run.tools, &self.inner.tools, &call.name, &call.arguments)
             .await
     }
 
     /// One tool call of `tools`, on a thread of its own so that a stop does not wait for it.
     async fn run_tool(
         &self,
+        count: &ToolCount,
         tools: &ChatTools,
         name: &str,
         arguments: &str,
@@ -799,7 +877,7 @@ impl Chat {
             return Err(format!("unknown tool {name}"));
         };
         let arguments = arguments.to_string();
-        let running = InFlight::start(&self.inner.calls_in_flight);
+        let running = InFlight::start(count);
         self.inner
             .handle
             .spawn_blocking(move || {
@@ -957,16 +1035,18 @@ impl Chat {
         }
     }
 
-    /// Stop the answer of `conversation`. `true` when one was running.
+    /// Stop every call of `conversation`, and no call of another. `true` when one was running.
     #[must_use]
     pub fn stop(&self, conversation: &str) -> bool {
-        match &*lock(&self.inner.running) {
-            Some(r) if r.conversation == conversation => {
-                r.cancel.cancel();
-                true
-            }
-            _ => false,
+        let mut any = false;
+        for call in lock(&self.inner.running)
+            .iter()
+            .filter(|r| r.conversation == conversation)
+        {
+            call.cancel.cancel();
+            any = true;
         }
+        any
     }
 
     /// The JSON line for `chat-list`: the conversations, the newest first.
@@ -1042,25 +1122,26 @@ impl Chat {
             .collect()
     }
 
-    /// Erases every conversation, for the person's erasure: a running answer is stopped first and
+    /// Erases every conversation, for the person's erasure: every running answer is stopped first and
     /// waited for, so that nothing is written after the files are gone, and no answer can start
     /// until they are.
     fn erase_all(&self) -> Result<(), String> {
         let deadline = std::time::Instant::now() + ERASE_WAIT;
         loop {
             let running = lock(&self.inner.running);
-            match running.as_ref() {
-                None => {
-                    // The guard is held to the end: no answer starts while the files go.
-                    return lock(&self.inner.sink)
-                        .delete_source(SOURCE)
-                        .map_err(|_| "the conversations could not be removed".to_owned());
-                }
-                Some(answer) => answer.cancel.cancel(),
+            if running.is_empty() {
+                // The guard is held to the end: no answer starts while the files go.
+                lock(&self.inner.clock).clear();
+                return lock(&self.inner.sink)
+                    .delete_source(SOURCE)
+                    .map_err(|_| "the conversations could not be removed".to_owned());
+            }
+            for call in running.iter() {
+                call.cancel.cancel();
             }
             drop(running);
             if std::time::Instant::now() >= deadline {
-                return Err("the running answer did not stop".to_owned());
+                return Err("the running answers did not stop".to_owned());
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -1074,27 +1155,39 @@ impl Chat {
         // while it is deleted.
         let running = lock(&self.inner.running);
         if running
-            .as_ref()
-            .is_some_and(|r| which == "all" || r.conversation == which)
+            .iter()
+            .any(|r| which == "all" || r.conversation == which)
         {
             return error_response("busy");
         }
-        let mut sink = lock(&self.inner.sink);
-        let result = if which == "all" {
-            sink.list_sessions(SOURCE).and_then(|sessions| {
-                sink.delete_source(SOURCE)?;
-                Ok(sessions.len())
-            })
-        } else if valid_id(which) {
-            sink.read_session(SOURCE, which).and_then(|records| {
-                sink.delete_session(SOURCE, which)?;
-                Ok(usize::from(!records.is_empty()))
-            })
-        } else {
-            return error_response("unknown conversation");
+        let result = {
+            let mut sink = lock(&self.inner.sink);
+            if which == "all" {
+                sink.list_sessions(SOURCE).and_then(|sessions| {
+                    sink.delete_source(SOURCE)?;
+                    Ok(sessions.len())
+                })
+            } else if valid_id(which) {
+                sink.read_session(SOURCE, which).and_then(|records| {
+                    sink.delete_session(SOURCE, which)?;
+                    Ok(usize::from(!records.is_empty()))
+                })
+            } else {
+                return error_response("unknown conversation");
+            }
         };
         match result {
-            Ok(n) => json!({ "deleted": n }).to_string(),
+            Ok(n) => {
+                // The running guard is still held, so no call stores into what went. Only the
+                // deleted conversations lose their floor: that of any other is still in use.
+                let mut clock = lock(&self.inner.clock);
+                if which == "all" {
+                    clock.clear();
+                } else {
+                    clock.remove(which);
+                }
+                json!({ "deleted": n }).to_string()
+            }
             Err(_) => error_response("cannot delete"),
         }
     }
@@ -1147,6 +1240,16 @@ fn next_time(last: &mut Option<i64>) -> String {
         .ok()
         .and_then(|t| t.format(&Rfc3339).ok())
         .unwrap_or_default()
+}
+
+/// Puts `time` on `record`.
+fn set_time(record: &mut Record, time: String) {
+    match record {
+        Record::Turn(r) => r.time = time,
+        Record::ToolCall(r) => r.time = time,
+        Record::ToolResult(r) => r.time = time,
+        Record::Mark(_) => {}
+    }
 }
 
 /// Milliseconds since the epoch of an RFC 3339 time; `None` for a time that does not parse,

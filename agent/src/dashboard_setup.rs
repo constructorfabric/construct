@@ -39,7 +39,7 @@ use time::OffsetDateTime;
 
 use crate::activity::Feed;
 use crate::chat::setup::{CONVERSATION, Outcome};
-use crate::chat::{Chat, Counter};
+use crate::chat::{Chat, Counter, ToolCount};
 use crate::dashboard::{ACTIVITY_FILE, validate_activity};
 use crate::dashboard_document::MAX_BYTES;
 use crate::erase::OwnStore;
@@ -137,6 +137,11 @@ struct Before {
     dashboard: Option<String>,
     findings: Option<String>,
     report: Option<String>,
+    /// The files the end of a run has dealt with: put back, left alone because the run did not
+    /// write them or they changed after it did. A later put-back of the kept copy leaves them as
+    /// they are, so it only touches what is still to be put back.
+    #[serde(default)]
+    settled: Vec<String>,
 }
 
 impl Before {
@@ -152,6 +157,7 @@ impl Before {
             dashboard: read(ACTIVITY_FILE)?,
             findings: read(FINDINGS_FILE)?,
             report: read(REPORT_FILE)?,
+            settled: Vec::new(),
         })
     }
 
@@ -163,12 +169,59 @@ impl Before {
             (FINDINGS_FILE, &self.findings),
             (REPORT_FILE, &self.report),
         ] {
+            if self.settled.iter().any(|settled| settled == path) {
+                continue;
+            }
             let done = match text {
                 Some(text) => workspace.write(path, text),
                 None => workspace.remove_all(path),
             };
             if done.is_err() {
                 eprintln!("setup: a file could not be put back");
+                all = false;
+            }
+        }
+        all
+    }
+
+    /// Puts back what the run wrote, as it was before it, and only where the file is still as the
+    /// run left it: a change made since (the person's, or an edit of the chat) stays. A file the
+    /// run did not write is left as it is. Answers whether all the files that had to be are back.
+    fn restore_run(&mut self, workspace: &Workspace) -> bool {
+        let mut all = true;
+        for (path, text) in [
+            (ACTIVITY_FILE, &self.dashboard),
+            (FINDINGS_FILE, &self.findings),
+            (REPORT_FILE, &self.report),
+        ] {
+            if self.settled.iter().any(|settled| settled == path) {
+                continue;
+            }
+            let settled = match workspace.left(path) {
+                // The run did not write it: it is not the run's to put back.
+                None => true,
+                Some(left) => match workspace.read_whole(path, u64::MAX) {
+                    Ok(now) if now != left => true,
+                    Err(WorkspaceError::NotFound) if text.is_some() => {
+                        // The run removed nothing: a file gone is a change made since.
+                        true
+                    }
+                    Ok(_) | Err(WorkspaceError::NotFound) => {
+                        let done = match text {
+                            Some(text) => workspace.write(path, text),
+                            None => workspace.remove_all(path),
+                        };
+                        if done.is_err() {
+                            eprintln!("setup: a file could not be put back");
+                        }
+                        done.is_ok()
+                    }
+                    Err(_) => false,
+                },
+            };
+            if settled {
+                self.settled.push(path.to_owned());
+            } else {
                 all = false;
             }
         }
@@ -209,6 +262,8 @@ struct Inner {
     on_step: Option<Arc<dyn Fn(Step) + Send + Sync>>,
     /// How long a run waits for a tool call that is still running when the session has ended.
     tool_wait: Duration,
+    /// The tool calls of the session of the run, which a stopped session leaves running.
+    tools: ToolCount,
     /// Whether the thread of a run is still at work, up to its last write.
     active: AtomicBool,
 }
@@ -247,6 +302,7 @@ impl SetupJob {
                 cancel: AtomicBool::new(false),
                 on_step: None,
                 tool_wait: TOOLS_SETTLE,
+                tools: ToolCount::default(),
                 active: AtomicBool::new(false),
             }),
         };
@@ -383,6 +439,7 @@ impl Inner {
                 ..Run::default()
             };
             self.cancel.store(false, Ordering::SeqCst);
+            self.workspace.forget_left();
             *lock(&self.meter) = Counter::default();
             self.active.store(true, Ordering::SeqCst);
             run.clone()
@@ -479,7 +536,7 @@ impl Inner {
                 return;
             }
         }
-        let Ok(before) = Before::take(&self.workspace) else {
+        let Ok(mut before) = Before::take(&self.workspace) else {
             self.finish(&End::Failed(
                 "a file of the workspace could not be read, so the run did not start".into(),
             ));
@@ -496,19 +553,26 @@ impl Inner {
             }));
             if result.is_err() {
                 // `work` did not get to wait for the tool calls of the session.
-                let _ = self.chat.wait_for_tools(self.tool_wait);
+                let _ = self.tools.wait(self.tool_wait);
             }
             result.unwrap_or_else(|_| End::Failed("the run stopped unexpectedly".into()))
         };
         // A run that is done has nothing to put back.
-        if matches!(end, End::Done) || before.restore(&self.workspace) {
+        if matches!(end, End::Done) || before.restore_run(&self.workspace) {
             let _ = fs::remove_file(self.data_dir.join(BEFORE_FILE));
         } else {
-            // The copy stays aside, and the next start puts the files back.
-            end = End::Failed(
-                "the old files could not all be put back; they are kept aside and put back at the next start of the agent or of a run"
-                    .into(),
-            );
+            // The copy stays aside with only the files still to be put back, and the next start
+            // puts those back. A copy that cannot be written again would put back files that are
+            // settled already, over what the person changed since: it is removed instead.
+            end = if before.keep(&self.data_dir).is_ok() {
+                End::Failed(
+                    "the old files could not all be put back; they are kept aside and put back at the next start of the agent or of a run"
+                        .into(),
+                )
+            } else {
+                let _ = fs::remove_file(self.data_dir.join(BEFORE_FILE));
+                End::Failed("the old files could not all be put back, and the copy of them could not be kept".into())
+            };
         }
         self.finish(&end);
     }
@@ -575,7 +639,7 @@ impl Inner {
         // A stopped session leaves the tool call it waited for running, and what that writes
         // lands later: it is waited for, so that the files are put back after it and the folder
         // that holds the person's text is removed after it.
-        let settled = self.chat.wait_for_tools(self.tool_wait);
+        let settled = self.tools.wait(self.tool_wait);
         let _ = files.close();
         if !settled {
             return End::Failed(
@@ -619,7 +683,8 @@ impl Inner {
                     std::thread::sleep(WATCH_EVERY);
                 }
             });
-            self.chat.setup_with(again, &meter, &|| self.stopped())
+            self.chat
+                .setup_with(again, &meter, &self.tools, &|| self.stopped())
         })
     }
 
@@ -666,6 +731,8 @@ impl Inner {
             self.workspace
                 .write(ACTIVITY_FILE, &text)
                 .map_err(|_| "the dashboard could not be written")?;
+            // The run wrote this too: a later failure puts the old page back over it.
+            self.workspace.note_left(ACTIVITY_FILE);
             text
         } else {
             dashboard
@@ -783,7 +850,6 @@ impl Drop for Over<'_> {
 /// The reason of a failed session in words for the person; it never holds what the provider said.
 fn plain_reason(reason: &str) -> String {
     match reason {
-        "busy" => "an answer of the chat is running, so the setup cannot start now".into(),
         "no model" => "no model is set: save its address, name and key in the settings".into(),
         "no tools" => "the setup has no tools to read and write the files".into(),
         other => format!("the session failed: {other}"),
@@ -796,7 +862,6 @@ mod tests {
 
     #[test]
     fn a_reason_of_the_chat_is_said_in_plain_words() {
-        assert!(plain_reason("busy").contains("answer of the chat is running"));
         assert!(plain_reason("no model").starts_with("no model is set"));
         assert!(plain_reason("no tools").contains("no tools"));
         assert_eq!(plain_reason("timeout"), "the session failed: timeout");

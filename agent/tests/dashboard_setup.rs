@@ -158,6 +158,8 @@ impl ChatTool for Late {
             std::thread::sleep(Duration::from_millis(10));
         }
         self.workspace.write(ACTIVITY_FILE, "late").unwrap();
+        // As the file tools of the session do, once they have written.
+        self.workspace.note_left(ACTIVITY_FILE);
         Ok("late".into())
     }
 }
@@ -365,6 +367,82 @@ fn a_cancel_after_the_session_wrote_its_files_puts_the_old_ones_back() {
     stand.wait_for_state("cancelled");
     assert_untouched(&stand, &before);
     open.store(true, Ordering::SeqCst);
+}
+
+#[test]
+fn a_chat_edit_of_the_dashboard_during_a_run_that_ends_undone_is_still_there() {
+    // The session writes everything, then waits for a model turn that is held back.
+    let open = Arc::new(AtomicBool::new(false));
+    let mut turns = run_of(&dashboard(&["lab"], &json!({})));
+    turns[1] = Turn::Gated(Arc::clone(&open), Box::new(Turn::Text("done")));
+    let stand = Stand::new(turns);
+    stand.ask("dashboard-setup-start");
+    wait_for("the second request", || stand.rig.bodies().len() >= 2);
+    assert!(stand.read("findings.json").is_some());
+    // An edit of the chat, as its `Edit` tool makes it, on the page the run has written.
+    stand
+        .rig
+        .workspace
+        .edit(
+            ACTIVITY_FILE,
+            r#""hidden_projects":["lab"]"#,
+            r#""hidden_projects":["lab","chat-edit"]"#,
+            false,
+        )
+        .unwrap();
+    stand.ask("dashboard-setup-cancel");
+    stand.wait_for_state("cancelled");
+    open.store(true, Ordering::SeqCst);
+    // The run's own files that nobody changed are put back; the edited page is kept as it is.
+    assert!(stand.read(ACTIVITY_FILE).unwrap().contains("chat-edit"));
+    assert_eq!(stand.read("findings.json"), None);
+    assert_eq!(stand.read("setup-report.md"), None);
+}
+
+#[test]
+fn a_kept_copy_put_back_later_does_not_overwrite_a_file_the_chat_changed() {
+    let open = Arc::new(AtomicBool::new(false));
+    let mut turns = run_of(&dashboard(&["lab"], &json!({})));
+    turns[1] = Turn::Gated(Arc::clone(&open), Box::new(Turn::Text("done")));
+    let stand = Stand::new(turns);
+    stand.ask("dashboard-setup-start");
+    wait_for("the second request", || stand.rig.bodies().len() >= 2);
+    stand
+        .rig
+        .workspace
+        .edit(
+            ACTIVITY_FILE,
+            r#""hidden_projects":["lab"]"#,
+            r#""hidden_projects":["lab","chat-edit"]"#,
+            false,
+        )
+        .unwrap();
+    // The findings cannot be put back, so the old files are kept aside.
+    block(&stand, "findings.json");
+    stand.ask("dashboard-setup-cancel");
+    stand.wait_for_state("failed");
+    open.store(true, Ordering::SeqCst);
+    assert!(stand.rig.data.join("setup-before.json").exists());
+
+    // The run's end put the report back (it was none) before it failed on the findings; the
+    // person writes a report of their own after that.
+    assert_eq!(stand.read("setup-report.md"), None);
+    stand
+        .rig
+        .workspace
+        .write("setup-report.md", "my own report")
+        .unwrap();
+
+    // Put back later from the kept copy: only the findings are still to be put back, and
+    // neither the page the chat changed nor the person's report is written over.
+    unblock(&stand, "findings.json");
+    stand.rig.job.erase().unwrap();
+    assert!(stand.read(ACTIVITY_FILE).unwrap().contains("chat-edit"));
+    assert_eq!(stand.read("findings.json"), None);
+    assert_eq!(
+        stand.read("setup-report.md").as_deref(),
+        Some("my own report")
+    );
 }
 
 #[test]
@@ -819,8 +897,15 @@ fn a_file_that_cannot_be_read_stops_the_run_before_it_starts() {
     );
 }
 
-/// Makes the file a run puts back unwritable: a folder where the file is.
+/// Makes the file a run puts back unwritable: a folder where the file is. The run has written
+/// it first, as its file tools would have, so that it is the run's to put back.
 fn block(stand: &Stand, path: &str) {
+    stand
+        .rig
+        .workspace
+        .write(path, "written by the run")
+        .unwrap();
+    stand.rig.workspace.note_left(path);
     let file = stand.rig.data.join("workspace").join(path);
     std::fs::remove_file(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
