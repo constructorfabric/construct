@@ -1,0 +1,81 @@
+package cf.construct.mobile.android
+
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color as VectorColor
+
+// The icons of the navigation bar are Lucide 1.33.0 (ISC licence); the tint comes from the icon that shows them.
+
+private const val VIEWPORT = 24f
+private const val STROKE = 2f
+
+private fun lucide(
+    name: String,
+    vararg paths: String,
+): ImageVector =
+    ImageVector
+        .Builder(name, VIEWPORT.dp, VIEWPORT.dp, VIEWPORT, VIEWPORT)
+        .apply {
+            for (data in paths) {
+                addPath(
+                    pathData = PathParser().parsePathString(data).toNodes(),
+                    stroke = SolidColor(VectorColor.Black),
+                    strokeLineWidth = STROKE,
+                    strokeLineCap = StrokeCap.Round,
+                    strokeLineJoin = StrokeJoin.Round,
+                )
+            }
+        }.build()
+
+internal object PageIcons {
+    val chat =
+        lucide(
+            "message-square",
+            "M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 " +
+                "2-2h16a2 2 0 0 1 2 2z",
+        )
+
+    val memory =
+        lucide(
+            "brain",
+            "M12 18V5",
+            "M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4",
+            "M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5",
+            "M17.997 5.125a4 4 0 0 1 2.526 5.77",
+            "M18 18a4 4 0 0 0 2-7.464",
+            "M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517",
+            "M6 18a4 4 0 0 1-2-7.464",
+            "M6.003 5.125a4 4 0 0 0-2.526 5.77",
+        )
+
+    val dashboard =
+        lucide(
+            "layout-dashboard",
+            "M4 3h5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+            "M15 3h5a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z",
+            "M15 12h5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z",
+            "M4 16h5a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1z",
+        )
+
+    val glasshouse =
+        lucide(
+            "globe",
+            "M22 12a10 10 0 1 1-20 0a10 10 0 1 1 20 0",
+            "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20",
+            "M2 12h20",
+        )
+
+    val settings =
+        lucide(
+            "settings",
+            "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 " +
+                "2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 " +
+                "1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 " +
+                "2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915",
+            "M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0",
+        )
+}

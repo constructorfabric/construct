@@ -56,6 +56,8 @@ internal fun colorSchemeOf(dark: Boolean): ColorScheme {
         onSecondary = role(ColorRole.SECONDARY_FOREGROUND),
         background = role(ColorRole.BACKGROUND),
         onBackground = role(ColorRole.FOREGROUND),
+        secondaryContainer = role(ColorRole.SELECTION_SUBTLE),
+        onSecondaryContainer = role(ColorRole.FOREGROUND),
         surface = role(ColorRole.SURFACE),
         onSurface = role(ColorRole.CARD_FOREGROUND),
         surfaceVariant = role(ColorRole.MUTED),

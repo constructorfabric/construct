@@ -40,5 +40,6 @@ class ThemeSizesTest {
         assertEquals(56.dp, sizes.button)
         assertEquals(24.dp, sizes.icon)
         assertEquals(40.dp, sizes.iconLarge)
+        assertEquals(8.dp, sizes.dot)
     }
 }
