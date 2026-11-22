@@ -15,6 +15,7 @@
 //! specific to one operating system.
 
 pub mod chat;
+pub mod fixture;
 pub mod model;
 pub mod model_test;
 pub mod recall;

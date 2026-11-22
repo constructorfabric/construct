@@ -54,24 +54,6 @@ private fun readByte(fd: Int): Int {
     return if (count <= 0) -1 else buffer[0].toInt()
 }
 
-/** The body of one request: the head up to the blank line, then `Content-Length` bytes. */
-private fun readBody(fd: Int): String {
-    val head = StringBuilder()
-    while (!head.endsWith("\r\n\r\n")) {
-        val byte = readByte(fd)
-        if (byte < 0) return ""
-        head.append(byte.toChar())
-    }
-    val length =
-        Regex("(?i)content-length: *(\\d+)")
-            .find(head)
-            ?.groupValues
-            ?.get(1)
-            ?.toInt() ?: 0
-    val bytes = ByteArray(length) { readByte(fd).toByte() }
-    return bytes.decodeToString()
-}
-
 private fun writeAll(
     fd: Int,
     bytes: ByteArray,
@@ -83,7 +65,7 @@ private class NativeFakeProvider(
     replies: List<Reply>,
 ) : FakeProvider {
     private val listener: Int
-    private val received = AtomicReference<List<String>>(emptyList())
+    private val received = AtomicReference<List<Request>>(emptyList())
     private val held = AtomicReference<List<Int>>(emptyList())
     override val baseUrl: String
 
@@ -95,14 +77,10 @@ private class NativeFakeProvider(
             for (reply in replies) {
                 val client = accept(fd, null, null)
                 if (client < 0) return@launch
-                received.value = received.value + readBody(client)
+                received.value = received.value + readRequest { readByte(client) }
                 when (reply) {
                     is Reply.Status -> {
-                        val body = reply.body.encodeToByteArray()
-                        val head =
-                            "HTTP/1.1 ${reply.code} X\r\nContent-Type: application/json\r\n" +
-                                "Content-Length: ${body.size}\r\nConnection: close\r\n\r\n"
-                        writeAll(client, head.encodeToByteArray() + body)
+                        writeAll(client, responseBytes(reply))
                         close(client)
                     }
 
@@ -114,7 +92,7 @@ private class NativeFakeProvider(
         }
     }
 
-    override val bodies: List<String> get() = received.value
+    override val requests: List<Request> get() = received.value
 
     override fun close() {
         close(listener)

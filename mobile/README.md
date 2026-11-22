@@ -65,19 +65,29 @@ framework and the Android app depend on them, so Xcode and Gradle builds build t
 inputs are the Rust sources, `Cargo.lock` and the script, and their outputs are the libraries, so a
 build with unchanged sources does not start cargo. Nothing compiled is committed.
 
-What a Mac needs for the Rust part, besides the list below:
+What a Mac needs for the Rust part, in addition to the list below:
 
 - `rustup` and the Rust toolchain of `rust-toolchain.toml`, with the four targets:
   `rustup target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-linux-android x86_64-linux-android`
-- `cargo-ndk`, the bridge's Android generator of builds: `cargo install cargo-ndk`
-- The Android NDK (27.2 was used): `sdkmanager 'ndk;27.2.12479018'`, found under `$ANDROID_HOME/ndk` or
-  by `ANDROID_NDK_HOME`
+- `cargo-ndk`, which builds a Rust library for each Android ABI with the NDK's compiler (the bridge itself has no generator): `cargo install cargo-ndk`
+- The Android NDK, any recent release (27.2 was proven): `sdkmanager 'ndk;27.2.12479018'`. The script takes
+  `ANDROID_NDK_HOME`, or else the newest one under `$ANDROID_HOME/ndk`
 - `cmake`, which the build script of the TLS library may ask for: `brew install cmake`
-- Xcode's command line tools, for the iPhone targets
+- Xcode, the app (the command line tools carry no iPhone SDK), as in the list below
 
 The first build compiles every crate the core uses for each of the four targets and takes a quarter
-of an hour on an Apple Silicon laptop; a second one with nothing changed does nothing. `./gradlew :androidApp:connectedDebugAndroidTest` runs the chat core's tests on the emulator
-and `./gradlew :core:chat:iosSimulatorArm64Test` runs them in the iPhone Simulator.
+of an hour on an Apple Silicon laptop; a second one with nothing changed does nothing. `./gradlew :androidApp:connectedDebugAndroidTest` runs the chat core's tests on a running emulator,
+by hand: the workflow only compiles them, because it starts no emulator. `./gradlew
+:core:chat:iosSimulatorArm64Test` runs them in the iPhone Simulator, and the workflow runs that one.
+
+The Android minimum API level and the iPhone deployment target of the Rust build are read from
+`gradle/libs.versions.toml` and `iosApp/project.yml`. The script stops when the crates the library is
+built from are not the ones `rustSources` in `build.gradle.kts` and the paths of the workflow list.
+
+Known gap: the Android build has not been shown to call an `https` address. The TLS stack checks
+certificates through the system verifier, which on Android may need an initialisation call from
+Kotlin that is not made yet, so a real provider may come back as "unreachable". Every test uses `http`
+on localhost.
 
 ## Rules
 

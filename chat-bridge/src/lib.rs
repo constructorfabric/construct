@@ -11,55 +11,36 @@
 //! stored or put in a returned text.
 
 use std::ffi::{CStr, CString, c_char};
-use std::sync::Arc;
 
+use chat_core::fixture::request_body_over;
 use chat_core::model::Model;
 use chat_core::model_test;
-use chat_core::tool::{ChatTools, ToolConfig, ToolHandler};
-use chat_core::wire::request_body;
 use serde_json::json;
-
-pub mod conversation;
-
-/// A handler that is never run: the body only holds the list of tools.
-struct Idle(String);
-
-impl ToolHandler for Idle {
-    fn name(&self) -> &str {
-        &self.0
-    }
-
-    fn run(&self, _: &str) -> Result<String, String> {
-        Ok(String::new())
-    }
-}
 
 /// The request body of the fixed conversation over the tool file `tools_file`.
 ///
 /// # Errors
 /// With a fixed text when the tool file is not valid.
 pub fn fixed_request_body(tools_file: &str) -> Result<String, String> {
-    let config = ToolConfig::parse(tools_file).map_err(|e| format!("bad tool file: {e}"))?;
-    let handlers: Vec<Arc<dyn ToolHandler>> = config
-        .names()
-        .into_iter()
-        .map(|name| Arc::new(Idle(name.to_string())) as Arc<dyn ToolHandler>)
-        .collect();
-    let tools =
-        ChatTools::configured(&config, &handlers).map_err(|e| format!("bad tool file: {e}"))?;
-    request_body(
-        conversation::MODEL,
-        &conversation::conversation(),
-        tools.listing(),
-    )
-    .map_err(|_| "the body cannot be written".to_string())
+    request_body_over(tools_file)
 }
 
 /// The Test of a model setting: the one JSON line the desktop's Settings page gets, such as
 /// `{"result":"works",...}`, `{"result":"key refused",...}` or `{"error":"..."}`.
 #[must_use]
 pub fn test_model(base_url: &str, model: &str, api_key: &str) -> String {
-    let request = json!({ "base_url": base_url, "model": model, "api_key": api_key });
+    last_line(base_url, model, api_key, false)
+}
+
+/// The last line the Test writes. With `progress` it writes a line for every check first, and the
+/// answer is still the last one.
+fn last_line(base_url: &str, model: &str, api_key: &str, progress: bool) -> String {
+    let request = json!({
+        "base_url": base_url,
+        "model": model,
+        "api_key": api_key,
+        "progress": progress,
+    });
     let mut last = String::new();
     model_test::run(
         &request.to_string(),
@@ -150,5 +131,55 @@ pub unsafe extern "C" fn cf_chat_free(text: *mut c_char) {
     if !text.is_null() {
         // SAFETY: the caller promises that `text` came from `CString::into_raw` here.
         drop(unsafe { CString::from_raw(text) });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+
+    use super::*;
+
+    #[test]
+    fn the_answer_is_the_last_line_even_when_every_check_writes_one() {
+        // A port where nothing listens: every request is refused at once.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}");
+        for progress in [false, true] {
+            let line = last_line(&url, "m", "sk-fake", progress);
+            let answer: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(answer["result"], "unreachable", "{line}");
+            assert!(!line.contains("sk-fake"));
+        }
+    }
+
+    #[test]
+    fn a_null_argument_is_an_invalid_argument_and_not_a_crash() {
+        let text = std::ffi::CString::new("x").unwrap();
+        // SAFETY: the pointers are valid C strings or null, and the result is freed once.
+        let answer = unsafe {
+            let out = cf_chat_test_model(std::ptr::null(), text.as_ptr(), text.as_ptr());
+            let answer = CStr::from_ptr(out).to_str().unwrap().to_owned();
+            cf_chat_free(out);
+            answer
+        };
+        assert_eq!(answer, r#"{"error":"invalid argument"}"#);
+    }
+
+    #[test]
+    fn a_text_that_is_not_utf8_is_refused() {
+        let bad = std::ffi::CString::new(vec![0xff, 0xfe]).unwrap();
+        // SAFETY: `bad` is a valid C string and the result is freed once.
+        let answer = unsafe {
+            let out = cf_chat_test_model(bad.as_ptr(), bad.as_ptr(), bad.as_ptr());
+            let answer = CStr::from_ptr(out).to_str().unwrap().to_owned();
+            cf_chat_free(out);
+            answer
+        };
+        assert_eq!(answer, r#"{"error":"invalid argument"}"#);
     }
 }

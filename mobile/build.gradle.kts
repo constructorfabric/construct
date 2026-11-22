@@ -59,10 +59,10 @@ extra["coreBuildDir"] = chatCoreBuildDir
 
 val rustSources =
     layout.projectDirectory.dir("..").asFileTree.matching {
+        // The crates the library is built from; scripts/build-core.sh stops when a new one appears.
         include("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
-        include("chat-bridge/Cargo.toml", "chat-bridge/include/**", "chat-bridge/src/**")
-        include("chat-core/Cargo.toml", "chat-core/src/**")
-        include("connectors/Cargo.toml", "connectors/build.rs", "connectors/src/**")
+        include("chat-bridge/**", "chat-core/**", "connectors/**")
+        exclude("**/tests/**", "**/target/**")
     }
 
 fun buildChatCore(

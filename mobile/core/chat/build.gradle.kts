@@ -17,6 +17,7 @@ val fixtureFiles =
         "tools/desktop.json",
         "chat-core/tests/golden/phone.json",
         "chat-core/tests/golden/desktop.json",
+        "app/src/en.json",
     )
 val generateFixtures =
     tasks.register("generateFixtures") {
@@ -46,11 +47,21 @@ val generateFixtures =
                 fixtureFiles.zip(inputFiles).joinToString(",\n") { (name, file) ->
                     "        ${literal(name)} to ${literal(file.readText())}"
                 }
+            // The length and the byte sum of each file, measured on the file itself, so a test can tell
+            // when a mis-escaped literal is not the file.
+            val measures =
+                fixtureFiles.zip(inputFiles).joinToString(",\n") { (name, file) ->
+                    val bytes = file.readBytes()
+                    "        ${literal(name)} to Measure(${bytes.size}, ${bytes.sumOf { it.toInt() and 0xFF }})"
+                }
             output.get().asFile.apply {
                 parentFile.mkdirs()
                 writeText(
                     "package cf.construct.mobile.core.chat\n\n" +
-                        "object GeneratedFixtures {\n    val files: Map<String, String> =\n        mapOf(\n$entries,\n        )\n}\n",
+                        "class Measure(\n    val bytes: Int,\n    val sum: Int,\n)\n\n" +
+                        "object GeneratedFixtures {\n" +
+                        "    val files: Map<String, String> =\n        mapOf(\n$entries,\n        )\n\n" +
+                        "    val measures: Map<String, Measure> =\n        mapOf(\n$measures,\n        )\n}\n",
                 )
             }
         }
@@ -84,7 +95,12 @@ kotlin {
             definitionFile.set(file("src/nativeInterop/cinterop/constructChat.def"))
             includeDirs(repoRoot.dir("chat-bridge/include"))
             extraOpts("-libraryPath", File(coreBuildDir.get(), "ios/$folder").path)
-            tasks.named(interopProcessingTaskName) { dependsOn(":buildChatCoreIos") }
+            // A change to the Rust library must run the interop again: its content is an input.
+            val library = File(coreBuildDir.get(), "ios/$folder/libconstruct_chat_bridge.a")
+            tasks.named(interopProcessingTaskName) {
+                dependsOn(":buildChatCoreIos")
+                inputs.files(library)
+            }
         }
     }
 

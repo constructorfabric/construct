@@ -1,6 +1,5 @@
 package cf.construct.mobile.core.chat
 
-import java.io.InputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -11,25 +10,22 @@ private class JvmFakeProvider(
     private val replies: List<Reply>,
 ) : FakeProvider {
     private val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
-    private val received = Collections.synchronizedList(mutableListOf<String>())
+    private val received = Collections.synchronizedList(mutableListOf<Request>())
     private val held = Collections.synchronizedList(mutableListOf<Socket>())
 
     override val baseUrl: String = "http://127.0.0.1:${server.localPort}"
-    override val bodies: List<String> get() = synchronized(received) { received.toList() }
+    override val requests: List<Request> get() = synchronized(received) { received.toList() }
 
     init {
         thread(isDaemon = true) {
             for (reply in replies) {
                 val socket = runCatching { server.accept() }.getOrNull() ?: return@thread
-                received += readBody(socket.getInputStream())
+                val input = socket.getInputStream()
+                received += readRequest { input.read() }
                 when (reply) {
                     is Reply.Status -> {
-                        val body = reply.body.toByteArray()
-                        val head =
-                            "HTTP/1.1 ${reply.code} X\r\nContent-Type: application/json\r\n" +
-                                "Content-Length: ${body.size}\r\nConnection: close\r\n\r\n"
                         socket.getOutputStream().apply {
-                            write(head.toByteArray() + body)
+                            write(responseBytes(reply))
                             flush()
                         }
                         socket.close()
@@ -47,23 +43,6 @@ private class JvmFakeProvider(
         server.close()
         synchronized(held) { held.forEach { runCatching { it.close() } } }
     }
-}
-
-/** The body of one request: the head up to the blank line, then `Content-Length` bytes. */
-private fun readBody(input: InputStream): String {
-    val head = StringBuilder()
-    while (!head.endsWith("\r\n\r\n")) {
-        val byte = input.read()
-        if (byte < 0) return ""
-        head.append(byte.toChar())
-    }
-    val length =
-        Regex("(?i)content-length: *(\\d+)")
-            .find(head)
-            ?.groupValues
-            ?.get(1)
-            ?.toInt() ?: 0
-    return String(input.readNBytes(length))
 }
 
 private object JvmFakes : Fakes {

@@ -1,5 +1,8 @@
 package cf.construct.mobile.core.chat
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -73,9 +76,13 @@ abstract class ChatCoreTestCases {
                 listOf(Reply.Status(200, COMPLETION), Reply.Status(200, TOOL_CALL), Reply.Status(200, SUM)),
             )
         try {
-            assertEquals(ModelTestResult.Works("pong"), core.testModel(provider.baseUrl, MODEL, FAKE_KEY))
-            assertEquals(3, provider.bodies.size)
-            assertTrue(provider.bodies.all { it.contains("\"$MODEL\"") })
+            val result = core.testModel(provider.baseUrl, MODEL, FAKE_KEY)
+            assertEquals(ModelTestResult.Works("pong"), result)
+            assertFalse(result.toString().contains(FAKE_KEY))
+            assertEquals(3, provider.requests.size)
+            // The key reaches the provider, as the bearer token of every request, and the model name too.
+            assertTrue(provider.requests.all { it.authorization == "Bearer $FAKE_KEY" })
+            assertTrue(provider.requests.all { it.body.contains("\"$MODEL\"") })
         } finally {
             provider.close()
         }
@@ -164,10 +171,52 @@ abstract class ChatCoreTestCases {
     }
 
     @Test
-    fun aKeyThatIsNotAValidHeaderIsRefusedWithoutItsText() {
-        val bad = "sk-fake\nkey-4f9a2c71"
-        val result = core.testModel("https://models.example.com/v1", MODEL, bad)
-        assertFalse(result.toString().contains("4f9a2c71"), result.toString())
-        assertTrue(result is ModelTestResult.Failed)
+    fun aKeyThatIsNotAValidHeaderIsRefusedWithItsFixedTextAndNothingIsSent() {
+        val provider = fakes.start(listOf(Reply.Status(200, COMPLETION)))
+        try {
+            val bad = "sk-fake\nkey-4f9a2c71"
+            val result = core.testModel(provider.baseUrl, MODEL, bad)
+            assertEquals(ModelTestResult.Failed("Not done: invalid api_key"), result)
+            assertTrue(provider.requests.isEmpty())
+        } finally {
+            provider.close()
+        }
+    }
+
+    @Test
+    fun theReasonTextsAreTheDesktopTextsOfItsSettingsPage() {
+        val desktop = Json.parseToJsonElement(fixtureText("app/src/en.json")).jsonObject
+
+        fun text(key: String) = desktop.getValue(key).jsonPrimitive.content
+        val keys =
+            mapOf(
+                "key refused" to "OutcomeMessage.KeyRefused",
+                "model not found" to "OutcomeMessage.ModelNotFound",
+                "unreachable" to "OutcomeMessage.Unreachable",
+                "timeout" to "OutcomeMessage.Timeout",
+                "tools refused" to "OutcomeMessage.ToolsRefused",
+                "no tool call" to "OutcomeMessage.NoToolCall",
+                "bad tool call" to "OutcomeMessage.BadToolCall",
+                "wrong answer" to "OutcomeMessage.WrongAnswer",
+            )
+        assertEquals(keys.keys, desktopReasons.keys)
+        keys.forEach { (result, key) -> assertEquals(text(key), desktopReasons[result], result) }
+        // The two texts with a value in them, filled in the way `interpretModelTest` fills them.
+        assertEquals(
+            text("OutcomeMessage.Status").replace("{{status}}", "503"),
+            "error: the provider answered with status 503.",
+        )
+        assertEquals("Not done: {{reason}}", text("OutcomeMessage.Refused"))
+    }
+
+    @Test
+    fun theGeneratedFixturesAreTheFilesByteForByte() {
+        // The length and the byte sum come from the files themselves, not from the escaped literals.
+        GeneratedFixtures.measures.forEach { (name, measure) ->
+            val bytes = fixtureText(name).encodeToByteArray()
+            assertEquals(measure.bytes, bytes.size, name)
+            assertEquals(measure.sum, bytes.sumOf { it.toInt() and 0xFF }, name)
+        }
+        assertEquals(GeneratedFixtures.files.keys, GeneratedFixtures.measures.keys)
     }
 }

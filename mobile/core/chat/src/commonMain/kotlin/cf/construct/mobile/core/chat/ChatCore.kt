@@ -1,6 +1,9 @@
 package cf.construct.mobile.core.chat
 
-/** The chat core, which is Rust, as the shared Kotlin code of both apps sees it. */
+/**
+ * The chat core, which is Rust, as the shared Kotlin code of both apps sees it. It is an interface so
+ * that the screens' state holders, which call it for the chat, can be tested with a fake.
+ */
 interface ChatCore {
     /**
      * The request body of the fixed test conversation over [toolsFile], the text of a tool file. The
@@ -13,6 +16,9 @@ interface ChatCore {
     /**
      * Tests a model setting. The key is an argument: it is in no log and in no returned text.
      * [ModelTestResult.Failed] carries the desktop's words for the reason.
+     *
+     * Not yet shown on Android for an `https` address: the certificate check may need an initialisation
+     * that is not made, and the answer would then be "unreachable". Only `http` on localhost is tested.
      */
     fun testModel(
         baseUrl: String,

@@ -1862,7 +1862,6 @@ name = "chat-bridge"
 version = "0.1.0"
 dependencies = [
  "chat-core",
- "connectors",
  "serde_json",
 ]
 

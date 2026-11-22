@@ -10,12 +10,24 @@ on:
       - 'mobile/**'
       - 'chat-bridge/**'
       - 'chat-core/**'
+      - 'connectors/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'tools/**'
+      - 'app/src/en.json'
       - '.github/workflows/mobile.yml'
   pull_request:
     paths:
       - 'mobile/**'
       - 'chat-bridge/**'
       - 'chat-core/**'
+      - 'connectors/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'tools/**'
+      - 'app/src/en.json'
       - '.github/workflows/mobile.yml'
 
 permissions:
@@ -72,6 +84,10 @@ jobs:
         run: ./gradlew check --console=plain
       - name: Build the Android app
         run: ./gradlew :androidApp:assembleDebug --console=plain
+      # The emulator tests of the chat core need a running emulator, which this job does not start:
+      # they are run by hand (`mobile/README.md`). Compiling them here keeps them from rotting.
+      - name: Compile the emulator tests
+        run: ./gradlew :androidApp:assembleDebugAndroidTest --console=plain
 
   ios:
     name: framework link, Simulator build, SwiftLint
@@ -130,6 +146,9 @@ jobs:
           test "$(swiftlint version)" = "$SWIFTLINT_VERSION"
       - name: Link the Kotlin framework for the Simulator
         run: ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64 --console=plain
+      # The chat core's tests, through the Rust library, in the iPhone Simulator.
+      - name: Test the chat core in the Simulator
+        run: ./gradlew :core:chat:iosSimulatorArm64Test --console=plain
       - name: Generate the Xcode project
         working-directory: mobile/iosApp
         run: xcodegen generate

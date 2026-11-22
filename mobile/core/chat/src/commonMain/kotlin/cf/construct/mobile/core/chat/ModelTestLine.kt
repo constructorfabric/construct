@@ -10,7 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
  * The texts of the desktop app's Settings page (`OutcomeMessage.*` in its `en.json`), word for word.
  * A result the list does not know is shown as the core sent it.
  */
-private val reasons =
+val desktopReasons: Map<String, String> =
     mapOf(
         "key refused" to "key refused: the provider did not accept the key.",
         "model not found" to "model not found: the provider has no model with this name.",
@@ -53,7 +53,7 @@ internal fun interpretModelTest(line: String): ModelTestResult {
         }
 
         else -> {
-            ModelTestResult.Failed(reasons[result] ?: result)
+            ModelTestResult.Failed(desktopReasons[result] ?: result)
         }
     }
 }

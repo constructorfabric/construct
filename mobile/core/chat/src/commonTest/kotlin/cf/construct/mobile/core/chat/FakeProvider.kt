@@ -12,13 +12,23 @@ sealed interface Reply {
     data object Hang : Reply
 }
 
+/** One request a fake provider received: the head up to the blank line, and the body. */
+class Request(
+    val head: String,
+    val body: String,
+) {
+    /** The value of the `Authorization` header, or null when there is none. */
+    val authorization: String? =
+        Regex("(?im)^authorization: *(.*?)\\r?$").find(head)?.groupValues?.get(1)
+}
+
 /** A provider on a local port that answers the requests it gets with [Reply]s, in order. */
 interface FakeProvider {
     /** The address to give as the model address, such as `http://127.0.0.1:50321`. */
     val baseUrl: String
 
-    /** The bodies of the requests received so far. */
-    val bodies: List<String>
+    /** The requests received so far. */
+    val requests: List<Request>
 
     fun close()
 }
