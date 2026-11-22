@@ -6,7 +6,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
@@ -32,7 +31,12 @@ class MainActivity : ComponentActivity() {
             ConstructTheme {
                 val state by memory.holder.state.collectAsState()
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    MemoryScreen(state, onRefresh = memory.holder::refresh, modifier = Modifier.safeDrawingPadding())
+                    AppFrame(currentConnection()) { page ->
+                        when (page) {
+                            Page.Memory -> MemoryScreen(state, onRefresh = memory.holder::refresh)
+                            else -> PlaceholderPage(page)
+                        }
+                    }
                 }
             }
         }
