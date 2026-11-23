@@ -4,6 +4,7 @@ import cf.construct.mobile.core.chat.ChatAnswer
 import cf.construct.mobile.core.chat.ChatCoreException
 import cf.construct.mobile.core.chat.newChatAnswer
 import cf.construct.mobile.core.construct.Construct
+import cf.construct.mobile.core.construct.NO_CHAT_MODEL
 import cf.construct.mobile.core.construct.NO_SUCH_CONVERSATION
 import cf.construct.mobile.core.keys.ModelSettingsException
 import cf.construct.mobile.core.keys.ModelSettingsStore
@@ -74,8 +75,7 @@ class PhoneConstruct private constructor(
     private fun start(input: ChatInput): Outcome<Unit> {
         val model = settings.readProvider()
         if (model.address.isBlank() || model.model.isBlank() || model.key.isNullOrBlank()) {
-            queueEvent(ChatEvent.Error(NO_MODEL))
-            return Outcome.Failed(NO_MODEL)
+            return Outcome.Failed(NO_CHAT_MODEL)
         }
         val history = store.chatRecords(input.conversation)
         val request = answerRequest(input, model, history, store.facts())
@@ -178,7 +178,7 @@ class PhoneConstruct private constructor(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: ModelSettingsException) {
-                    Outcome.Failed(failure.message ?: NO_MODEL)
+                    Outcome.Failed(failure.message ?: NO_CHAT_MODEL)
                 } catch (failure: ChatCoreException) {
                     Outcome.Failed(failure.message ?: "the chat core could not load")
                 } catch (_: Exception) {

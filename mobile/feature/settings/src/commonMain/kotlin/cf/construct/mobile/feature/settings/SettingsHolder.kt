@@ -33,6 +33,7 @@ class SettingsHolder(
     private val core: ChatCore,
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher = Dispatchers.Default,
+    private val onCommit: () -> Unit = {},
 ) {
     private val mutableState = MutableStateFlow(SettingsState())
     private val writes = Mutex()
@@ -101,6 +102,7 @@ class SettingsHolder(
                     { current.copy(failure = it, keyEntry = typed) },
                 )
             }
+            if (done is Result.Done) onCommit()
         }
     }
 
@@ -115,6 +117,7 @@ class SettingsHolder(
                     { current.copy(failure = it) },
                 )
             }
+            if (done is Result.Done) onCommit()
         }
     }
 

@@ -62,7 +62,7 @@ class DatabaseConstructTest {
             construct.sendMessage(ChatInput("c1", "Again"))
             construct.stopAnswer()
             assertEquals(emptyList(), construct.chatEvents.toList())
-            assertEquals(Outcome.Ok(listOf(chat)), construct.listConversations())
+            assertEquals(Outcome.Ok(listOf(chat.copy(preview = "Hi"))), construct.listConversations())
             assertEquals(Outcome.Ok(listOf(ChatMessage(ChatRole.USER, "Hi"))), construct.getConversation("c1"))
         }
 

@@ -21,10 +21,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -39,10 +35,12 @@ import cf.construct.mobile.core.designsystem.Spacing
 @Composable
 fun AppFrame(
     connection: ConnectionState,
+    selected: Page,
+    onSelect: (Page) -> Unit,
     modifier: Modifier = Modifier,
+    pageActions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {},
     content: @Composable (Page) -> Unit,
 ) {
-    var selected by rememberSaveable { mutableStateOf(Page.Chat) }
     Scaffold(
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.background,
@@ -50,12 +48,13 @@ fun AppFrame(
             Column {
                 TopAppBar(
                     title = { Text(stringResource(selected.title)) },
+                    actions = pageActions,
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
                 )
-                ConnectionLine(connection)
+                if (selected != Page.Chat) ConnectionLine(connection)
             }
         },
-        bottomBar = { PageBar(selected, onSelect = { selected = it }) },
+        bottomBar = { PageBar(selected, onSelect) },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) { content(selected) }
     }

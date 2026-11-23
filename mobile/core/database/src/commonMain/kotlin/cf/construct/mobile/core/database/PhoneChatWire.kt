@@ -1,5 +1,6 @@
 package cf.construct.mobile.core.database
 
+import cf.construct.mobile.core.construct.NO_CHAT_MODEL
 import cf.construct.mobile.core.keys.ProviderSettings
 import cf.construct.mobile.core.model.ChatEvent
 import cf.construct.mobile.core.model.ChatInput
@@ -18,7 +19,6 @@ import kotlinx.serialization.json.putJsonObject
 
 internal const val PHONE_ORIGIN = "phone"
 internal const val COMPUTER_READ_ONLY = "this conversation was started on the computer and is read-only"
-internal const val NO_MODEL = "no model is set"
 
 internal class PhoneRecord(
     val session: String,
@@ -92,7 +92,7 @@ internal fun chatEvent(line: String): ChatEvent {
         "delta" -> ChatEvent.Delta(event.text("text"))
         "tool" -> ChatEvent.Tool(event.text("line"))
         "done" -> ChatEvent.Done(event["stopped"]?.jsonPrimitive?.booleanOrNull ?: false)
-        "error" -> ChatEvent.Error(event.text("reason").let { if (it == "no model") NO_MODEL else it })
+        "error" -> ChatEvent.Error(event.text("reason").let { if (it == "no model") NO_CHAT_MODEL else it })
         else -> error("unknown chat event")
     }
 }

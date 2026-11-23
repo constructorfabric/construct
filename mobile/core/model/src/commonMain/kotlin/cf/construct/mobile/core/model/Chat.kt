@@ -6,7 +6,11 @@ data class ConversationSummary(
     /** The first message, cut by the agent; it never holds more than the user typed. */
     val title: String,
     val time: String,
+    val origin: ConversationOrigin = ConversationOrigin.COMPUTER,
+    val preview: String = "",
 )
+
+enum class ConversationOrigin { PHONE, COMPUTER }
 
 enum class ChatRole { USER, ASSISTANT, TOOL }
 

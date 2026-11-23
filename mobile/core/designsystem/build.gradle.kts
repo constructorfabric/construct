@@ -29,6 +29,10 @@ kotlin {
     iosSimulatorArm64()
 
     sourceSets {
+        androidMain.dependencies {
+            implementation(project.dependencies.platform(libs.compose.bom))
+            implementation(libs.compose.ui)
+        }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }

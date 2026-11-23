@@ -25,6 +25,15 @@ import cf.construct.mobile.feature.settings.SettingsHolder
 import cf.construct.mobile.feature.settings.SettingsScreen
 
 class MainActivity : ComponentActivity() {
+    private val chat: ChatViewModel by viewModels {
+        viewModelFactory {
+            initializer {
+                val app = application as ConstructApp
+                ChatViewModel(app.construct, app.modelSettings)
+            }
+        }
+    }
+
     private val memory: MemoryViewModel by viewModels {
         viewModelFactory { initializer { MemoryViewModel((application as ConstructApp).construct) } }
     }
@@ -33,7 +42,7 @@ class MainActivity : ComponentActivity() {
         viewModelFactory {
             initializer {
                 val app = application as ConstructApp
-                SettingsViewModel(app.modelSettings, app.chatCore)
+                SettingsViewModel(app.modelSettings, app.chatCore, chat.holder::refreshModel)
             }
         }
     }
@@ -46,7 +55,7 @@ class MainActivity : ComponentActivity() {
                 val state by memory.holder.state.collectAsState()
                 val settingsState by settings.holder.state.collectAsState()
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    AppFrame(currentConnection()) { page ->
+                    ChatRoute(chat) { page ->
                         when (page) {
                             Page.Memory -> MemoryScreen(state, onRefresh = memory.holder::refresh)
                             Page.Settings -> SettingsScreen(settingsState, settings.actions)
@@ -70,8 +79,9 @@ internal class MemoryViewModel(
 internal class SettingsViewModel(
     store: ModelSettingsStore,
     core: ChatCore,
+    onCommit: () -> Unit,
 ) : ViewModel() {
-    val holder = SettingsHolder(store, core, viewModelScope)
+    val holder = SettingsHolder(store, core, viewModelScope, onCommit = onCommit)
     val actions =
         SettingsActions(
             onChange = holder::change,

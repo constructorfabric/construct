@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.Flow
 /** Why `getConversation` fails for an id the copy does not hold. */
 const val NO_SUCH_CONVERSATION = "no such conversation"
 
+/** Why a chat cannot start until a model is configured. */
+const val NO_CHAT_MODEL = "no model is set"
+
 interface ChatApi {
     /** The conversations, the newest first. */
     suspend fun listConversations(): Outcome<List<ConversationSummary>>
@@ -24,7 +27,7 @@ interface ChatApi {
     /** One conversation, or [cf.construct.mobile.core.model.DELETE_ALL_CONVERSATIONS]. */
     suspend fun deleteConversation(which: String): Outcome<Unit>
 
-    /** Whether an answer was started. Its events come through [chatEvents]. */
+    /** An accepted send ends through [chatEvents], even if it fails before Start. A rejected send emits no events. */
     suspend fun sendMessage(input: ChatInput): Outcome<Unit>
 
     /** Asks for the running answer to end; the end comes as an event. */

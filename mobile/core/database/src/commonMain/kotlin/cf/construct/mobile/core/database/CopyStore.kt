@@ -4,6 +4,7 @@ import app.cash.sqldelight.db.SqlDriver
 import cf.construct.mobile.core.database.sql.ConstructDatabase
 import cf.construct.mobile.core.model.ChatMessage
 import cf.construct.mobile.core.model.ChatRole
+import cf.construct.mobile.core.model.ConversationOrigin
 import cf.construct.mobile.core.model.ConversationSummary
 import cf.construct.mobile.core.model.DELETE_ALL_CONVERSATIONS
 import cf.construct.mobile.core.model.DashboardDocument
@@ -37,13 +38,18 @@ class CopyStore(
 ) {
     private val queries = ConstructDatabase(driver).copyQueries
 
-    fun conversations(): List<ConversationSummary> =
-        queries
-            .listConversations { id, title, time -> ConversationSummary(id, title, time) }
+    fun conversations(): List<ConversationSummary> {
+        val query =
+            queries.listConversations { id, title, time, origin, preview ->
+                val source = if (origin == PHONE_ORIGIN) ConversationOrigin.PHONE else ConversationOrigin.COMPUTER
+                ConversationSummary(id, title, time, source, preview)
+            }
+        return query
             .executeAsList()
             .map { it to runCatching { Instant.parse(it.time) }.getOrNull() }
             .sortedWith(compareByDescending<Pair<ConversationSummary, Instant?>> { it.second }.thenBy { it.first.id })
             .map { it.first }
+    }
 
     internal fun conversationOrigin(conversation: String): String? =
         queries.conversationOrigin(conversation).executeAsOneOrNull()
