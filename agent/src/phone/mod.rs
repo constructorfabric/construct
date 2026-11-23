@@ -1,0 +1,371 @@
+//! The phone endpoint: how a phone on the same network talks to the agent.
+//!
+//! **Channel.** TLS 1.3 over TCP, with one self-signed certificate of the agent. A phone trusts
+//! that certificate only by its SHA-256 fingerprint, which it reads from the QR code of the
+//! pairing; the address does not have to match any name, so `10.0.2.2` of an emulator or a
+//! hotspot address work. There is no plain HTTP, not even for the pairing.
+//!
+//! **Pairing.** The agent opens a pairing and shows a QR payload (address, fingerprint, a long
+//! secret) and a short code to type. The phone connects, sends a proof of the secret (see
+//! `pairing`; the secret itself never travels) and gets a token. The agent keeps a hash of the
+//! token (see `paired`); the phone keeps the token. A secret works once.
+//!
+//! **Talking.** Later the phone sends its token as the first line of a connection, then one JSON
+//! line per command, and the agent answers one JSON line each. Every line is at most
+//! [`MAX_LINE`] bytes.
+//!
+//! **Silence.** A connection that does not prove itself, with a wrong secret or an unknown
+//! token or a line that is not what the agent expects, gets no answer: after the TLS handshake,
+//! which any peer can make, the agent sends no byte and just closes it. Only a phone that proved
+//! itself is told that its version is too old.
+//!
+//! **Limits of a pairing.** The wrong proofs of all peers count together: three from anyone on
+//! the network close the pairing, and the person opens a new one. This is on purpose, since it
+//! is what keeps a short code from being guessed; it also means a peer on the network can stop
+//! a pairing.
+//!
+//! **Versions.** Both sides state a protocol number (`v`). The agent answers phones from
+//! [`MIN_PROTOCOL`] to [`PROTOCOL`].
+//!
+//! Errors carry fixed texts; the secret, the codes, the tokens and the keys are in no log.
+
+pub mod paired;
+pub mod pairing;
+mod tls;
+
+use std::fmt;
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
+use tokio_rustls::TlsAcceptor;
+
+use paired::Paired;
+use pairing::Pairing;
+use tls::Identity;
+pub use tls::fingerprint_of;
+
+/// The protocol number this agent speaks.
+pub const PROTOCOL: u64 = 1;
+/// The oldest protocol number this agent still answers.
+pub const MIN_PROTOCOL: u64 = 1;
+/// The longest line, in bytes, either side sends.
+pub const MAX_LINE: usize = 16 * 1024;
+/// How long a pairing stays open when the caller gives no time.
+pub const DEFAULT_PAIRING_TIME: Duration = Duration::from_secs(300);
+
+const MAX_CONNECTIONS: usize = 32;
+const HANDSHAKE_TIME: Duration = Duration::from_secs(10);
+const FIRST_LINE_TIME: Duration = Duration::from_secs(10);
+const IDLE_TIME: Duration = Duration::from_secs(60);
+
+/// Why the endpoint could not start or open a pairing. The texts are fixed on purpose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// A file of the endpoint could not be read or written.
+    Storage,
+    /// The certificate or its key is not usable.
+    Tls,
+    /// The system gave no random bytes.
+    Random,
+    /// The port could not be opened.
+    Bind,
+    /// The computer has no address on a local network.
+    NoNetwork,
+}
+
+impl Error {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Error::Storage => "phone endpoint files could not be used",
+            Error::Tls => "phone endpoint certificate is not usable",
+            Error::Random => "no random bytes available",
+            Error::Bind => "phone endpoint port could not be opened",
+            Error::NoNetwork => "no local network address found",
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// How a phone's protocol number fits the agent's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Version {
+    Ok,
+    /// The phone is older than [`MIN_PROTOCOL`]: it must update.
+    PhoneTooOld,
+    /// The phone is newer than [`PROTOCOL`]: the agent must update.
+    AgentTooOld,
+}
+
+/// Compare a phone's protocol number with the agent's.
+#[must_use]
+pub fn check_version(phone: u64) -> Version {
+    if phone < MIN_PROTOCOL {
+        Version::PhoneTooOld
+    } else if phone > PROTOCOL {
+        Version::AgentTooOld
+    } else {
+        Version::Ok
+    }
+}
+
+/// The address of this computer on its local network: the address of the interface that has
+/// the default route, which on a phone's hotspot is the hotspot's. Nothing is sent: the lookup
+/// only asks the system which interface it would use. This is the one supported case: with no
+/// default route (a network that is offline) it fails, and under a VPN that takes all traffic it
+/// gives the tunnel's address. The caller then names the address itself, as the example's
+/// `--host` does.
+///
+/// # Errors
+/// Fails when the computer has no route to any network.
+pub fn lan_address() -> Result<IpAddr, Error> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(|_| Error::NoNetwork)?;
+    socket
+        .connect((Ipv4Addr::new(8, 8, 8, 8), 80))
+        .map_err(|_| Error::NoNetwork)?;
+    let ip = socket.local_addr().map_err(|_| Error::NoNetwork)?.ip();
+    if ip.is_unspecified() || ip.is_loopback() {
+        return Err(Error::NoNetwork);
+    }
+    Ok(ip)
+}
+
+/// What the endpoint needs to start.
+pub struct Config {
+    /// The directory of the certificate, its key and the paired phones.
+    pub dir: PathBuf,
+    /// The address to listen on; port 0 takes any free port.
+    pub bind: SocketAddr,
+}
+
+/// What the person sees when a pairing is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairingOffer {
+    /// `host:port` the phone connects to.
+    pub address: String,
+    /// The text of the QR code: `construct-pair://<address>?v=<protocol>&fp=<hex>&s=<hex>`.
+    pub payload: String,
+    /// The short code to type, digits only.
+    pub code: String,
+    /// The fingerprint of the certificate, hex.
+    pub fingerprint: String,
+}
+
+struct State {
+    identity: Identity,
+    paired: Paired,
+    pairing: Pairing,
+}
+
+/// The listener for phones.
+pub struct Endpoint {
+    state: Arc<State>,
+    local: SocketAddr,
+    task: JoinHandle<()>,
+}
+
+impl Endpoint {
+    /// Open the port and start answering.
+    ///
+    /// # Errors
+    /// Fails when the files cannot be used or the port cannot be opened.
+    pub async fn start(config: Config) -> Result<Self, Error> {
+        let identity = Identity::load_or_create(&config.dir)?;
+        let paired = Paired::load(&config.dir)?;
+        let acceptor = TlsAcceptor::from(identity.server_config()?);
+        let listener = TcpListener::bind(config.bind)
+            .await
+            .map_err(|_| Error::Bind)?;
+        let local = listener.local_addr().map_err(|_| Error::Bind)?;
+        let state = Arc::new(State {
+            identity,
+            paired,
+            pairing: Pairing::default(),
+        });
+        let task = tokio::spawn(accept_loop(listener, acceptor, Arc::clone(&state)));
+        Ok(Self { state, local, task })
+    }
+
+    /// The address the endpoint listens on.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local
+    }
+
+    /// How many phones have paired.
+    #[must_use]
+    pub fn paired_count(&self) -> usize {
+        self.state.paired.len()
+    }
+
+    /// Open a pairing for `ttl`, in place of any open one. `host` is the address the phone
+    /// should connect to, usually [`lan_address`].
+    ///
+    /// # Errors
+    /// Fails when the system gives no random bytes.
+    pub fn open_pairing(&self, host: IpAddr, ttl: Duration) -> Result<PairingOffer, Error> {
+        let offer = self.state.pairing.open(ttl)?;
+        let address = SocketAddr::new(host, self.local.port()).to_string();
+        let fingerprint = hex::encode(self.state.identity.fingerprint());
+        let payload = format!(
+            "construct-pair://{address}?v={PROTOCOL}&fp={fingerprint}&s={}",
+            offer.secret
+        );
+        Ok(PairingOffer {
+            address,
+            payload,
+            code: offer.code,
+            fingerprint,
+        })
+    }
+
+    /// Close the open pairing, if any.
+    pub fn close_pairing(&self) {
+        self.state.pairing.close();
+    }
+
+    /// Stop listening. Connections that are open end with their task.
+    pub fn shutdown(self) {
+        self.task.abort();
+    }
+}
+
+async fn accept_loop(listener: TcpListener, acceptor: TlsAcceptor, state: Arc<State>) {
+    let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            // A failed accept (no file descriptors left, say) must not spin.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        // Over the limit, the connection is dropped without a byte.
+        let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+            continue;
+        };
+        let acceptor = acceptor.clone();
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let _slot = slot;
+            let _ = serve(stream, acceptor, &state).await;
+        });
+    }
+}
+
+/// One line of at most [`MAX_LINE`] bytes, without its newline; `None` when the peer closed, the
+/// line is too long or not UTF-8.
+async fn read_line<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Option<String> {
+    let mut buf = Vec::new();
+    let mut limited = reader.take(MAX_LINE as u64 + 1);
+    limited.read_until(b'\n', &mut buf).await.ok()?;
+    if buf.pop() != Some(b'\n') || buf.len() > MAX_LINE {
+        return None;
+    }
+    String::from_utf8(buf).ok()
+}
+
+async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> io::Result<()> {
+    let mut line = value.to_string();
+    line.push('\n');
+    writer.write_all(line.as_bytes()).await?;
+    writer.flush().await
+}
+
+/// Take one connection through the handshake, the first line and the commands. An `Err` or
+/// `None` anywhere closes the connection without an answer.
+async fn serve(stream: TcpStream, acceptor: TlsAcceptor, state: &State) -> Option<()> {
+    let tls = tokio::time::timeout(HANDSHAKE_TIME, acceptor.accept(stream))
+        .await
+        .ok()?
+        .ok()?;
+    let (reader, mut writer) = tokio::io::split(tls);
+    let mut reader = BufReader::new(reader);
+    let first = tokio::time::timeout(FIRST_LINE_TIME, read_line(&mut reader))
+        .await
+        .ok()??;
+    let hello: Value = serde_json::from_str(&first).ok()?;
+    let version = check_version(hello.get("v")?.as_u64()?);
+
+    if let Some(pair) = hello.get("pair") {
+        let proof = pair.get("proof")?.as_str()?;
+        let name = pair.get("name").and_then(Value::as_str).unwrap_or_default();
+        // The certificate the phone saw is this one: it is what the proof is bound to.
+        let fingerprint = state.identity.fingerprint();
+        return match state.pairing.redeem(proof, &fingerprint, version) {
+            pairing::Redeem::Granted(agent_proof) => {
+                // The secret is spent by now. When the file cannot be written the phone gets no
+                // answer, and the person opens a new pairing; this text is the only sign.
+                let Ok(token) = state.paired.add(name) else {
+                    eprintln!("phone endpoint: a paired phone could not be saved");
+                    return None;
+                };
+                write_line(
+                    &mut writer,
+                    &json!({"v": PROTOCOL, "paired": true, "token": token, "agent_proof": agent_proof}),
+                )
+                .await
+                .ok()
+            }
+            pairing::Redeem::Version(version) => {
+                write_line(&mut writer, &version_reply(version)).await.ok()
+            }
+            pairing::Redeem::Refused => None,
+        };
+    }
+
+    let token = hello.get("token")?.as_str()?;
+    if !state.paired.contains(token) {
+        return None;
+    }
+    if version != Version::Ok {
+        return write_line(&mut writer, &version_reply(version)).await.ok();
+    }
+    write_line(&mut writer, &json!({"v": PROTOCOL, "ok": true}))
+        .await
+        .ok()?;
+    commands(&mut reader, &mut writer).await
+}
+
+fn version_reply(version: Version) -> Value {
+    match version {
+        Version::AgentTooOld => json!({"v": PROTOCOL, "error": "agent update needed"}),
+        _ => json!({"v": PROTOCOL, "error": "update needed", "min_version": MIN_PROTOCOL}),
+    }
+}
+
+/// The commands of a paired phone, one JSON line each.
+async fn commands<R, W>(reader: &mut BufReader<R>, writer: &mut W) -> Option<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    loop {
+        let line = tokio::time::timeout(IDLE_TIME, read_line(reader))
+            .await
+            .ok()??;
+        let request: Value = serde_json::from_str(&line).ok()?;
+        let reply = match request.get("cmd").and_then(Value::as_str) {
+            Some("ping") => json!({
+                "ok": true,
+                "agent": "construct-agent",
+                "agent_version": env!("CARGO_PKG_VERSION"),
+            }),
+            _ => json!({"error": "unknown command"}),
+        };
+        write_line(writer, &reply).await.ok()?;
+    }
+}
