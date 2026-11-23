@@ -521,10 +521,14 @@ pub(crate) fn ends_cleanly(file: &mut File) -> io::Result<bool> {
 /// Options for a file only the user can read: what the tools said is copied here. The mode
 /// only counts for a file that is created.
 pub(crate) fn private_options() -> OpenOptions {
-    let mut options = OpenOptions::new();
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options
+    {
+        let mut options = OpenOptions::new();
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options
+    }
+    #[cfg(not(unix))]
+    OpenOptions::new()
 }
 
 /// Creates `dir` and every directory from `data_dir` down to it as user-only.

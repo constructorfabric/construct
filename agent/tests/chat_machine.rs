@@ -625,7 +625,12 @@ fn grep_skips_the_git_folder_and_every_name_that_holds_keys_in_any_case() {
     )
     .unwrap();
     let (results, _) = run(&f, vec![f.bash("grep -rn LEAKWORD")]);
-    assert_eq!(results[0], "visible.txt:1:LEAKWORD is here\n");
+    // BSD grep includes the current directory in the path.
+    let output = &results[0];
+    assert_eq!(
+        output.strip_prefix("./").unwrap_or(output),
+        "visible.txt:1:LEAKWORD is here\n"
+    );
 }
 
 #[test]

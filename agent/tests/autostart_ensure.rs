@@ -4,7 +4,7 @@ mod common;
 
 use std::time::Duration;
 
-use construct_agent::autostart::Autostart;
+use construct_agent::autostart::{Autostart, linux};
 
 use common::{LINUX_ENABLE, LINUX_INSTALL, MACOS_INSTALL, MACOS_PRINT, Scenario};
 
@@ -35,7 +35,7 @@ fn linux_moved_binary_registers_again() {
     sd.ensure(&moved).unwrap();
     assert_eq!(s.take_calls(), LINUX_INSTALL);
     let unit = std::fs::read_to_string(sd.unit_path()).unwrap();
-    assert!(unit.contains(&moved.display().to_string()));
+    assert_eq!(unit, linux::unit_file(&moved));
 }
 
 #[test]
