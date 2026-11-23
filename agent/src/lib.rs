@@ -40,6 +40,8 @@ pub mod model;
 pub mod model_test;
 #[cfg(unix)]
 pub mod pgvector;
+#[cfg(unix)]
+pub mod phone;
 pub mod records;
 #[cfg(unix)]
 pub mod screen;

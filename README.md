@@ -62,6 +62,39 @@ the context, the oldest turns first). Prompts go one at a time, and a new prompt
 `backfill`. A `backfill` stops with its reason in `status` when the gear refuses it or the model does not answer.
 Prompt text is never written to a log or to the status.
 
+## The phone endpoint
+
+The agent can listen for phones on your local network (`agent/src/phone`; it is not started by the agent
+yet). A phone pairs once with a one-time secret, shown as a QR payload and as an 8-digit code; after that
+every byte between the phone and the agent is encrypted, and the agent answers only paired phones.
+
+- **Channel.** TLS 1.3 with one self-signed certificate that the agent makes on its first start and keeps in
+  its config directory. The phone trusts that certificate only by the SHA-256 fingerprint in the QR payload,
+  not by the address or a name, so a hotspot address or `10.0.2.2` of an Android emulator works. There is no
+  plain HTTP, not even for the pairing.
+- **Pairing.** The secret is never sent: the phone sends a keyed hash of the certificate it saw, the agent
+  answers with a keyed hash of its own, and the agent hands the phone a token. The agent keeps only a hash of
+  the token. A secret works once, for five minutes, and three wrong tries close the pairing. The wrong tries of all peers
+  count together, so a peer on the network can stop a pairing; the person then opens a new one.
+- **Strangers.** A connection that does not prove itself gets no answer: after the TLS handshake, which any peer can make,
+  the agent sends nothing and closes it. Only a phone
+  that proved itself is told that its protocol version is too old (`update needed`).
+
+To start the endpoint alone, with no database and no Construct host, and get an address and a code to pair
+with:
+
+```bash
+cargo run -p construct-agent --example phone_pairing -- --host 127.0.0.1
+```
+
+It prints `payload` (the text of the QR code, `construct-pair://<address>?v=1&fp=<hex>&s=<hex>`), `address`,
+`code`, `fingerprint` and `dir`, then `ready`, and keeps running until it is stopped. `--host` is the address
+to put in the payload (the address of this computer's default route by default, which is the hotspot's on a
+phone's hotspot; with no default route, or under a VPN that takes all traffic, name it), `--bind` the address to listen on
+(`0.0.0.0:0` by default), `--dir` where the certificate and the paired phones are kept (a new temporary
+directory by default) and `--minutes` how long the pairing stays open (5 by default). The tests are
+`cargo test -p construct-agent --test phone`.
+
 ## Size and memory
 
 Measured on Linux x86_64 with the release build (`make build`): the agent is one 118 MB file, with the
