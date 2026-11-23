@@ -64,21 +64,28 @@ Prompt text is never written to a log or to the status.
 
 ## The phone endpoint
 
-The agent can listen for phones on your local network (`agent/src/phone`; it is not started by the agent
-yet). A phone pairs once with a one-time secret, shown as a QR payload and as an 8-digit code; after that
-every byte between the phone and the agent is encrypted, and the agent answers only paired phones.
+The agent can listen for phones on your local network (`agent/src/phone`). A phone pairs once with a one-time secret, shown as a QR payload and as an 8-digit
+code; after that every byte between the phone and the agent is encrypted, and the agent answers only paired phones.
 
 - **Channel.** TLS 1.3 with one self-signed certificate that the agent makes on its first start and keeps in
   its config directory. The phone trusts that certificate only by the SHA-256 fingerprint in the QR payload,
   not by the address or a name, so a hotspot address or `10.0.2.2` of an Android emulator works. There is no
   plain HTTP, not even for the pairing.
+
 - **Pairing.** The secret is never sent: the phone sends a keyed hash of the certificate it saw, the agent
   answers with a keyed hash of its own, and the agent hands the phone a token. The agent keeps only a hash of
   the token. A secret works once, for five minutes, and three wrong tries close the pairing. The wrong tries of all peers
   count together, so a peer on the network can stop a pairing; the person then opens a new one.
+
 - **Strangers.** A connection that does not prove itself gets no answer: after the TLS handshake, which any peer can make,
   the agent sends nothing and closes it. Only a phone
   that proved itself is told that its protocol version is too old (`update needed`).
+
+- **When it listens.** The agent opens no port before the first pairing. It listens while a pairing is open
+  and, once a phone has paired, always (also after a restart) on port 47821, until the last phone is unpaired.
+  The app asks through the agent's local protocol: `phone-pairing-open` (answers the QR payload and the
+  code), `phone-pairing-close`, `phone-list` (an id, a name and the time of pairing for each phone, nothing
+  secret) and `phone-unpair {"id": "<id>"}`, which ends that phone's open channels at once.
 
 To start the endpoint alone, with no database and no Construct host, and get an address and a code to pair
 with:

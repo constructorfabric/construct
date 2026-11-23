@@ -31,9 +31,11 @@
 
 pub mod paired;
 pub mod pairing;
+mod service;
 mod tls;
 
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
@@ -43,12 +45,13 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, broadcast};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
 use paired::Paired;
 use pairing::Pairing;
+pub use service::Service;
 use tls::Identity;
 pub use tls::fingerprint_of;
 
@@ -60,6 +63,8 @@ pub const MIN_PROTOCOL: u64 = 1;
 pub const MAX_LINE: usize = 16 * 1024;
 /// How long a pairing stays open when the caller gives no time.
 pub const DEFAULT_PAIRING_TIME: Duration = Duration::from_secs(300);
+/// The port the agent listens on for phones, so a paired phone finds it again after a restart.
+pub const DEFAULT_PORT: u16 = 47821;
 
 const MAX_CONNECTIONS: usize = 32;
 const HANDSHAKE_TIME: Duration = Duration::from_secs(10);
@@ -168,7 +173,7 @@ pub struct PairingOffer {
 
 struct State {
     identity: Identity,
-    paired: Paired,
+    paired: Arc<Paired>,
     pairing: Pairing,
 }
 
@@ -185,8 +190,16 @@ impl Endpoint {
     /// # Errors
     /// Fails when the files cannot be used or the port cannot be opened.
     pub async fn start(config: Config) -> Result<Self, Error> {
+        let paired = Arc::new(Paired::load(&config.dir)?);
+        Self::start_with(config, paired).await
+    }
+
+    /// Open the port and start answering the phones in `paired`.
+    ///
+    /// # Errors
+    /// Fails when the files cannot be used or the port cannot be opened.
+    pub async fn start_with(config: Config, paired: Arc<Paired>) -> Result<Self, Error> {
         let identity = Identity::load_or_create(&config.dir)?;
-        let paired = Paired::load(&config.dir)?;
         let acceptor = TlsAcceptor::from(identity.server_config()?);
         let listener = TcpListener::bind(config.bind)
             .await
@@ -239,9 +252,24 @@ impl Endpoint {
         self.state.pairing.close();
     }
 
-    /// Stop listening. Connections that are open end with their task.
-    pub fn shutdown(self) {
+    /// Whether a pairing is open, or a phone that proved itself is still being stored.
+    #[must_use]
+    pub fn pairing_is_busy(&self) -> bool {
+        self.state.pairing.is_busy()
+    }
+
+    /// A wait that ends when no pairing is open and no phone is being stored. It does not borrow
+    /// the endpoint, so the caller may drop or stop it meanwhile.
+    pub fn wait_pairing_over(&self) -> impl Future<Output = ()> + Send + 'static {
+        let state = Arc::clone(&self.state);
+        async move { state.pairing.wait_idle().await }
+    }
+
+    /// Stop listening and wait until the port is closed. Connections already open stay until
+    /// their phone is unpaired or they go idle; a new one is not accepted.
+    pub async fn stop(self) {
         self.task.abort();
+        let _ = self.task.await;
     }
 }
 
@@ -305,6 +333,9 @@ async fn serve(stream: TcpStream, acceptor: TlsAcceptor, state: &State) -> Optio
         let name = pair.get("name").and_then(Value::as_str).unwrap_or_default();
         // The certificate the phone saw is this one: it is what the proof is bound to.
         let fingerprint = state.identity.fingerprint();
+        // Held until the phone is stored: until then the pairing is gone and the list is empty,
+        // and the service must not read that as "nobody to listen for".
+        let _redeeming = state.pairing.redeeming();
         return match state.pairing.redeem(proof, &fingerprint, version) {
             pairing::Redeem::Granted(agent_proof) => {
                 // The secret is spent by now. When the file cannot be written the phone gets no
@@ -328,16 +359,27 @@ async fn serve(stream: TcpStream, acceptor: TlsAcceptor, state: &State) -> Optio
     }
 
     let token = hello.get("token")?.as_str()?;
-    if !state.paired.contains(token) {
-        return None;
-    }
+    // Hear the unpairing before looking the phone up, so none falls between the two.
+    let mut revoked = state.paired.subscribe();
+    let id = state.paired.id_of(token)?;
     if version != Version::Ok {
         return write_line(&mut writer, &version_reply(version)).await.ok();
     }
     write_line(&mut writer, &json!({"v": PROTOCOL, "ok": true}))
         .await
         .ok()?;
-    commands(&mut reader, &mut writer).await
+    commands(&mut reader, &mut writer, &state.paired, &id, &mut revoked).await
+}
+
+/// Completes when the phone `id` is unpaired. A receiver that fell behind may have missed it, so
+/// that ends the wait too: the channel closes and a phone that is still paired connects again.
+async fn unpaired(revoked: &mut broadcast::Receiver<String>, id: &str) {
+    loop {
+        match revoked.recv().await {
+            Ok(gone) if gone != id => {}
+            Ok(_) | Err(_) => return,
+        }
+    }
 }
 
 fn version_reply(version: Version) -> Value {
@@ -348,15 +390,28 @@ fn version_reply(version: Version) -> Value {
 }
 
 /// The commands of a paired phone, one JSON line each.
-async fn commands<R, W>(reader: &mut BufReader<R>, writer: &mut W) -> Option<()>
+///
+/// The channel ends the moment the phone is unpaired, and no command is answered after that.
+async fn commands<R, W>(
+    reader: &mut BufReader<R>,
+    writer: &mut W,
+    paired: &Paired,
+    id: &str,
+    revoked: &mut broadcast::Receiver<String>,
+) -> Option<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     loop {
-        let line = tokio::time::timeout(IDLE_TIME, read_line(reader))
-            .await
-            .ok()??;
+        let line = tokio::select! {
+            line = tokio::time::timeout(IDLE_TIME, read_line(reader)) => line.ok()??,
+            () = unpaired(revoked, id) => return None,
+        };
+        // `select!` may take the line when the unpairing is ready too: check before answering.
+        if !paired.has_id(id) {
+            return None;
+        }
         let request: Value = serde_json::from_str(&line).ok()?;
         let reply = match request.get("cmd").and_then(Value::as_str) {
             Some("ping") => json!({

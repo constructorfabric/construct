@@ -7,11 +7,13 @@
 //! proof of its own, so the phone knows the agent had the secret too. After three wrong proofs,
 //! or when the time is up, the pairing closes and the agent must open a new one.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
+use tokio::sync::Notify;
 
 use super::{Error, Version};
 
@@ -78,7 +80,23 @@ struct Open {
 
 /// The pairing the agent has open, if any.
 #[derive(Default)]
-pub struct Pairing(Mutex<Option<Open>>);
+pub struct Pairing {
+    open: Mutex<Option<Open>>,
+    /// Phones whose proof is being checked or whose token is being stored.
+    redeeming: AtomicUsize,
+    /// Woken when the pairing ends or a redeeming phone is done.
+    ended: Notify,
+}
+
+/// Marks a phone as redeeming; see [`Pairing::redeeming`].
+pub struct Redeeming<'a>(&'a Pairing);
+
+impl Drop for Redeeming<'_> {
+    fn drop(&mut self) {
+        self.0.redeeming.fetch_sub(1, Ordering::SeqCst);
+        self.0.ended.notify_waiters();
+    }
+}
 
 fn random_code() -> Result<String, Error> {
     // Take 32 random bits and drop the top of the range, so every code is equally likely.
@@ -95,7 +113,7 @@ fn random_code() -> Result<String, Error> {
 
 impl Pairing {
     fn lock(&self) -> MutexGuard<'_, Option<Open>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.open.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Open a pairing for `ttl`, in place of any that is open.
@@ -122,6 +140,44 @@ impl Pairing {
     /// Close the pairing; its secrets work no more.
     pub fn close(&self) {
         *self.lock() = None;
+        self.ended.notify_waiters();
+    }
+
+    /// Count a phone as redeeming until the guard is dropped. A caller takes it before
+    /// [`Pairing::redeem`] and keeps it until the phone is stored, so that no one sees the
+    /// pairing closed and nothing paired in between.
+    pub fn redeeming(&self) -> Redeeming<'_> {
+        self.redeeming.fetch_add(1, Ordering::SeqCst);
+        Redeeming(self)
+    }
+
+    /// Whether a pairing is open or a phone is still being stored.
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        self.is_open() || self.redeeming.load(Ordering::SeqCst) > 0
+    }
+
+    /// Wait until the pairing is over: used up, closed, out of time or out of tries, and no
+    /// phone left to store.
+    pub async fn wait_idle(&self) {
+        loop {
+            let ended = self.ended.notified();
+            tokio::pin!(ended);
+            ended.as_mut().enable();
+            if !self.is_busy() {
+                return;
+            }
+            let left = self
+                .lock()
+                .as_ref()
+                .map(|o| o.expires.saturating_duration_since(Instant::now()));
+            match left {
+                Some(left) => {
+                    let _ = tokio::time::timeout(left, ended).await;
+                }
+                None => ended.await,
+            }
+        }
     }
 
     /// Whether a pairing is open and not out of time.
@@ -141,6 +197,7 @@ impl Pairing {
         };
         if open.expires <= Instant::now() {
             *guard = None;
+            self.ended.notify_waiters();
             return Redeem::Refused;
         }
         let given = hex::decode(proof_hex).unwrap_or_default();
@@ -154,6 +211,7 @@ impl Pairing {
             open.failures += 1;
             if open.failures >= MAX_FAILURES {
                 *guard = None;
+                self.ended.notify_waiters();
             }
             return Redeem::Refused;
         };
@@ -162,6 +220,7 @@ impl Pairing {
         }
         let agent_proof = proof(key, Role::Agent, fingerprint);
         *guard = None;
+        self.ended.notify_waiters();
         Redeem::Granted(agent_proof)
     }
 }

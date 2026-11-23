@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use construct_agent::phone::pairing::{Role, proof};
-use construct_agent::phone::{Config, Endpoint, PROTOCOL, PairingOffer, fingerprint_of};
+use construct_agent::phone::{Config, Endpoint, PROTOCOL, PairingOffer, Service, fingerprint_of};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -186,13 +186,17 @@ fn pair_message(secret: &[u8], seen: &[u8; 32], version: u64, name: &str) -> Val
 
 /// Pair with the long secret from the QR payload and give back the token.
 async fn pair(addr: SocketAddr, offer: &PairingOffer) -> String {
+    pair_named(addr, offer, "Test phone").await
+}
+
+async fn pair_named(addr: SocketAddr, offer: &PairingOffer, name: &str) -> String {
     let secret = qr_secret(offer);
     let mut phone = Phone::connect(addr, Some(fp_bytes(&offer.fingerprint)))
         .await
         .unwrap();
     let seen = phone.seen;
     phone
-        .send(&pair_message(&secret, &seen, PROTOCOL, "Test phone"))
+        .send(&pair_message(&secret, &seen, PROTOCOL, name))
         .await;
     let reply = phone.recv().await.unwrap();
     assert_eq!(reply["paired"], true);
@@ -686,7 +690,7 @@ async fn paired_phones_and_the_certificate_survive_a_restart_and_secrets_stay_of
     let offer = endpoint.open_pairing(LOCAL, TTL).unwrap();
     let token = pair(server_addr(&offer), &offer).await;
     let fingerprint = fp_bytes(&offer.fingerprint);
-    endpoint.shutdown();
+    endpoint.stop().await;
 
     let endpoint = start(&dir).await;
     let again = endpoint.open_pairing(LOCAL, TTL).unwrap();
@@ -708,4 +712,369 @@ async fn paired_phones_and_the_certificate_survive_a_restart_and_secrets_stay_of
             & 0o777;
         assert_eq!(mode, 0o600, "{file}");
     }
+}
+
+/// A port nothing listens on now, for a service that must come back on the same port.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+async fn service(dir: &Dir, port: u16) -> Service {
+    Service::start(dir.0.clone(), SocketAddr::new(LOCAL, port), Some(LOCAL))
+        .await
+        .unwrap()
+}
+
+/// Wait, up to five seconds, until the port is closed; whether it closed is the answer.
+async fn closes(port: u16) -> bool {
+    for _ in 0..100 {
+        if !is_open(port).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+async fn is_open(port: u16) -> bool {
+    TcpStream::connect(SocketAddr::new(LOCAL, port))
+        .await
+        .is_ok()
+}
+
+#[tokio::test]
+async fn no_port_is_open_on_a_fresh_start_and_a_pairing_opens_it() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    assert!(!is_open(port).await);
+
+    let offer = phones.open_pairing(TTL).await.unwrap();
+    assert!(is_open(port).await);
+    let token = pair_named(server_addr(&offer), &offer, "Anna's phone").await;
+
+    // The pairing is used up, but a phone is paired now: the port stays open.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(is_open(port).await);
+    let fingerprint = fp_bytes(&offer.fingerprint);
+    assert_eq!(
+        ping(server_addr(&offer), fingerprint, &token)
+            .await
+            .unwrap()["ok"],
+        true
+    );
+    let list = phones.phones();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].name, "Anna's phone");
+    assert!(list[0].paired_at > 0);
+}
+
+#[tokio::test]
+async fn a_pairing_that_is_closed_or_runs_out_leaves_no_port_when_no_phone_paired() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+
+    phones.open_pairing(TTL).await.unwrap();
+    assert!(is_open(port).await);
+    phones.close_pairing().await;
+    assert!(closes(port).await);
+
+    phones.open_pairing(Duration::from_secs(1)).await.unwrap();
+    assert!(is_open(port).await);
+    assert!(closes(port).await);
+
+    // Three wrong proofs end the pairing, and the port goes with it.
+    let offer = phones.open_pairing(TTL).await.unwrap();
+    let fingerprint = fp_bytes(&offer.fingerprint);
+    for _ in 0..3 {
+        let mut phone = Phone::connect(server_addr(&offer), Some(fingerprint))
+            .await
+            .unwrap();
+        let seen = phone.seen;
+        phone
+            .send(&pair_message(b"wrong", &seen, PROTOCOL, "Intruder"))
+            .await;
+        assert_eq!(phone.recv().await, None);
+    }
+    assert!(closes(port).await);
+    assert!(phones.phones().is_empty());
+}
+
+#[tokio::test]
+async fn after_a_pairing_and_a_restart_the_agent_answers_the_phone() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let offer = phones.open_pairing(TTL).await.unwrap();
+    let token = pair(server_addr(&offer), &offer).await;
+    let fingerprint = fp_bytes(&offer.fingerprint);
+    phones.stop().await;
+    assert!(!is_open(port).await);
+
+    // A new service over the same files listens at once, with no pairing open.
+    let phones = service(&dir, port).await;
+    assert!(is_open(port).await);
+    let addr = SocketAddr::new(LOCAL, port);
+    assert_eq!(ping(addr, fingerprint, &token).await.unwrap()["ok"], true);
+    assert_eq!(phones.phones().len(), 1);
+}
+
+#[tokio::test]
+async fn two_phones_pair_and_unpairing_one_leaves_the_other() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let first = phones.open_pairing(TTL).await.unwrap();
+    let addr = server_addr(&first);
+    let fingerprint = fp_bytes(&first.fingerprint);
+    let token_a = pair_named(addr, &first, "First").await;
+    let second = phones.open_pairing(TTL).await.unwrap();
+    let token_b = pair_named(addr, &second, "Second").await;
+
+    let list = phones.phones();
+    assert_eq!(
+        list.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        ["First", "Second"]
+    );
+    assert_ne!(list[0].id, list[1].id);
+
+    assert!(phones.unpair(&list[0].id).await.unwrap());
+    assert!(!phones.unpair(&list[0].id).await.unwrap());
+    assert!(ping(addr, fingerprint, &token_a).await.is_none());
+    assert_eq!(ping(addr, fingerprint, &token_b).await.unwrap()["ok"], true);
+    assert!(is_open(port).await);
+}
+
+#[tokio::test]
+async fn the_last_unpair_closes_the_port_and_drops_an_open_channel() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let offer = phones.open_pairing(TTL).await.unwrap();
+    let addr = server_addr(&offer);
+    let fingerprint = fp_bytes(&offer.fingerprint);
+    let token = pair(addr, &offer).await;
+
+    // A channel that is open and has been answered.
+    let mut phone = Phone::connect(addr, Some(fingerprint)).await.unwrap();
+    phone.send(&json!({"v": PROTOCOL, "token": token})).await;
+    assert_eq!(phone.recv().await.unwrap()["ok"], true);
+    phone.send(&json!({"cmd": "ping"})).await;
+    assert_eq!(phone.recv().await.unwrap()["ok"], true);
+
+    let id = phones.phones()[0].id.clone();
+    assert!(phones.unpair(&id).await.unwrap());
+
+    // The channel is closed at once: the agent ends it before any further command. Then a
+    // command gets no answer either.
+    assert_eq!(phone.recv().await, None);
+    phone.send(&json!({"cmd": "ping"})).await;
+    assert_eq!(phone.recv().await, None);
+    assert!(closes(port).await);
+    assert!(phones.phones().is_empty());
+    assert!(!phones.unpair(&id).await.unwrap());
+}
+
+#[tokio::test]
+async fn an_unpaired_phone_gets_no_answer_while_the_port_is_open_for_another_pairing() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let offer = phones.open_pairing(TTL).await.unwrap();
+    let addr = server_addr(&offer);
+    let fingerprint = fp_bytes(&offer.fingerprint);
+    let token = pair(addr, &offer).await;
+    phones.open_pairing(TTL).await.unwrap();
+
+    let id = phones.phones()[0].id.clone();
+    phones.unpair(&id).await.unwrap();
+    // A pairing is open, so the port is; the old token still gets nothing.
+    assert!(is_open(port).await);
+    assert!(ping(addr, fingerprint, &token).await.is_none());
+}
+
+fn mode_of(path: &std::path::Path) -> u32 {
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[tokio::test]
+async fn a_file_with_no_phones_starts_and_one_this_agent_does_not_know_is_refused() {
+    let dir = Dir::new();
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let file = dir.0.join("phones.json");
+    let port = free_port();
+
+    std::fs::write(&file, r#"{"version":1}"#).unwrap();
+    let phones = service(&dir, port).await;
+    assert!(phones.phones().is_empty());
+    assert!(!is_open(port).await);
+
+    for unknown in [
+        r#"{"version":2,"phones":[]}"#,
+        r#"{"version":1,"phones":[],"later":true}"#,
+        r#"{"version":1,"phones":[{"id":"a","name":"x","token_hash":"b","paired_at":1,"later":1}]}"#,
+    ] {
+        std::fs::write(&file, unknown).unwrap();
+        let started =
+            Service::start(dir.0.clone(), SocketAddr::new(LOCAL, port), Some(LOCAL)).await;
+        assert!(started.is_err(), "{unknown}");
+        // The file is left as it was, not rewritten without what the agent did not know.
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), unknown);
+    }
+}
+
+#[tokio::test]
+async fn an_unpaired_phone_stays_unpaired_after_a_restart_and_the_file_stays_user_only() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let first = phones.open_pairing(TTL).await.unwrap();
+    let addr = server_addr(&first);
+    let fingerprint = fp_bytes(&first.fingerprint);
+    let token_a = pair_named(addr, &first, "First").await;
+    let second = phones.open_pairing(TTL).await.unwrap();
+    let token_b = pair_named(addr, &second, "Second").await;
+
+    // The file is user-only whatever the umask: loosen it, and a write must tighten it again.
+    let file = dir.0.join("phones.json");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let id = phones.phones()[0].id.clone();
+    assert!(phones.unpair(&id).await.unwrap());
+    assert_eq!(mode_of(&file), 0o600);
+    phones.stop().await;
+
+    let phones = service(&dir, port).await;
+    assert_eq!(phones.phones().len(), 1);
+    assert!(ping(addr, fingerprint, &token_a).await.is_none());
+    assert_eq!(ping(addr, fingerprint, &token_b).await.unwrap()["ok"], true);
+
+    // The last one: after a restart there is no port at all.
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let id = phones.phones()[0].id.clone();
+    assert!(phones.unpair(&id).await.unwrap());
+    assert_eq!(mode_of(&file), 0o600);
+    phones.stop().await;
+    let phones = service(&dir, port).await;
+    assert!(phones.phones().is_empty());
+    assert!(!is_open(port).await);
+}
+
+#[tokio::test]
+async fn phones_can_be_listed_and_unpaired_when_their_port_is_taken() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let offer = phones.open_pairing(TTL).await.unwrap();
+    pair(server_addr(&offer), &offer).await;
+    phones.stop().await;
+
+    let holder = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+    let phones = service(&dir, port).await;
+    let id = phones.phones()[0].id.clone();
+    assert!(phones.unpair(&id).await.unwrap());
+    drop(holder);
+    assert!(phones.phones().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_app_commands_open_close_list_and_unpair_and_show_no_secret() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let ask = |command: &'static str, argument: String| {
+        let phones = phones.clone();
+        async move {
+            let line = tokio::task::spawn_blocking(move || phones.command(command, &argument))
+                .await
+                .unwrap();
+            (serde_json::from_str::<Value>(&line).unwrap(), line)
+        }
+    };
+
+    let (opened, _) = ask("phone-pairing-open", String::new()).await;
+    assert!(
+        opened["payload"]
+            .as_str()
+            .unwrap()
+            .starts_with("construct-pair://")
+    );
+    assert_eq!(opened["code"].as_str().unwrap().len(), 8);
+    assert!(is_open(port).await);
+
+    let offer = PairingOffer {
+        address: opened["address"].as_str().unwrap().to_owned(),
+        payload: opened["payload"].as_str().unwrap().to_owned(),
+        code: opened["code"].as_str().unwrap().to_owned(),
+        fingerprint: opened["payload"]
+            .as_str()
+            .unwrap()
+            .split('&')
+            .find_map(|p| p.strip_prefix("fp="))
+            .unwrap()
+            .to_owned(),
+    };
+    let token = pair_named(server_addr(&offer), &offer, "Anna's phone").await;
+
+    let (listed, line) = ask("phone-list", String::new()).await;
+    assert_eq!(listed["phones"][0]["name"], "Anna's phone");
+    assert!(listed["phones"][0]["paired_at"].as_u64().unwrap() > 0);
+    assert_eq!(listed["phones"][0].as_object().unwrap().len(), 3);
+    assert!(!line.contains(&token));
+    assert!(!line.contains(&offer.code));
+
+    let (closed, _) = ask("phone-pairing-close", String::new()).await;
+    assert_eq!(closed["ok"], true);
+    assert!(is_open(port).await);
+
+    let (error, _) = ask("phone-unpair", r#"{"id":"nobody"}"#.to_owned()).await;
+    assert_eq!(error["error"], "no such phone");
+    let (error, _) = ask("phone-unpair", "not json".to_owned()).await;
+    assert_eq!(error["error"], "invalid phone request");
+
+    let id = listed["phones"][0]["id"].as_str().unwrap();
+    let (after, _) = ask("phone-unpair", json!({"id": id}).to_string()).await;
+    assert_eq!(after["phones"], json!([]));
+    assert!(!is_open(port).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_local_socket_serves_the_phone_commands_and_answers_an_error_without_them() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    fn ask(path: &std::path::Path, line: &str) -> Value {
+        let mut stream = UnixStream::connect(path).unwrap();
+        stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        serde_json::from_str(&reply).unwrap()
+    }
+
+    let dir = Dir::new();
+    let with = dir.0.join("with").join("agent.sock");
+    let without = dir.0.join("without").join("agent.sock");
+    let phones = service(&dir, free_port()).await;
+    let server = construct_agent::ipc::Server::bind(&with)
+        .unwrap()
+        .with_phones(phones);
+    std::thread::spawn(move || server.serve());
+    let bare = construct_agent::ipc::Server::bind(&without).unwrap();
+    std::thread::spawn(move || bare.serve());
+
+    tokio::task::spawn_blocking(move || {
+        assert_eq!(ask(&with, "phone-list"), json!({"phones": []}));
+        assert!(ask(&with, "phone-pairing-open")["code"].is_string());
+        assert_eq!(ask(&with, "phone-pairing-close"), json!({"ok": true}));
+        assert_eq!(
+            ask(&without, "phone-list"),
+            json!({"error": "phones are not available"})
+        );
+    })
+    .await
+    .unwrap();
 }

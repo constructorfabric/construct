@@ -26,6 +26,9 @@
 //! dashboard as a background job of the agent, `dashboard-setup-status` answers where the run is
 //! and how much it has read and sent, and `dashboard-setup-cancel` stops it (see
 //! `dashboard_setup`).
+//! `phone-pairing-open` answers the QR payload and the short code of a new pairing,
+//! `phone-pairing-close` closes it, `phone-list` answers the paired phones and `phone-unpair
+//! <JSON object>` (`{"id": <id>}`) removes one (see `phone::service`).
 //! `settings-test` answers with several JSON lines when its request has `"progress": true`.
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
@@ -178,6 +181,7 @@ mod unix {
     use crate::follow::Stats;
     use crate::manage::Manager;
     use crate::model::{ModelHealth, ModelState};
+    use crate::phone::Service as Phones;
     use crate::screen::Screen;
     use crate::settings::{Settings, Update};
 
@@ -222,6 +226,7 @@ mod unix {
         details: Option<Details>,
         setup: Option<SetupJob>,
         screen: Option<Screen>,
+        phones: Option<Phones>,
     }
 
     impl Server {
@@ -262,6 +267,7 @@ mod unix {
                 details: None,
                 setup: None,
                 screen: None,
+                phones: None,
             })
         }
 
@@ -311,6 +317,13 @@ mod unix {
         #[must_use]
         pub fn with_settings(mut self, settings: Settings) -> Self {
             self.settings = Some(settings);
+            self
+        }
+
+        /// Serve the phone commands from this service. Without it they answer an error.
+        #[must_use]
+        pub fn with_phones(mut self, phones: Phones) -> Self {
+            self.phones = Some(phones);
             self
         }
 
@@ -400,6 +413,7 @@ mod unix {
                         let details = self.details.clone();
                         let setup = self.setup.clone();
                         let screen = self.screen.clone();
+                        let phones = self.phones.clone();
                         thread::spawn(move || {
                             let shared = Shared {
                                 database: &database,
@@ -416,6 +430,7 @@ mod unix {
                                 details: details.as_ref(),
                                 setup: setup.as_ref(),
                                 screen: screen.as_ref(),
+                                phones: phones.as_ref(),
                             };
                             if let Err(e) = handle(stream, &shared) {
                                 eprintln!("connection error: {e}");
@@ -543,6 +558,7 @@ mod unix {
         details: Option<&'a Details>,
         setup: Option<&'a SetupJob>,
         screen: Option<&'a Screen>,
+        phones: Option<&'a Phones>,
     }
 
     /// Never log, or return in an error, any part of `line`: it can hold a key.
@@ -647,6 +663,17 @@ mod unix {
         }
     }
 
+    /// Serve the phone commands; `None` when the line is not one.
+    fn phone_command(line: &[u8], shared: &Shared) -> Option<String> {
+        let (_, command, argument) = split_command(std::str::from_utf8(line).ok()?);
+        Phones::handles(command).then(|| {
+            shared.phones.map_or_else(
+                || error_response("phones are not available"),
+                |phones| phones.command(command, argument),
+            )
+        })
+    }
+
     fn handle(stream: UnixStream, shared: &Shared) -> io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         let mut stream = stream;
@@ -654,6 +681,9 @@ mod unix {
             Request::Line(line) => {
                 if let Some(chat_reply) = chat_command(&line, shared, &mut stream)? {
                     return Ok(chat_reply);
+                }
+                if let Some(phone_reply) = phone_command(&line, shared) {
+                    return writeln!(stream, "{phone_reply}");
                 }
                 if let Some(test_reply) = settings_test_command(&line, shared, &mut stream)? {
                     return Ok(test_reply);
