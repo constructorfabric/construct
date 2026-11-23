@@ -62,8 +62,8 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.1.1"
-        # <YYMMDD>.<count of the day>: scripts/build-ios.sh raises it with every upload.
-        CURRENT_PROJECT_VERSION: "261123.1"
+        # <YYMMDD>.<count of the day> in UTC for TestFlight builds.
+        CURRENT_PROJECT_VERSION: "261123.2"
   ConstructTests:
     type: bundle.unit-test
     platform: iOS
