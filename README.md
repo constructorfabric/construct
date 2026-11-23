@@ -84,8 +84,9 @@ code; after that every byte between the phone and the agent is encrypted, and th
 - **When it listens.** The agent opens no port before the first pairing. It listens while a pairing is open
   and, once a phone has paired, always (also after a restart) on port 47821, until the last phone is unpaired.
   The app asks through the agent's local protocol: `phone-pairing-open` (answers the QR payload and the
-  code), `phone-pairing-close`, `phone-list` (an id, a name and the time of pairing for each phone, nothing
-  secret) and `phone-unpair {"id": "<id>"}`, which ends that phone's open channels at once.
+  code), `phone-pairing-status` (whether the offer is still usable), and `phone-pairing-close`.
+  `phone-list {"after": null}` gives the first page of phones. Use the returned `next` as `after`
+  until it is null. Each row gives an id, a name and the time of pairing. `phone-unpair {"id": "<id>", "ack_only": true}` ends that phone's open channels at once and acknowledges the removal.
 
 To start the endpoint alone, with no database and no Construct host, and get an address and a code to pair
 with:

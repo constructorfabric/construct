@@ -65,6 +65,7 @@ export function App(): ReactNode {
   // Kept here: a poll that fails drops the group, and it must come back as the person left it.
   const [collectionOpen, setCollectionOpen] = useState(true);
   const [needsMove, setNeedsMove] = useState(false);
+  const [pairingCloseFailed, setPairingCloseFailed] = useState(false);
   useEffect(() => {
     void window.constructAgent.getNeedsMove().then(setNeedsMove);
   }, []);
@@ -109,10 +110,19 @@ export function App(): ReactNode {
         layout={page === 'chat' || page === 'glasshouse' ? 'chat' : 'page'}
         spacing={page === 'settings' ? 'wide' : 'normal'}
         banner={
-          needsMove ? (
-            <Alert id="needs-move" role="alert">
-              {t('App.NeedsMove')}
-            </Alert>
+          needsMove || pairingCloseFailed ? (
+            <>
+              {needsMove && (
+                <Alert id="needs-move" role="alert">
+                  {t('App.NeedsMove')}
+                </Alert>
+              )}
+              {pairingCloseFailed && (
+                <Alert variant="destructive" role="alert">
+                  {t('PhonePairing.CloseFailed')}
+                </Alert>
+              )}
+            </>
           ) : null
         }
       >
@@ -140,6 +150,7 @@ export function App(): ReactNode {
             erasing={erasing}
             status={status}
             onOpenDashboard={() => setPage('dashboard')}
+            onPairingClosed={setPairingCloseFailed}
           />
         )}
       </PageFrame>

@@ -309,7 +309,8 @@ test('the Status page keeps its blocks apart with a running agent', async ({ pag
 test('the Settings page keeps its blocks wide apart with a running agent', async ({ page }) => {
   await openPage(page, 'Settings');
   await expect(toggle(page, 'Collect from my coding tools')).toBeVisible();
-  await expectBlocksApart(page, 5, wideGap, 'Settings');
+  await expect(page.getByRole('heading', { name: 'Pair a phone' })).toBeVisible();
+  await expectBlocksApart(page, 6, wideGap, 'Settings');
 });
 
 test('the Status page keeps its blocks apart without an agent', async ({ page, session }) => {

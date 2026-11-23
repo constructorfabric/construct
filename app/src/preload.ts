@@ -54,6 +54,19 @@ import type {
 import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
 import type { AgentStatus, ConstructAgentApi } from './agent-status';
 import {
+  PHONE_OPEN_CHANNEL,
+  PHONE_CLOSE_CHANNEL,
+  PHONE_LIST_CHANNEL,
+  PHONE_STATUS_CHANNEL,
+  PHONE_UNPAIR_CHANNEL,
+} from './phone-protocol';
+import type {
+  PairingResult,
+  PairingStatus,
+  PhoneActionResult,
+  PhonesResult,
+} from './phone-protocol';
+import {
   CHAT_DELETE_CHANNEL,
   CHAT_EVENT_CHANNEL,
   CHAT_GET_CHANNEL,
@@ -64,6 +77,12 @@ import {
 import type { ChatEvent, DeleteResult, GetResult, ListResult, SendResult } from './chat-protocol';
 
 const api: ConstructAgentApi = {
+  openPhonePairing: () => ipcRenderer.invoke(PHONE_OPEN_CHANNEL) as Promise<PairingResult>,
+  closePhonePairing: () => ipcRenderer.invoke(PHONE_CLOSE_CHANNEL) as Promise<PhoneActionResult>,
+  getPhonePairingStatus: () => ipcRenderer.invoke(PHONE_STATUS_CHANNEL) as Promise<PairingStatus>,
+  listPhones: (after: string | null) =>
+    ipcRenderer.invoke(PHONE_LIST_CHANNEL, after) as Promise<PhonesResult>,
+  unpairPhone: (id) => ipcRenderer.invoke(PHONE_UNPAIR_CHANNEL, id) as Promise<PhoneActionResult>,
   getStatus: () => ipcRenderer.invoke(STATUS_CHANNEL) as Promise<AgentStatus>,
   getNeedsMove: () => ipcRenderer.invoke(NEEDS_MOVE_CHANNEL) as Promise<boolean>,
   getSettings: () => ipcRenderer.invoke(SETTINGS_GET_CHANNEL) as Promise<SettingsResult>,
