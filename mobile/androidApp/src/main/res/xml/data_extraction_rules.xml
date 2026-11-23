@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Backups are off (allowBackup is false). If they are ever turned on, the key still stays out, in a
+     cloud backup and in a transfer from phone to phone. The key file lives under noBackupFilesDir,
+     which the system skips as well; the Keystore key cannot leave the phone at all. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="model_settings.xml" />
+        <exclude domain="file" path="model_key.bin" />
+        <exclude domain="file" path="model_key.bin.part" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="model_settings.xml" />
+        <exclude domain="file" path="model_key.bin" />
+        <exclude domain="file" path="model_key.bin.part" />
+    </device-transfer>
+</data-extraction-rules>

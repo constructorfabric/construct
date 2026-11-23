@@ -97,13 +97,19 @@ dependencies {
     implementation(project(":core:construct"))
     implementation(project(":core:database"))
     implementation(project(":core:designsystem"))
+    implementation(project(":core:keys"))
     implementation(project(":feature:memory"))
+    implementation(project(":feature:settings"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)
     implementation(libs.compose.activity)
     testImplementation(libs.kotlin.test.junit)
     androidTestImplementation(libs.kotlin.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test)
+    debugImplementation(platform(libs.compose.bom))
+    debugImplementation(libs.compose.ui.test.manifest)
     testImplementation(libs.sqldelight.sqlite.driver)
 }
 
@@ -111,7 +117,10 @@ dependencies {
 // written before the tests compile.
 tasks.configureEach {
     if (name.startsWith("merge") && name.endsWith("JniLibFolders")) dependsOn(":buildChatCoreAndroid")
-    if (name.contains("AndroidTest") && name.startsWith("compile")) dependsOn(":core:chat:generateFixtures")
+    // The lint of the device tests reads the same generated folder.
+    if (name.contains("AndroidTest") && (name.startsWith("compile") || name.contains("lint", ignoreCase = true))) {
+        dependsOn(":core:chat:generateFixtures")
+    }
 }
 
 // A TLS server with a certificate no phone trusts, for the test that an https address is refused by the

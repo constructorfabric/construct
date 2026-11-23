@@ -23,6 +23,7 @@ kotlin {
             export(project(":core:chat"))
             export(project(":core:construct"))
             export(project(":core:database"))
+            export(project(":core:keys"))
             export(project(":core:designsystem"))
             featurePaths.forEach { export(project(it)) }
         }
@@ -34,6 +35,7 @@ kotlin {
             api(project(":core:chat"))
             api(project(":core:construct"))
             api(project(":core:database"))
+            api(project(":core:keys"))
             api(project(":core:designsystem"))
             featurePaths.forEach { api(project(it)) }
         }
