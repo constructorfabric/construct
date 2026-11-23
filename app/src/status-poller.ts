@@ -8,32 +8,29 @@ export interface StatusPoller {
   readonly stop: () => void;
 }
 
-// A poll starts only when the previous one has finished; the main process bounds each one.
-export function startStatusPoller(
-  getStatus: () => Promise<AgentStatus>,
-  onStatus: (status: AgentStatus) => void,
-  intervalMs: number = refreshMs,
+/** Poll one request at a time and resume after a rejected request. */
+export function startPoller<T>(
+  read: () => Promise<T>,
+  onResult: (result: T) => void,
+  intervalMs: number,
+  onError?: (error: unknown) => void,
 ): StatusPoller {
   let inFlight = false;
   let stopped = false;
 
   const refresh = async (): Promise<void> => {
-    if (inFlight) {
+    if (inFlight || stopped) {
       return;
     }
     inFlight = true;
     try {
-      const status = await getStatus();
+      const result = await read();
       if (!stopped) {
-        onStatus(status);
+        onResult(result);
       }
     } catch (error) {
       if (!stopped) {
-        onStatus({
-          state: 'unknown',
-          reason: error instanceof Error ? error.message : String(error),
-          startAtLogin: 'unknown',
-        });
+        onError?.(error);
       }
     } finally {
       inFlight = false;
@@ -54,4 +51,18 @@ export function startStatusPoller(
       clearInterval(timer);
     },
   };
+}
+
+export function startStatusPoller(
+  getStatus: () => Promise<AgentStatus>,
+  onStatus: (status: AgentStatus) => void,
+  intervalMs: number = refreshMs,
+): StatusPoller {
+  return startPoller(getStatus, onStatus, intervalMs, (error) => {
+    onStatus({
+      state: 'unknown',
+      reason: error instanceof Error ? error.message : String(error),
+      startAtLogin: 'unknown',
+    });
+  });
 }

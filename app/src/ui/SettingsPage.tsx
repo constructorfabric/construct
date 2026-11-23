@@ -1,4 +1,4 @@
-import { Alert, Heading } from '@gears-frontx/ui-kit';
+import { Alert, Button, Heading } from '@gears-frontx/ui-kit';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AgentStatus } from '../agent-status';
@@ -9,6 +9,8 @@ import { CollectionSettingsForm } from './CollectionSettingsForm';
 import { DelayedLoader } from './components/DelayedLoader';
 import { DashboardSetupSection } from './DashboardSetupSection';
 import { ModelSettingsForm } from './ModelSettingsForm';
+import { PhonePairingPage } from './PhonePairingPage';
+import { Section } from './components/Section';
 import { YourDataSection } from './YourDataSection';
 import type { Chat } from './useChat';
 import { useDashboardSetup } from './useDashboardSetup';
@@ -19,14 +21,17 @@ export function SettingsPage({
   erasing,
   status,
   onOpenDashboard,
+  onPairingClosed,
 }: {
   readonly chat: Chat;
   readonly erasing: Erasing;
   /** The agent's latest status, which the app polls; the permissions are read from it. */
   readonly status: AgentStatus | null;
   readonly onOpenDashboard: () => void;
+  readonly onPairingClosed: (failed: boolean) => void;
 }): ReactNode {
   const [loaded, setLoaded] = useState<SettingsResult | null>(null);
+  const [pairing, setPairing] = useState(false);
   const setup = useDashboardSetup();
   const { look } = erasing;
 
@@ -70,12 +75,26 @@ export function SettingsPage({
         notice={loaded.notice}
         onSettings={(reply) => setLoaded((current) => withCollectionReply(current, reply))}
       />
+      <Section
+        titleId="phones-title"
+        title={t('PhonePairing.Title')}
+        description={t('PhonePairing.Description')}
+        actions={
+          <Button id="phone-pairing-open" onClick={() => setPairing(true)}>
+            {t('PhonePairing.Open')}
+          </Button>
+        }
+      />
       <YourDataSection chat={chat} erasure={erasing} />
     </>
   );
   // A failed read of the setup state is a failure like a failed read of the settings: the page
   // shows it at once, with its sections, and no loader is held for it.
   const setupFailed = setup.view.kind === 'unavailable';
+
+  if (pairing) {
+    return <PhonePairingPage onBack={() => setPairing(false)} onClosed={onPairingClosed} />;
+  }
 
   return (
     <>

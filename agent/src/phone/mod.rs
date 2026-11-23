@@ -252,6 +252,12 @@ impl Endpoint {
         self.state.pairing.close();
     }
 
+    /// Whether the current offer can still be used.
+    #[must_use]
+    pub fn pairing_is_open(&self) -> bool {
+        self.state.pairing.is_open()
+    }
+
     /// Whether a pairing is open, or a phone that proved itself is still being stored.
     #[must_use]
     pub fn pairing_is_busy(&self) -> bool {

@@ -1005,6 +1005,10 @@ async fn the_app_commands_open_close_list_and_unpair_and_show_no_secret() {
     );
     assert_eq!(opened["code"].as_str().unwrap().len(), 8);
     assert!(is_open(port).await);
+    assert_eq!(
+        ask("phone-pairing-status", String::new()).await.0,
+        json!({"active": true})
+    );
 
     let offer = PairingOffer {
         address: opened["address"].as_str().unwrap().to_owned(),
@@ -1019,6 +1023,10 @@ async fn the_app_commands_open_close_list_and_unpair_and_show_no_secret() {
             .to_owned(),
     };
     let token = pair_named(server_addr(&offer), &offer, "Anna's phone").await;
+    assert_eq!(
+        ask("phone-pairing-status", String::new()).await.0,
+        json!({"active": false})
+    );
 
     let (listed, line) = ask("phone-list", String::new()).await;
     assert_eq!(listed["phones"][0]["name"], "Anna's phone");
@@ -1040,6 +1048,60 @@ async fn the_app_commands_open_close_list_and_unpair_and_show_no_secret() {
     let (after, _) = ask("phone-unpair", json!({"id": id}).to_string()).await;
     assert_eq!(after["phones"], json!([]));
     assert!(!is_open(port).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_desktop_can_page_and_unpair_with_a_large_roster() {
+    let dir = Dir::new();
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let store = construct_agent::phone::paired::Paired::load(&dir.0).unwrap();
+    for _ in 0..25 {
+        store.add(&"😀".repeat(64)).unwrap();
+    }
+    let phones = service(&dir, free_port()).await;
+    tokio::task::spawn_blocking(move || {
+        assert!(phones.command("phone-list", "").len() > 4096);
+        let mut cursor = Value::Null;
+        let mut ids = Vec::new();
+        // Twenty-five phones must fit in four pages. A repeated cursor must fail this test.
+        for _ in 0..4 {
+            let line = phones.command("phone-list", &json!({"after": cursor}).to_string());
+            assert!(line.len() < 4096);
+            let reply: Value = serde_json::from_str(&line).unwrap();
+            ids.extend(
+                reply["phones"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|phone| phone["id"].as_str().unwrap().to_owned()),
+            );
+            let next = &reply["next"];
+            assert!(
+                next.is_null()
+                    || next
+                        .as_str()
+                        .is_some_and(|next| cursor.as_str().is_none_or(|id| next > id))
+            );
+            cursor = next.clone();
+            if cursor.is_null() {
+                break;
+            }
+        }
+        assert!(cursor.is_null());
+        assert_eq!(ids.len(), 25);
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+        let reply = phones.command(
+            "phone-unpair",
+            &json!({"id": ids[0], "ack_only": true}).to_string(),
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&reply).unwrap(),
+            json!({"ok": true})
+        );
+        assert_eq!(phones.phones().len(), 24);
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

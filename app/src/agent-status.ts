@@ -6,6 +6,7 @@ import type { GlasshouseApi } from './glasshouse';
 import type { DashboardSetupApi } from './dashboard-setup-protocol';
 import type { ExternalApi } from './external';
 import type { MemoryApi } from './memory-protocol';
+import type { PhoneApi } from './phone-protocol';
 import { missingGrants, parseGrants } from './screen-grants';
 import type { Grant, GrantName } from './screen-grants';
 
@@ -101,7 +102,8 @@ export type ConstructAgentApi = ModelSettingsApi &
   DashboardSetupApi &
   ExternalApi &
   GlasshouseApi &
-  MemoryApi & {
+  MemoryApi &
+  PhoneApi & {
     readonly getStatus: () => Promise<AgentStatus>;
     /** `true` when the app runs from a place macOS will remove, so no login service was set up. */
     readonly getNeedsMove: () => Promise<boolean>;

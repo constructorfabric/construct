@@ -3,10 +3,10 @@
 //! The agent opens no port before the first pairing. It listens while a pairing is open, and
 //! from the first phone that paired on, also after a restart, until the last phone is unpaired.
 //! The app asks through the local protocol (see `ipc`): `phone-pairing-open` answers the QR
-//! payload and the short code, `phone-pairing-close` closes the pairing, `phone-list` answers
-//! the phones with an id, a name and the time of pairing, and `phone-unpair {"id": <id>}` removes
-//! one. No answer holds a token, a hash of it, or the secret of a pairing beyond the payload and
-//! the code that the pairing screen shows.
+//! payload and the short code, `phone-pairing-status` checks whether it is still usable, and
+//! `phone-pairing-close` closes it. `phone-list` answers the phones and `phone-unpair` removes
+//! one. No answer holds a token, a hash of it, or the secret of a pairing beyond the payload
+//! and the code that the pairing screen shows.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -38,7 +38,19 @@ struct Inner {
 #[serde(deny_unknown_fields)]
 struct Unpair {
     id: String,
+    #[serde(default)]
+    ack_only: bool,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Page {
+    after: Option<String>,
+}
+
+// Eight entries of up to 64 Unicode characters, generated ids and timestamps fit well within
+// the desktop socket's 4 KiB reply budget, even at four bytes per character.
+const PAGE_SIZE: usize = 8;
 
 /// The phone endpoint, started and stopped as the phones and the pairing need it.
 #[derive(Clone)]
@@ -157,9 +169,10 @@ impl Service {
     }
 
     /// The commands of the local protocol this service answers.
-    pub const COMMANDS: [&'static str; 4] = [
+    pub const COMMANDS: [&'static str; 5] = [
         "phone-pairing-open",
         "phone-pairing-close",
+        "phone-pairing-status",
         "phone-list",
         "phone-unpair",
     ];
@@ -170,7 +183,7 @@ impl Service {
         Self::COMMANDS.contains(&command)
     }
 
-    /// Answer one of the four phone commands of the local protocol, as one JSON line. Called from
+    /// Answer a phone command of the local protocol, as one JSON line. Called from
     /// the thread of a connection, not from the runtime.
     #[must_use]
     pub fn command(&self, command: &str, argument: &str) -> String {
@@ -195,12 +208,30 @@ impl Service {
                 self.close_pairing().await;
                 json!({"ok": true}).to_string()
             }
+            "phone-pairing-status" if argument.is_empty() => {
+                let slot = self.0.endpoint.lock().await;
+                json!({"active": slot.as_ref().is_some_and(Endpoint::pairing_is_open)}).to_string()
+            }
             "phone-list" if argument.is_empty() => self.list_response(),
+            "phone-list" => {
+                let Ok(Page { after }) = serde_json::from_str(argument) else {
+                    return error_response("invalid phone request");
+                };
+                let mut phones = self.0.paired.page(after.as_deref(), PAGE_SIZE + 1);
+                let next = if phones.len() > PAGE_SIZE {
+                    phones.truncate(PAGE_SIZE);
+                    Some(phones[PAGE_SIZE - 1].id.as_str())
+                } else {
+                    None
+                };
+                json!({"phones": phones, "next": next}).to_string()
+            }
             "phone-unpair" => {
-                let Ok(Unpair { id }) = serde_json::from_str(argument) else {
+                let Ok(Unpair { id, ack_only }) = serde_json::from_str(argument) else {
                     return error_response("invalid phone request");
                 };
                 match self.unpair(&id).await {
+                    Ok(true) if ack_only => json!({"ok": true}).to_string(),
                     Ok(true) => self.list_response(),
                     Ok(false) => error_response("no such phone"),
                     Err(e) => error_response(e.as_str()),

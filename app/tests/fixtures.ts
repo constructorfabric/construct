@@ -98,6 +98,9 @@ export interface OpenedApp {
 /** What a test may add to the launch of the window: a video of it, say. */
 export type LaunchOptions = Pick<Parameters<typeof electron.launch>[0] & object, 'recordVideo'>;
 
+// Kept in the test process so reloading or closing the renderer cannot erase its findings.
+const policyViolations = new WeakMap<Page, string[]>();
+
 export async function openApp(session: Session, options: LaunchOptions = {}): Promise<OpenedApp> {
   const app = await electron.launch({ args: [...session.appArgs], env: session.env, ...options });
   return { app, ...(await prepareWindow(app)) };
@@ -137,13 +140,19 @@ async function prepareWindow(
     });
   }
   const page = await app.firstWindow();
+  const violations: string[] = [];
+  policyViolations.set(page, violations);
+  await page.exposeBinding('reportTestPolicyViolation', (_source, violation: string) => {
+    violations.push(violation);
+  });
   // The first window, reloaded under a listener for policy violations: any `securitypolicyviolation`
   // event of the page fails the test that raised it.
   await page.addInitScript(() => {
-    const violations: string[] = [];
-    Object.assign(window, { policyViolations: violations });
+    const report = Reflect.get(window, 'reportTestPolicyViolation') as (
+      violation: string,
+    ) => Promise<void>;
     document.addEventListener('securitypolicyviolation', (event) => {
-      violations.push(`${event.violatedDirective} ${event.blockedURI}`);
+      void report(`${event.violatedDirective} ${event.blockedURI}`);
     });
   });
   await page.reload();
@@ -157,9 +166,7 @@ export async function openSettings(page: Page, heading: string): Promise<void> {
 }
 
 export async function expectNoPolicyViolations(page: Page): Promise<void> {
-  expect(await page.evaluate(() => Reflect.get(window, 'policyViolations') as string[])).toEqual(
-    [],
-  );
+  expect(policyViolations.get(page), 'Content security policy violations').toEqual([]);
 }
 
 /** What this process writes to its output and error streams, from now until `stop`. */
@@ -207,7 +214,7 @@ export async function withStandIn(
   session: Session,
   answer: string | ((line: string) => string | Promise<string>),
   check: (page: Page, app: ElectronApplication) => Promise<void>,
-  options: LaunchOptions = {},
+  options: LaunchOptions & { readonly allowWindowClose?: boolean } = {},
 ): Promise<void> {
   const socketPath = agentSocketPath(session.env, process.platform);
   session.agent.kill('SIGTERM');
@@ -230,14 +237,21 @@ export async function withStandIn(
     });
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
-  const { app, page } = await openApp(session, options);
+  const { allowWindowClose = false, ...launchOptions } = options;
+  const { app, page } = await openApp(session, launchOptions);
   try {
     await check(page, app);
-    await expectNoPolicyViolations(page);
+    if (!allowWindowClose) {
+      expect(page.isClosed(), 'The stand-in window closed unexpectedly').toBe(false);
+    }
   } finally {
-    await app.close();
-    server.close();
+    try {
+      await app.close();
+    } finally {
+      server.close();
+    }
   }
+  await expectNoPolicyViolations(page);
 }
 
 export const test = base.extend<{ session: Session; app: ElectronApplication; page: Page }>({

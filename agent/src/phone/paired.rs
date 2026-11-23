@@ -167,6 +167,21 @@ impl Paired {
         self.lock().iter().map(PhoneInfo::from).collect()
     }
 
+    /// A page in stable id order. Deleting a phone cannot change the cursor for the next page.
+    pub(super) fn page(&self, after: Option<&str>, limit: usize) -> Vec<PhoneInfo> {
+        let phones = self.lock();
+        let mut matching: Vec<_> = phones
+            .iter()
+            .filter(|phone| after.is_none_or(|id| phone.id.as_str() > id))
+            .collect();
+        matching.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+        matching
+            .into_iter()
+            .take(limit)
+            .map(PhoneInfo::from)
+            .collect()
+    }
+
     /// The id of the phone that owns `token`.
     #[must_use]
     pub fn id_of(&self, token: &str) -> Option<String> {

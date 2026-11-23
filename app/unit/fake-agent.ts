@@ -5,11 +5,11 @@ import path from 'node:path';
 
 /**
  * A fake agent on the socket of a new runtime directory. It records the line of each call and
- * answers with `answer(line)`, once the answer is there; a `null` answer holds the reply back.
+ * answers with `answer(line, client)` once the answer is there. A `null` answer holds the reply back.
  * `close` stops it and removes the directory.
  */
 export async function startFakeAgent(
-  answer: (line: string) => string | null | Promise<string | null>,
+  answer: (line: string, client: net.Socket) => string | null | Promise<string | null>,
   runtimeDir = mkdtempSync(path.join(tmpdir(), 'cb-unit-')),
 ): Promise<{
   readonly runtimeDir: string;
@@ -25,7 +25,7 @@ export async function startFakeAgent(
     client.once('data', (data: string) => {
       const line = data.trim();
       lines.push(line);
-      void Promise.resolve(answer(line)).then((reply) => {
+      void Promise.resolve(answer(line, client)).then((reply) => {
         if (reply !== null) {
           client.end(`${reply}\n`);
         }

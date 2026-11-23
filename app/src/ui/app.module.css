@@ -448,3 +448,42 @@
   display: flex;
   gap: var(--space-3);
 }
+
+.phonePairing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.phonePairingDetails {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+.phonePairingDetails svg {
+  background: white;
+}
+
+.phoneList {
+  list-style: none;
+  padding: 0;
+  min-width: min(30rem, 100%);
+}
+
+.phoneRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-3) 0;
+}
+
+.phoneRow p {
+  margin: var(--space-1) 0 0;
+  color: var(--muted-foreground);
+}

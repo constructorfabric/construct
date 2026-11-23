@@ -61,9 +61,39 @@ import {
 } from './memory-protocol';
 import { offerMoveToApplications } from './move-to-applications';
 import { createSettingsHandlers } from './settings-calls';
+import { createPhoneHandlers } from './phone-calls';
+import {
+  PHONE_OPEN_CHANNEL,
+  PHONE_CLOSE_CHANNEL,
+  PHONE_LIST_CHANNEL,
+  PHONE_STATUS_CHANNEL,
+  PHONE_UNPAIR_CHANNEL,
+} from './phone-protocol';
 
 let mainWindow: BrowserWindow | null = null;
 let chatHandlers: ChatHandlers | null = null;
+const phone = createPhoneHandlers({ env: process.env, platform: process.platform });
+let phoneShutdown: Promise<void> | null = null;
+let windowClosing = false;
+let rendererReplacing = false;
+let quitting = false;
+let quitReady = false;
+
+function finishPhonePairing(): Promise<void> {
+  phoneShutdown ??= phone.close().then((result) => {
+    if (!result.ok) console.warn('Could not confirm that phone pairing closed.');
+  });
+  return phoneShutdown;
+}
+
+/** Keep the old renderer's cleanup ahead of any pairing from its replacement. */
+function retirePhoneRenderer(): void {
+  if (quitting || (!phone.needsClose() && phoneShutdown === null)) return;
+  const cleanup = finishPhonePairing();
+  void cleanup.then(() => {
+    if (!quitting && !windowClosing && phoneShutdown === cleanup) phoneShutdown = null;
+  });
+}
 
 let needsMove = false;
 // A second launch has nothing to open until the first one has finished starting.
@@ -145,8 +175,32 @@ const createWindow = () => {
   window.webContents.on('will-navigate', (event) => {
     event.preventDefault();
   });
+  window.webContents.on('did-start-loading', () => {
+    rendererReplacing = true;
+    retirePhoneRenderer();
+  });
+  window.webContents.on('did-stop-loading', () => {
+    rendererReplacing = window.webContents.isCrashed();
+  });
+  window.webContents.on('render-process-gone', () => {
+    rendererReplacing = true;
+    retirePhoneRenderer();
+  });
+  window.on('close', (event) => {
+    const alreadyClosing = windowClosing;
+    windowClosing = true;
+    if (quitReady || (phoneShutdown === null && !phone.needsClose())) return;
+    event.preventDefault();
+    if (alreadyClosing) return;
+    void finishPhonePairing().then(() => {
+      if (!quitting && !window.isDestroyed()) window.destroy();
+    });
+  });
   window.on('closed', () => {
     mainWindow = null;
+    windowClosing = false;
+    // A forced window destruction can skip the close event.
+    retirePhoneRenderer();
     // The window is gone, and so is the one who wanted the answer.
     chatHandlers?.close();
   });
@@ -163,7 +217,7 @@ const createWindow = () => {
 // can stay alive without a window) and quits.
 function startApp(): void {
   app.on('second-instance', () => {
-    if (!startupDone) {
+    if (!startupDone || quitting) {
       return;
     }
     if (mainWindow === null) {
@@ -177,6 +231,32 @@ function startApp(): void {
   });
 
   void app.whenReady().then(async () => {
+    app.on('before-quit', (event) => {
+      quitting = true;
+      if (quitReady || (phoneShutdown === null && !phone.needsClose())) return;
+      event.preventDefault();
+      void finishPhonePairing().then(() => {
+        if (quitReady) return;
+        quitReady = true;
+        app.quit();
+      });
+    });
+    ipcMain.handle(PHONE_OPEN_CHANNEL, ({ sender }) => {
+      if (
+        sender !== mainWindow?.webContents ||
+        windowClosing ||
+        rendererReplacing ||
+        quitting ||
+        phoneShutdown !== null
+      ) {
+        return { ok: false, error: 'The pairing window is closing.' };
+      }
+      return phone.open();
+    });
+    ipcMain.handle(PHONE_CLOSE_CHANNEL, () => phone.close());
+    ipcMain.handle(PHONE_STATUS_CHANNEL, () => phone.status());
+    ipcMain.handle(PHONE_LIST_CHANNEL, (_event, after: unknown) => phone.list(after));
+    ipcMain.handle(PHONE_UNPAIR_CHANNEL, (_event, id: unknown) => phone.unpair(id));
     ipcMain.handle(NEEDS_MOVE_CHANNEL, () => needsMove);
     ipcMain.handle(STATUS_CHANNEL, () => readAgentStatus(process.env, process.platform));
     const settings = createSettingsHandlers(
@@ -258,7 +338,7 @@ function startApp(): void {
     startupDone = true;
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      if (!quitting && BrowserWindow.getAllWindows().length === 0) {
         createWindow();
       }
     });

@@ -27,8 +27,8 @@
 //! and how much it has read and sent, and `dashboard-setup-cancel` stops it (see
 //! `dashboard_setup`).
 //! `phone-pairing-open` answers the QR payload and the short code of a new pairing,
-//! `phone-pairing-close` closes it, `phone-list` answers the paired phones and `phone-unpair
-//! <JSON object>` (`{"id": <id>}`) removes one (see `phone::service`).
+//! `phone-pairing-status` checks if the offer is usable, and `phone-pairing-close` closes it.
+//! `phone-list` answers the paired phones and `phone-unpair` removes one (see `phone::service`).
 //! `settings-test` answers with several JSON lines when its request has `"progress": true`.
 //! The chat commands (see `chat`) answer with several JSON lines: `chat-send <JSON object>`
 //! streams an answer, `chat-get` sends one line per record. A request line is at most
