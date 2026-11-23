@@ -17,11 +17,18 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 chat-core = { path = "../chat-core" }
 connectors = { path = "../connectors" }
+hex = "0.4"
+phone-pairing = { path = "../phone-pairing" }
 reqwest = { version = "0.13", default-features = false }
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt"] }
 tokio-util = { version = "0.7", default-features = false }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 
 # On Android the TLS stack asks the system for certificate checks through the JVM, so the library
 # needs the JVM's handle once (see `android_tls`). The versions are the ones already in the lock file.

@@ -24,7 +24,7 @@ final class MovingBetweenPagesTests: XCTestCase {
     func testTheConnectionStateShowsOnEveryPage() {
         for title in titles {
             app.tabBars.buttons[title].tap()
-            XCTAssertTrue(app.staticTexts["Connected"].waitForExistence(timeout: 5), "no connection line on \(title)")
+            XCTAssertTrue(app.staticTexts["Not paired"].waitForExistence(timeout: 5), "no connection line on \(title)")
         }
     }
 

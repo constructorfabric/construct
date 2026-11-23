@@ -1,5 +1,6 @@
 import Combine
 import ConstructShared
+import Network
 import SwiftUI
 
 /// The one place the app's objects are built. To run the app on `FakeConstruct` instead of the
@@ -9,8 +10,13 @@ final class Composition: ObservableObject {
     /// The provider setting stored together in the Keychain.
     let modelSettings: ModelSettingsStore
     let modelSettingsDidCommit = PassthroughSubject<Void, Never>()
+    let phoneConnection: PhoneConnection
+    private let network: NWPathMonitor
 
     init() {
+        let network = NWPathMonitor()
+        let frameFixture = Self.isPairingFrameFixture
+        self.network = network
         var service = "construct.model"
         var defaults = UserDefaults.standard
         var copyName = CopyFileKt.COPY_FILE
@@ -32,6 +38,26 @@ final class Composition: ObservableObject {
         )
         modelSettings = settings
         construct = Composition.makeConstruct(settings: settings, copyName: copyName, seed: seed)
+        phoneConnection = PhoneConnectionKt.defaultPhoneConnection(
+            store: IosPairingSecretKt.iosPairingSecret(service: "construct.computer"),
+            networkAvailable: { KotlinBoolean(bool: frameFixture || network.currentPath.status == .satisfied) },
+            protocolVersion: PhoneProtocolKt.PHONE_PROTOCOL,
+            localAccess: { KotlinBoolean(bool: true) },
+            pollIntervalMillis: frameFixture ? 120_000 : PhoneConnectionKt.PHONE_POLL_INTERVAL_MILLIS
+        )
+        network.start(queue: DispatchQueue(label: "Construct network"))
+    }
+
+    private static var isPairingFrameFixture: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--pairing-frame-test")
+        #else
+        false
+        #endif
+    }
+
+    deinit {
+        network.cancel()
     }
 
     private static func makeConstruct(settings: ModelSettingsStore, copyName: String, seed: Bool) -> Construct {

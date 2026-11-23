@@ -9,6 +9,7 @@ class ConstructApp : Application() {
     val modelSettings by lazy { createModelSettingsStore(this) }
     val construct by lazy { createConstruct(this, modelSettings) }
     val chatCore by lazy { createChatCore() }
+    val phoneConnection by lazy { createPhoneConnection(this) }
 
     // The init throws a plain RuntimeException from Java when the check cannot start.
     @Suppress("TooGenericExceptionCaught")

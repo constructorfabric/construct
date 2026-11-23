@@ -116,6 +116,8 @@ server with a certificate no phone trusts is refused with a TLS alert. The Gradl
 
 ## The model setting and its key
 
+Computer pairing uses a separate secure record in `core/keys`. See [Connect to a computer](#connect-to-a-computer).
+
 `core/keys` keeps what the person typed on the Settings page: the address of the model, its name and the
 API key. `ModelSettingsStore` is the one interface; a screen's state holder reads and writes it and the
 screen never sees it. A setting read back says only that a key is set (`ModelSettings.keyIsSet`); the whole
@@ -263,6 +265,41 @@ cd mobile
 ./gradlew :androidApp:installDebug
 adb shell am start -n cf.construct.mobile/cf.construct.mobile.android.MainActivity
 ```
+
+## Connect to a computer
+
+`core/connection` accepts the IPv4 or bracketed IPv6 address shown by the computer. Pairing uses
+an eight-digit typed code or a `construct-pair://` QR payload. Both platforms use the native bridge
+for TLS 1.3. A QR offer pins the certificate before sending its proof, including with earlier
+agents that speak the same QR protocol. For a typed offer, the phone requests the OPAQUE
+protocol during TLS negotiation. An explicit protocol rejection or a completed TLS
+handshake without the typed protocol prompts the phone to update Construct on the computer.
+An interrupted handshake, missing reply or challenge the phone cannot validate offers Retry.
+An explicit code rejection asks for a fresh code. The OPAQUE exchange authenticates the
+TLS channel before the phone saves the certificate pin and token. The pairing record stays in
+Android's Keystore-backed storage or the iPhone's device-only Keychain.
+
+`feature/status` watches the connection while the frame is open. A paired phone pings on the
+authenticated channel. A revocation received on that channel clears the pairing. A lost route or a
+computer that fails to respond keeps the pairing and shows the last contact. A phone that misses
+the final revocation while offline continues to show the computer as unreachable.
+
+Build the fixture on both the previous and current agent revisions using
+`cargo build --locked -p construct-agent --example phone_pairing`. Copy each executable to a
+different path so the second build can reuse the Cargo cache. Pass both paths to the harness.
+It pairs by QR with both agents, verifies the previous agent’s computer-update prompt for typed
+pairing, and presses Try again in the restarted app once the current agent is listening
+again. It matches each device's stored credential digest with the corresponding agent's
+digest and looks for pairing material and the test's synthetic marker in the device logs.
+
+- Android uses a disposable booted emulator. Build with
+  `./gradlew :androidApp:assembleDebug :androidApp:assembleDebugAndroidTest` and install both APKs.
+  Run `python3 scripts/test-phone-pairing.py android --device <serial> --agent <current> --previous-agent <previous>`.
+- For iPhone, generate the Xcode project and run `xcodebuild`
+  with `build-for-testing CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-` so the hosted tests can
+  use the Simulator Keychain. The harness creates and removes its own Simulator even if a test fails.
+  Choose identifiers from `xcrun simctl list devicetypes` and `xcrun simctl list runtimes`.
+  Run `python3 scripts/test-phone-pairing.py ios --agent <current> --previous-agent <previous> --ios-build <DerivedData> --ios-device-type <type> --ios-runtime <runtime>`.
 
 ## Run the iPhone app
 

@@ -8,22 +8,25 @@
 //! `--dir` keeps the certificate and the paired phones (a new temporary directory by default),
 //! `--bind` is the address to listen on (`0.0.0.0:0`, any free port, by default), `--host` is the
 //! address to put in the QR payload (this computer's address on its network by default) and
-//! `--minutes` is how long the pairing stays open (5 by default).
+//! `--minutes` is how long the pairing stays open (5 by default). With `--control`, send
+//! `unpair` on stdin to remove the paired phones, or `stop` to stop the endpoint.
 //!
 //! The output is one `name: value` line each, `payload`, `address`, `code`, `fingerprint` and
 //! `dir`, then `ready`, flushed, as the last line before the program waits.
 
 #[cfg(unix)]
 mod unix {
-    use std::io::Write;
+    use std::io::{BufRead, Write};
     use std::net::{IpAddr, SocketAddr};
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use construct_agent::phone::{Config, Endpoint, lan_address};
+    use construct_agent::phone::{Service, lan_address};
 
     fn usage() -> ! {
-        eprintln!("usage: phone_pairing [--dir DIR] [--bind ADDR] [--host IP] [--minutes N]");
+        eprintln!(
+            "usage: phone_pairing [--dir DIR] [--bind ADDR] [--host IP] [--minutes N] [--control]"
+        );
         std::process::exit(2);
     }
 
@@ -32,8 +35,13 @@ mod unix {
         let mut bind: SocketAddr = ([0, 0, 0, 0], 0).into();
         let mut host: Option<IpAddr> = None;
         let mut minutes: u64 = 5;
+        let mut control = false;
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
+            if flag == "--control" {
+                control = true;
+                continue;
+            }
             let Some(value) = args.next() else { usage() };
             match flag.as_str() {
                 "--dir" => dir = Some(PathBuf::from(value)),
@@ -53,19 +61,17 @@ mod unix {
                 std::process::exit(1);
             }
         };
-        let endpoint = match Endpoint::start(Config {
-            dir: dir.clone(),
-            bind,
-        })
-        .await
-        {
-            Ok(endpoint) => endpoint,
+        let service = match Service::start(dir.clone(), bind, Some(host)).await {
+            Ok(service) => service,
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
         };
-        let offer = match endpoint.open_pairing(host, Duration::from_secs(minutes * 60)) {
+        let offer = match service
+            .open_pairing(Duration::from_secs(minutes * 60))
+            .await
+        {
             Ok(offer) => offer,
             Err(e) => {
                 eprintln!("{e}");
@@ -79,8 +85,40 @@ mod unix {
         println!("dir: {}", dir.display());
         println!("ready");
         let _ = std::io::stdout().flush();
-        let _ = tokio::signal::ctrl_c().await;
-        endpoint.stop().await;
+        if control {
+            tokio::select! {
+                () = commands(&service) => {},
+                _ = tokio::signal::ctrl_c() => {},
+            }
+        } else {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        service.stop().await;
+    }
+
+    async fn commands(service: &Service) {
+        let (send, mut receive) = tokio::sync::mpsc::channel(1);
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                if send.blocking_send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        while let Some(line) = receive.recv().await {
+            match line.as_str() {
+                "unpair" => {
+                    let mut removed = true;
+                    for phone in service.phones() {
+                        removed &= service.unpair(&phone.id).await == Ok(true);
+                    }
+                    println!("{}", if removed { "unpaired" } else { "unpair failed" });
+                    let _ = std::io::stdout().flush();
+                }
+                "stop" => break,
+                _ => {}
+            }
+        }
     }
 }
 

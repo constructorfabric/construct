@@ -94,6 +94,7 @@ androidComponents {
 
 dependencies {
     implementation(project(":core:chat"))
+    implementation(project(":core:connection"))
     implementation(project(":core:construct"))
     implementation(project(":core:database"))
     implementation(project(":core:designsystem"))
@@ -101,6 +102,7 @@ dependencies {
     implementation(project(":feature:chat"))
     implementation(project(":feature:memory"))
     implementation(project(":feature:settings"))
+    implementation(project(":feature:status"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)
     implementation(libs.compose.activity)
@@ -163,5 +165,7 @@ val generateTestKeystore =
         )
     }
 tasks.configureEach {
-    if (name.contains("AndroidTest") && name.endsWith("Assets")) dependsOn(generateTestKeystore)
+    if (name.contains("AndroidTest") && (name.endsWith("Assets") || name.contains("lint", ignoreCase = true))) {
+        dependsOn(generateTestKeystore)
+    }
 }
