@@ -29,6 +29,9 @@ kotlin {
     iosSimulatorArm64()
 
     sourceSets {
+        commonMain.dependencies {
+            implementation(libs.serialization.json)
+        }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }

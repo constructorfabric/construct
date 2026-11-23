@@ -14,6 +14,18 @@ int32_t cf_chat_fixed_request_body(const char *tools_file, char **out);
    argument only: it is in no log and in no returned text. */
 char *cf_chat_test_model(const char *base_url, const char *model, const char *api_key);
 
+typedef struct cf_chat_stop cf_chat_stop;
+cf_chat_stop *cf_chat_stop_new(void);
+void cf_chat_stop_answer(const cf_chat_stop *stop);
+void cf_chat_stop_free(cf_chat_stop *stop);
+
+/* Runs one answer on the calling thread. The callback borrows text for the duration of its call.
+   Kind 0 is a chat-send event and kind 1 is a record to commit before returning. Return 1 on
+   success, or 0 when the event cannot be delivered or the record cannot be written.
+   Another thread may request a stop. Free the token only after the send and stop calls return. */
+typedef int32_t (*cf_chat_callback)(void *context, int32_t kind, const char *text);
+void cf_chat_send(const char *input, const cf_chat_stop *stop, cf_chat_callback callback, void *context);
+
 void cf_chat_free(char *text);
 
 #endif

@@ -4,4 +4,5 @@
     <exclude domain="sharedpref" path="model_settings.xml" />
     <exclude domain="file" path="model_key.bin" />
     <exclude domain="file" path="model_key.bin.part" />
+    <exclude domain="file" path="model_provider.bin" />
 </full-backup-content>

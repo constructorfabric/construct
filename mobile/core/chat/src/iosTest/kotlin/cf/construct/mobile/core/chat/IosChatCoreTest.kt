@@ -2,6 +2,9 @@
 
 package cf.construct.mobile.core.chat
 
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.native.inMemoryDriver
+import cf.construct.mobile.core.database.sql.ConstructDatabase
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
@@ -15,6 +18,9 @@ import kotlinx.cinterop.value
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
 import platform.posix.accept
@@ -29,6 +35,8 @@ import platform.posix.sockaddr_in
 import platform.posix.socket
 import platform.posix.socklen_tVar
 import kotlin.concurrent.AtomicReference
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
 /** A listening socket on a free local port: its descriptor and its port. */
 private fun listenOnFreePort(): Pair<Int, Int> =
@@ -84,6 +92,12 @@ private class NativeFakeProvider(
                         close(client)
                     }
 
+                    is Reply.Stream -> {
+                        if (reply.holdOpen) held.value = held.value + client
+                        writeAll(client, streamBytes(reply))
+                        if (!reply.holdOpen) close(client)
+                    }
+
                     Reply.Hang -> {
                         held.value = held.value + client
                     }
@@ -112,4 +126,38 @@ private object NativeFakes : Fakes {
 
 class IosChatCoreTest : ChatCoreTestCases() {
     override val fakes: Fakes = NativeFakes
+
+    @Test
+    fun theNativeAnswerCallsBackWithRecordsAndProviderErrors() {
+        val provider = fakes.start(listOf(Reply.Status(401, "{}")))
+        val answer = newChatAnswer()
+        try {
+            val request =
+                """
+                {
+                    "model": {"base_url":"${provider.baseUrl}", "model":"local-model", "api_key":"fake-key"},
+                    "profile": {"categories":[]},
+                    "history": [],
+                    "request": {"conversation":"", "message":"Hello"}
+                }
+                """.trimIndent()
+            val records = mutableListOf<String>()
+            val events = mutableListOf<String>()
+            answer.send(request, records::add, events::add)
+            val record = Json.parseToJsonElement(records.single()).jsonObject
+            assertEquals("Hello", record.getValue("text").jsonPrimitive.content)
+            val reason = Json.parseToJsonElement(events.last()).jsonObject
+            assertEquals("key refused", reason.getValue("reason").jsonPrimitive.content)
+            assertEquals("Bearer fake-key", provider.requests.single().authorization)
+        } finally {
+            answer.close()
+            provider.close()
+        }
+    }
+}
+
+class IosPhoneConstructTest : PhoneConstructTestCases() {
+    override val fakes: Fakes = NativeFakes
+
+    override fun openCopy(): SqlDriver = inMemoryDriver(ConstructDatabase.Schema)
 }

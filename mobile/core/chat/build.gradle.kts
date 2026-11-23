@@ -16,6 +16,7 @@ val fixtureFiles =
         "tools/phone.json",
         "tools/desktop.json",
         "chat-core/tests/golden/phone.json",
+        "chat-core/tests/golden/phone-live.json",
         "chat-core/tests/golden/desktop.json",
         "app/src/en.json",
     )
@@ -112,6 +113,8 @@ kotlin {
     }
 
     listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+        // The standalone native tests exercise the phone's SQLite copy.
+        target.binaries.configureEach { linkerOpts("-lsqlite3") }
         val folder = if (target.konanTarget == KonanTarget.IOS_ARM64) "device" else "simulator"
         target.compilations.getByName("main").cinterops.create("constructChat") {
             definitionFile.set(file("src/nativeInterop/cinterop/constructChat.def"))
@@ -137,11 +140,13 @@ kotlin {
         commonTest {
             kotlin.srcDir(generateFixtures.map { it.outputs.files.singleFile.parentFile })
             dependencies {
+                implementation(project(":core:database"))
                 implementation(libs.kotlin.test)
+                implementation(libs.coroutines.core)
             }
         }
         iosTest.dependencies {
-            implementation(libs.coroutines.core)
+            implementation(libs.sqldelight.native.driver)
         }
     }
 }

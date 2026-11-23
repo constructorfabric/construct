@@ -6,6 +6,7 @@ import XCTest
 /// there inside the app, so these run in the app's test host, not in the Kotlin test process.
 final class ModelSettingsStoreTests: XCTestCase {
     private let fakeKey = "sk-fake-0123456789-do-not-use"
+    private let address = "http://127.0.0.1:9/v1"
     private let service = "construct.model.test.\(UUID().uuidString)"
     private let suite = "construct.model.test.\(UUID().uuidString)"
 
@@ -14,42 +15,41 @@ final class ModelSettingsStoreTests: XCTestCase {
     }
 
     override func tearDown() {
-        try? openStore().removeKey()
+        SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service] as CFDictionary)
         UserDefaults().removePersistentDomain(forName: suite)
     }
 
     func testAnEmptyPhoneHasNothingSet() throws {
         XCTAssertEqual(try openStore().read(), ModelSettings(address: "", model: "", keyIsSet: false))
-        XCTAssertNil(try openStore().readKey())
+        XCTAssertNil(try openStore().readProvider().key)
     }
 
     func testTheTextAndTheKeySurviveAReopen() throws {
-        try openStore().saveText(address: "http://127.0.0.1:8080/v1", model: "demo-model")
-        try openStore().saveKey(key: fakeKey)
+        _ = try openStore().saveProvider(address: address, model: "demo-model", key: fakeKey)
 
         let again = openStore()
         XCTAssertEqual(
             try again.read(),
-            ModelSettings(address: "http://127.0.0.1:8080/v1", model: "demo-model", keyIsSet: true)
+            ModelSettings(address: address, model: "demo-model", keyIsSet: true)
         )
-        XCTAssertEqual(try again.readKey(), fakeKey)
+        XCTAssertEqual(try again.readProvider().key, fakeKey)
     }
 
     func testANewKeyReplacesTheOldOneAndARemovedKeyIsGone() throws {
         let store = openStore()
-        try store.saveKey(key: fakeKey)
-        try store.saveKey(key: "sk-other-9876543210-do-not-use")
-        XCTAssertEqual(try openStore().readKey(), "sk-other-9876543210-do-not-use")
+        _ = try store.saveProvider(address: address, model: "demo-model", key: fakeKey)
+        _ = try store.saveProvider(address: address, model: "demo-model", key: "sk-other-9876543210-do-not-use")
+        XCTAssertEqual(try openStore().readProvider().key, "sk-other-9876543210-do-not-use")
 
         try store.removeKey()
 
-        XCTAssertNil(try openStore().readKey())
+        XCTAssertNil(try openStore().readProvider().key)
         XCTAssertFalse(try openStore().read().keyIsSet)
         try store.removeKey()
     }
 
     func testTheKeyItemStaysOnThisDeviceAndOutOfBackups() throws {
-        try openStore().saveKey(key: fakeKey)
+        _ = try openStore().saveProvider(address: address, model: "demo-model", key: fakeKey)
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -72,13 +72,39 @@ final class ModelSettingsStoreTests: XCTestCase {
     func testTextChangesKeepAUnicodeKeyAndRemovalKeepsText() throws {
         let odd = "sk-ключ \"quoted\" 'x' \n tail ✓"
         let store = openStore()
-        try store.saveKey(key: odd)
-        try store.saveText(address: "http://127.0.0.1:9/v1", model: "demo-model")
-        XCTAssertEqual(try openStore().readKey(), odd)
+        _ = try store.saveProvider(address: address, model: "first-model", key: odd)
+        _ = try store.saveProvider(address: address, model: "demo-model", key: nil)
+        XCTAssertEqual(try openStore().readProvider().key, odd)
         XCTAssertFalse(String(describing: try openStore().read()).contains(odd))
         try store.removeKey()
         XCTAssertEqual(try openStore().read().model, "demo-model")
-        XCTAssertNil(try openStore().readKey())
+        XCTAssertNil(try openStore().readProvider().key)
+    }
+
+    func testLegacyPreferencesDoNotAttachAnUnscopedKey() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(address, forKey: "model_address")
+        defaults.set("old-model", forKey: "model_name")
+        let legacy: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: "api-key",
+            kSecValueData: Data("construct-model-v1:legacy-key".utf8)
+        ]
+        XCTAssertEqual(SecItemAdd(legacy as CFDictionary, nil), errSecSuccess)
+
+        let store = openStore()
+        XCTAssertEqual(try store.read(), ModelSettings(address: address, model: "old-model", keyIsSet: false))
+        XCTAssertNil(try store.readProvider().key)
+        var legacyLookup = legacy
+        legacyLookup.removeValue(forKey: kSecValueData)
+        XCTAssertEqual(SecItemCopyMatching(legacyLookup as CFDictionary, nil), errSecItemNotFound)
+
+        _ = try store.saveProvider(address: address, model: "new-model", key: fakeKey)
+        XCTAssertEqual(try openStore().readProvider().key, fakeKey)
+        try store.removeKey()
+        XCTAssertEqual(try openStore().read(), ModelSettings(address: address, model: "new-model", keyIsSet: false))
+        XCTAssertEqual(SecItemCopyMatching(legacyLookup as CFDictionary, nil), errSecItemNotFound)
     }
 
     /// Run in separate test-host launches for each phase to verify persistence across a process restart.
@@ -91,14 +117,13 @@ final class ModelSettingsStoreTests: XCTestCase {
         let store = IosModelSettingsKt.iosModelSettingsStore(defaults: defaults, service: name)
         switch phase {
         case "save":
-            try store.saveText(address: "http://127.0.0.1:9/v1", model: "demo-model")
-            try store.saveKey(key: fakeKey)
+            _ = try store.saveProvider(address: address, model: "demo-model", key: fakeKey)
         case "remove":
             XCTAssertEqual(try store.read().model, "demo-model")
-            XCTAssertEqual(try store.readKey(), fakeKey)
+            XCTAssertEqual(try store.readProvider().key, fakeKey)
             try store.removeKey()
         case "verify":
-            XCTAssertNil(try store.readKey())
+            XCTAssertNil(try store.readProvider().key)
             XCTAssertFalse(try store.read().keyIsSet)
             defaults.removePersistentDomain(forName: name)
         default:
@@ -116,8 +141,7 @@ final class ModelSettingsStoreTests: XCTestCase {
             defaults: UserDefaults.standard,
             service: "construct.model"
         )
-        try store.saveText(address: "http://127.0.0.1:9/v1", model: "demo-model")
-        try store.saveKey(key: key)
+        _ = try store.saveProvider(address: address, model: "demo-model", key: key)
         XCTAssertTrue(try store.read().keyIsSet)
     }
 }

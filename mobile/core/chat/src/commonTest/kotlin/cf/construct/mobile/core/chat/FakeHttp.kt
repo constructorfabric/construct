@@ -26,3 +26,7 @@ fun responseBytes(reply: Reply.Status): ByteArray {
             "Content-Length: ${body.size}\r\nConnection: close\r\n\r\n"
     return head.encodeToByteArray() + body
 }
+
+fun streamBytes(reply: Reply.Stream): ByteArray =
+    ("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n" + reply.body)
+        .encodeToByteArray()

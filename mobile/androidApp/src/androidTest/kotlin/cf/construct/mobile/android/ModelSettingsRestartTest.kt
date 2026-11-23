@@ -10,6 +10,8 @@ import org.junit.Test
 
 /** Run each phase in a separate instrumentation process to check persistence across restarts. */
 class ModelSettingsRestartTest {
+    private val address = "http://127.0.0.1:9/v1"
+
     @Test
     fun platformStoreContract() {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as ConstructApp
@@ -17,24 +19,23 @@ class ModelSettingsRestartTest {
         val odd = "sk-ключ \"quoted\" 'x' \n tail ✓"
         try {
             store.removeKey()
-            store.saveText("", "")
+            store.saveProvider("", "", null)
             assertFalse(store.read().keyIsSet)
-            assertNull(store.readKey())
+            assertNull(store.readProvider().key)
             store.removeKey()
-            store.saveKey(odd)
-            store.saveText("http://127.0.0.1:9/v1", "demo-model")
-            assertEquals(odd, app.modelSettings.readKey())
+            store.saveProvider(address, "demo-model", odd)
+            assertEquals(odd, app.modelSettings.readProvider().key)
             assertTrue(app.modelSettings.read().keyIsSet)
             val setting = app.modelSettings.read()
             assertFalse(setting.toString().contains(odd))
-            store.saveKey("replacement")
-            assertEquals("replacement", app.modelSettings.readKey())
+            store.saveProvider(address, "demo-model", "replacement")
+            assertEquals("replacement", app.modelSettings.readProvider().key)
             store.removeKey()
-            assertNull(app.modelSettings.readKey())
+            assertNull(app.modelSettings.readProvider().key)
             assertEquals("demo-model", app.modelSettings.read().model)
         } finally {
             store.removeKey()
-            store.saveText("", "")
+            store.saveProvider("", "", null)
         }
     }
 
@@ -46,20 +47,19 @@ class ModelSettingsRestartTest {
         val store = (instrumentation.targetContext.applicationContext as ConstructApp).modelSettings
         when (phase) {
             "save" -> {
-                store.saveText("http://127.0.0.1:9/v1", "demo-model")
-                store.saveKey("sk-restart-test-0123456789-do-not-use")
+                store.saveProvider(address, "demo-model", "sk-restart-test-0123456789-do-not-use")
             }
 
             "remove" -> {
                 assertEquals("demo-model", store.read().model)
-                assertEquals("sk-restart-test-0123456789-do-not-use", store.readKey())
+                assertEquals("sk-restart-test-0123456789-do-not-use", store.readProvider().key)
                 store.removeKey()
             }
 
             "verify" -> {
-                assertNull(store.readKey())
+                assertNull(store.readProvider().key)
                 assertFalse(store.read().keyIsSet)
-                store.saveText("", "")
+                store.saveProvider("", "", null)
             }
 
             else -> {

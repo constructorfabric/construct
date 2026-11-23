@@ -5,6 +5,7 @@ import cf.construct.mobile.core.chat.ModelTestResult
 import cf.construct.mobile.core.chat.desktopReasons
 import cf.construct.mobile.core.keys.ModelSettingsException
 import cf.construct.mobile.core.keys.ModelSettingsStore
+import cf.construct.mobile.core.keys.UnreadableModelSettingsException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -46,23 +47,24 @@ class SettingsHolder(
     fun load() {
         mutableState.update { it.copy(loading = true, unavailable = null) }
         scope.launch {
-            val read = attempt { store.read() }
+            val read = attempt(::readSettings)
             mutableState.update { current ->
                 read.fold(
-                    {
-                        SettingsState(
-                            loading = false,
-                            address = it.address,
-                            model = it.model,
-                            keyIsSet = it.keyIsSet,
-                            pendingWrites = current.pendingWrites,
-                        )
-                    },
+                    { it.copy(pendingWrites = current.pendingWrites) },
                     { current.copy(loading = false, unavailable = it) },
                 )
             }
         }
     }
+
+    private fun readSettings(): SettingsState =
+        try {
+            val saved = store.read()
+            SettingsState(loading = false, address = saved.address, model = saved.model, keyIsSet = saved.keyIsSet)
+        } catch (e: UnreadableModelSettingsException) {
+            // Keep the form available for a replacement without guessing at the unreadable values.
+            SettingsState(loading = false, failure = e.message)
+        }
 
     /** The person typed [value] in [field]. */
     fun change(
@@ -91,12 +93,11 @@ class SettingsHolder(
         writeSettings {
             val done =
                 attempt {
-                    store.saveText(now.address.trim(), now.model.trim())
-                    if (typed.isNotEmpty()) store.saveKey(typed)
+                    store.saveProvider(now.address.trim(), now.model.trim(), typed.ifEmpty { null })
                 }
             mutableState.update { current ->
                 done.fold(
-                    { current.copy(saved = true, keyIsSet = current.keyIsSet || typed.isNotEmpty()) },
+                    { current.copy(saved = true, keyIsSet = it.keyIsSet) },
                     { current.copy(failure = it, keyEntry = typed) },
                 )
             }
@@ -149,7 +150,8 @@ class SettingsHolder(
         scope.launch {
             val result =
                 attempt {
-                    val key = now.keyEntry.ifEmpty { store.readKey().orEmpty() }
+                    val key =
+                        now.keyEntry.ifEmpty { store.readProvider().keyFor(now.address).orEmpty() }
                     core.testModel(now.address.trim(), now.model.trim(), key)
                 }
             mutableState.update { current ->

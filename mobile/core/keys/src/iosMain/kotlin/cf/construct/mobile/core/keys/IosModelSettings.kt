@@ -47,46 +47,42 @@ import platform.Security.kSecReturnData
 import platform.Security.kSecValueData
 
 private const val SERVICE = "construct.model"
-private const val ACCOUNT = "api-key"
+private const val ACCOUNT = "provider-settings"
+private const val LEGACY_ACCOUNT = "api-key"
 
 /**
- * The model setting of an iPhone: the address and the model name in the app's own preferences, the key in
- * the Keychain as an item that stays on this device (it is not in a backup and not in iCloud Keychain).
+ * The model setting of an iPhone is one Keychain item that stays on this device.
+ * Preferences supply the address and model from releases that stored the key separately.
  */
 fun iosModelSettingsStore(
     defaults: NSUserDefaults = NSUserDefaults.standardUserDefaults,
     service: String = SERVICE,
 ): ModelSettingsStore =
     StoredModelSettings(
-        object : TextValues {
-            override fun get(name: String) = defaults.stringForKey(name)
-
-            override fun put(
-                name: String,
-                value: String,
-            ) = defaults.setObject(value, forKey = name)
-        },
+        TextValues(defaults::stringForKey),
         KeychainSecret(service, ACCOUNT),
-    )
+    ) { KeychainSecret(service, LEGACY_ACCOUNT).delete() }
 
 /** One generic-password item of the Keychain. Its text is never part of an error. */
 class KeychainSecret(
     private val service: String,
     private val account: String,
 ) : SecretValue {
-    override fun isSet() =
-        when (fetch(returnData = false).first) {
-            errSecSuccess -> true
-            errSecItemNotFound -> false
-            else -> throw ModelSettingsException("The saved key cannot be opened. Enter it again.")
-        }
-
     override fun read(): String? {
-        val (status, data) = fetch(returnData = true)
+        val (status, data) = fetch()
         return when (status) {
-            errSecSuccess -> data?.let { NSString.create(it, NSUTF8StringEncoding)?.toString() }
-            errSecItemNotFound -> null
-            else -> throw ModelSettingsException("The saved key cannot be opened. Enter it again.")
+            errSecSuccess -> {
+                data?.let { NSString.create(it, NSUTF8StringEncoding)?.toString() }
+                    ?: throw ModelSettingsException("The saved key cannot be opened. Enter it again.")
+            }
+
+            errSecItemNotFound -> {
+                null
+            }
+
+            else -> {
+                throw ModelSettingsException("The saved key cannot be opened. Enter it again.")
+            }
         }
     }
 
@@ -116,23 +112,23 @@ class KeychainSecret(
         if (status != errSecSuccess) throw ModelSettingsException("The key could not be saved on this phone.")
     }
 
-    override fun delete() {
+    internal fun delete() {
         val status = withQuery { SecItemDelete(it) }
         if (status != errSecSuccess && status != errSecItemNotFound) {
-            throw ModelSettingsException("The key could not be removed (Keychain status $status).")
+            throw ModelSettingsException("The old saved key could not be removed. Try again.")
         }
     }
 
-    private fun fetch(returnData: Boolean): Pair<Int, NSData?> =
+    private fun fetch(): Pair<Int, NSData?> =
         memScoped {
             val found = alloc<CFTypeRefVar>()
             val status =
                 withQuery { query ->
                     CFDictionaryAddValue(query, kSecMatchLimit, kSecMatchLimitOne)
-                    if (returnData) CFDictionaryAddValue(query, kSecReturnData, kCFBooleanTrue)
+                    CFDictionaryAddValue(query, kSecReturnData, kCFBooleanTrue)
                     SecItemCopyMatching(query, found.ptr)
                 }
-            if (status != errSecSuccess || !returnData) {
+            if (status != errSecSuccess) {
                 status to null
             } else {
                 status to (CFBridgingRelease(found.value) as NSData?)

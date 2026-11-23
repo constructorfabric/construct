@@ -1,8 +1,7 @@
 //! The chat core for the phone apps, behind a plain C interface.
 //!
-//! The Kotlin code of both apps calls two functions: one builds the request body of a fixed test
-//! conversation (the bytes the provider's prompt cache sees), the other tests a model setting. The
-//! interface is C because both sides read it as it is: the iPhone's Kotlin/Native reads the header
+//! Both apps use this interface to answer a conversation, test a model setting and check the bytes
+//! of a fixed test conversation. The iPhone's Kotlin/Native reads the header
 //! (`include/construct_chat.h`) and the Android Kotlin calls the shared library by symbol name.
 //! Text crosses as UTF-8 C strings; every string the library returns is freed with
 //! [`cf_chat_free`].
@@ -10,8 +9,7 @@
 //! The one other way in is the JNI function of the Android certificate check (`android_tls`): it
 //! hands the JVM to the TLS stack and is not part of the C header.
 //!
-//! The key crosses as an argument of [`cf_chat_test_model`] and nowhere else: it is never logged,
-//! stored or put in a returned text.
+//! Model keys cross only in call arguments and are never logged, stored or returned.
 
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -20,6 +18,8 @@ use chat_core::fixture::request_body_over;
 use chat_core::model::Model;
 use chat_core::model_test;
 use serde_json::json;
+
+mod answer;
 
 /// The request body of the fixed conversation over the tool file `tools_file`.
 ///

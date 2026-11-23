@@ -2,7 +2,7 @@
 # Save a recognizable fake API key through the app, then search the app's files and the device log for it.
 #
 #   scripts/check-key-not-leaked.sh android   needs a running emulator or device (one only)
-#   scripts/check-key-not-leaked.sh ios       needs Xcode, a booted iPhone Simulator, and xcodegen
+#   scripts/check-key-not-leaked.sh ios       needs Xcode, an iOS Simulator runtime, and xcodegen
 #
 # The key is made up and is not a credential. The script first plants it on purpose in a
 # file of its own and checks that the search finds it there, so a search that finds nothing is not a
@@ -18,15 +18,19 @@ fail() {
 
 platform=${1:-}
 
-search_android() {
+search_android() (
   local app_id
   local key="sk-android-leak-search-0123456789-do-not-use"
-  app_id=$(sed -n 's/^constructApplicationId=//p' gradle.properties | tail -n 1)
+  local product_id
+  product_id=$(sed -n 's/^constructApplicationId=//p' gradle.properties | tail -n 1)
+  [ -n "$product_id" ] || fail "constructApplicationId is missing"
+  app_id="$product_id.leakcheck"
   [ "$(adb devices | grep -c 'device$')" = 1 ] || fail "start exactly one emulator or device"
 
-  # The apps are installed and the test is run by hand, because the Gradle task removes the app after the
-  # run and its data with it.
-  ./gradlew :androidApp:installDebug :androidApp:installDebugAndroidTest --console=plain >/dev/null
+  # The fixture app has its own data directory, even on a device running the normal app.
+  leak_app_id="$app_id"
+  trap 'adb uninstall "$leak_app_id.test" >/dev/null 2>&1 || true; adb uninstall "$leak_app_id" >/dev/null 2>&1 || true' EXIT
+  ./gradlew -PconstructApplicationId="$app_id" :androidApp:installDebug :androidApp:installDebugAndroidTest --console=plain >/dev/null
   adb shell pm clear "$app_id" >/dev/null
   local run
   run=$(adb shell am instrument -w \
@@ -38,7 +42,7 @@ search_android() {
   data_files=$(adb shell run-as "$app_id" find . -type f | tr -d '\r')
   echo "app files after saving the key:"
   echo "$data_files" | sed 's/^/  /'
-  echo "$data_files" | grep -q 'no_backup/model_key.bin$' || fail "the encrypted key file is not where it should be"
+  echo "$data_files" | grep -q 'no_backup/model_provider.bin$' || fail "the encrypted provider file is not where it should be"
 
   # The search must find a key that is there.
   adb shell "run-as $app_id sh -c \"echo $key > files/leak-control.txt\""
@@ -51,36 +55,42 @@ search_android() {
   [ -z "$hits" ] || { echo "KEY FOUND in the app's files: $hits"; found=1; }
   hits=$(adb shell "grep -rlF '$key' /sdcard/Android/data/$app_id 2>/dev/null" | tr -d '\r' || true)
   [ -z "$hits" ] || { echo "KEY FOUND on shared storage: $hits"; found=1; }
-  local log_file
-  log_file=$(mktemp)
-  adb logcat -d >"$log_file"
-  grep -qF "$key" "$log_file" && { echo "KEY FOUND in the log"; found=1; }
-  rm -f "$log_file"
+  hits=$(adb logcat -d | awk -v key="$key" 'index($0, key) { found = 1 } END { print found + 0 }')
+  if [ "$hits" != 0 ]; then
+    echo "KEY FOUND in the log"
+    found=1
+  fi
 
-  adb shell pm clear "$app_id" >/dev/null
   [ "$found" = 0 ] || exit 1
   echo "android: the key is in no file of the app and not in the log"
-}
+)
 
-search_ios() {
-  local bundle_id device run_log key
+search_ios() (
+  local bundle_id device_type runtime run_log key
   # Passing a key in the test runner's environment causes the simulator to log it.
   key="sk-ios-leak-search-0123456789-do-not-use"
   run_log=$(mktemp)
   bundle_id=$(sed -n 's/^ *APP_BUNDLE_ID: *//p' iosApp/project.yml | head -n 1)
-  device=${SIMULATOR_NAME:-iPhone 17}
-  xcrun simctl boot "$device" 2>/dev/null || true
-  xcrun simctl bootstatus "$device" >/dev/null
+  [ -n "$bundle_id" ] || fail "APP_BUNDLE_ID is missing"
+  device_type=$(xcrun simctl list -j devicetypes | jq -er --arg name "${SIMULATOR_NAME:-iPhone 17}" \
+    '.devicetypes[] | select(.name == $name) | .identifier')
+  runtime=$(xcrun simctl list -j runtimes | jq -er \
+    '[.runtimes[] | select(.isAvailable and (.identifier | contains(".iOS-"))) | .identifier] | last')
+  leak_simulator=$(xcrun simctl create "Construct Leak Check $$" "$device_type" "$runtime")
+  leak_build=$(mktemp -d)
+  trap 'xcrun simctl shutdown "$leak_simulator" >/dev/null 2>&1 || true; xcrun simctl delete "$leak_simulator"; rm -rf "$leak_build"' EXIT
+  xcrun simctl boot "$leak_simulator"
+  xcrun simctl bootstatus "$leak_simulator" >/dev/null
   # An unsigned Simulator build has no Keychain; an ad-hoc signature gives it one.
   (cd iosApp && xcodegen generate >/dev/null &&
     TEST_RUNNER_LEAK_SEARCH=1 xcodebuild -project Construct.xcodeproj -scheme Construct \
-      -destination "platform=iOS Simulator,name=$device" -derivedDataPath "${TMPDIR:-/tmp}/construct-leak-search" \
+      -destination "platform=iOS Simulator,id=$leak_simulator" -derivedDataPath "$leak_build" \
       -only-testing:ConstructTests/ModelSettingsStoreTests/testLeavesAFakeKeyForTheLeakSearch \
       CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test >"$run_log" 2>&1) || true
   grep -q 'TEST SUCCEEDED' "$run_log" || fail "the test that saves the key did not pass (see $run_log)"
 
   local data
-  data=$(xcrun simctl get_app_container "$device" "$bundle_id" data)
+  data=$(xcrun simctl get_app_container "$leak_simulator" "$bundle_id" data)
   echo "app files after saving the key:"
   (cd "$data" && find . -type f | sed 's/^/  /')
 
@@ -93,16 +103,17 @@ search_ios() {
   local hits
   hits=$(grep -rlF "$key" "$data" || true)
   [ -z "$hits" ] || { echo "KEY FOUND in the app's files: $hits"; found=1; }
-  local log_file
-  log_file=$(mktemp)
-  xcrun simctl spawn "$device" log show --last 10m --style compact >"$log_file" 2>/dev/null
-  grep -qF "$key" "$log_file" && { echo "KEY FOUND in the log"; found=1; }
-  rm -f "$log_file" "$run_log"
+  hits=$(xcrun simctl spawn "$leak_simulator" log show --last 10m --style compact |
+    awk -v key="$key" 'index($0, key) { found = 1 } END { print found + 0 }')
+  if [ "$hits" != 0 ]; then
+    echo "KEY FOUND in the log"
+    found=1
+  fi
+  rm -f "$run_log"
 
-  xcrun simctl uninstall "$device" "$bundle_id" || true
   [ "$found" = 0 ] || exit 1
   echo "ios: the key is in no file of the app and not in the log"
-}
+)
 
 case "$platform" in
 android) search_android ;;

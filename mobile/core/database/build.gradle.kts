@@ -32,6 +32,8 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":core:construct"))
+            api(project(":core:keys"))
+            implementation(project(":core:chat"))
         }
         androidMain.dependencies {
             implementation(libs.sqldelight.android.driver)

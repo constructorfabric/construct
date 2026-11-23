@@ -79,7 +79,7 @@ class ModelSetupTest {
     fun startFromAnEmptyPhone() {
         app.modelSettings.apply {
             removeKey()
-            saveText("", "")
+            saveProvider("", "", null)
         }
     }
 
@@ -90,7 +90,7 @@ class ModelSetupTest {
         if (keepKey) return
         app.modelSettings.apply {
             removeKey()
-            saveText("", "")
+            saveProvider("", "", null)
         }
     }
 
@@ -129,7 +129,7 @@ class ModelSetupTest {
         // The page shows that a key is set and never the key.
         rule.onNodeWithText(KEY_SAVED).assertExists()
         rule.onAllNodesWithText(FAKE_KEY, substring = true).assertCountEquals(0)
-        assertEquals(FAKE_KEY, app.modelSettings.readKey())
+        assertEquals(FAKE_KEY, app.modelSettings.readProvider().key)
 
         rule.onNodeWithTag("settings-test").assertIsEnabled().performClick()
         rule.waitUntil(WAIT_MS) { rule.onAllNodesWithText("Uses tools: works").fetchSemanticsNodes().isNotEmpty() }
@@ -140,7 +140,7 @@ class ModelSetupTest {
 
         rule.onNodeWithTag("settings-remove-key").performClick()
         rule.waitUntil(WAIT_MS) { rule.onAllNodesWithText("Remove key").fetchSemanticsNodes().isEmpty() }
-        assertNull(app.modelSettings.readKey())
+        assertNull(app.modelSettings.readProvider().key)
         assertFalse(app.modelSettings.read().keyIsSet)
         assertEquals(fake.address, app.modelSettings.read().address)
     }
