@@ -12,8 +12,10 @@ Multiplatform. This folder holds the shared Gradle project.
 | `core/database`     | The phone's copy in SQLite (SQLDelight), behind the same interface. Sending says "not available yet".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `core/designsystem` | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `core/chat`         | The chat core (Rust) as Kotlin sees it: `ChatCore` with the request body of the fixed test conversation and the Test of a model setting. Android calls the shared library through JNA, the iPhone reads the C header with cinterop. See "The chat core". |
+| `core/keys`         | The model setting on the phone: `ModelSettingsStore` keeps the address and the model name in the phone's own storage and the API key in the Keychain (iPhone) or under a Keystore key (Android), with `FakeModelSettingsStore` and a contract test every store passes. See "The model setting and its key". |
 | `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `feature/memory`    | The first feature made from the template: the person's facts as a plain list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `feature/settings`  | The model setup of the Settings page, made from the template: a state, a state holder (read, save, test, remove the key) and the Android screen with its form row and message line.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `shared`            | The one Kotlin framework the iPhone app links (`ConstructShared`): it re-exports the modules above, adds `UiScope` (a main-thread scope Swift can create and close) and uses SKIE, which shows Kotlin flows to Swift as `AsyncSequence`. Its analytics upload is off.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `androidApp`        | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. `AppFrame.kt` is the frame of every page (top bar with the title, a connection line, the navigation bar); a page without a feature is a `PlaceholderPage` until a feature module takes it over.                                                                                                                                                                           |
 | `iosApp`            | The iPhone app in SwiftUI. `project.yml` generates the Xcode project (not committed); Swift files under `App/`, `Core/` and `Features/` are picked up by folder. `Composition.swift` is the one place its objects are built, `Core/FlowState.swift` is the one adapter every feature uses to watch a state holder, `Core/ConstructTheme.swift` maps the shared colours to SwiftUI and holds the iPhone text sizes, radii and control sizes. `App/AppFrame.swift` is the frame of every page (the tab bar, a navigation bar with the inline title, a connection line); a page without a feature is a `PlaceholderPage` until a feature folder takes it over. The tab icons are Lucide, in the asset catalog. |
@@ -107,6 +109,33 @@ depends on it.
 `AndroidTlsTest` shows the system check at work (and that `ConstructApp` started it): a local TLS
 server with a certificate no phone trusts is refused with a TLS alert. The Gradle build stops when
 `Cargo.lock` holds two copies of the verifier. No test reaches a real provider.
+
+## The model setting and its key
+
+`core/keys` keeps what the person typed on the Settings page: the address of the model, its name and the
+API key. `ModelSettingsStore` is the one interface; a screen's state holder reads and writes it and the
+screen never sees it. A setting read back says only that a key is set (`ModelSettings.keyIsSet`); the whole
+key comes out through `readKey()` for a call to the model and is never part of a state, a log line, an
+error text or a copy. Every store call waits for the disk: the holder runs it off the main thread. A call
+that fails throws `ModelSettingsException` with a fixed plain reason.
+
+- Android: the address and the model name sit in a private preferences file. The key sits in a file under
+  `noBackupFilesDir`, which the system never backs up, encrypted with AES-GCM under a 256-bit Keystore key
+  that cannot be taken out of the Keystore. `res/xml/backup_rules.xml` and `data_extraction_rules.xml`
+  exclude the key file and the preferences too, should `allowBackup` ever be turned on (`BackupRulesTest`
+  reads them). A key that cannot be opened (a restored phone has no Keystore key) is reported and replaced
+  by saving a new one.
+- iPhone: the same text storage in `UserDefaults`; the key is a generic-password Keychain item with
+  `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` and `kSecAttrSynchronizable` false, so it is in no backup and not
+  in iCloud Keychain. Saving removes the old item and adds a new one.
+
+Tests: `ModelSettingsStoreContract` (`core/keys`, common) is what every store does; the fake, the shared
+store over memory and the encrypted file (JVM, with an AES key of the JVM in place of the Keystore key) pass it.
+On the phone, `ModelSetupTest` (`./gradlew :androidApp:connectedDebugAndroidTest`, an emulator) runs the real
+Settings page against a fake provider on a local port. `iosApp/Tests/ModelSettingsStoreTests.swift` runs the
+iPhone store over the real Keychain; the Keychain exists only inside the app, so it is an app test, not a
+Kotlin one. `scripts/check-key-not-leaked.sh android|ios` saves a made-up key through the app, proves its
+search by planting the key in a file, and then looks for the key in the app's files and in the log.
 
 ## Rules
 

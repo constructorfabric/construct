@@ -5,9 +5,15 @@ import SwiftUI
 /// phone's copy, change `makeConstruct()` and nothing else.
 final class Composition: ObservableObject {
     let construct: Construct
+    /// The model setting: the address and the model name in the app's preferences, the key in the Keychain.
+    let modelSettings: ModelSettingsStore
 
     init() {
         construct = Composition.makeConstruct()
+        modelSettings = IosModelSettingsKt.iosModelSettingsStore(
+            defaults: UserDefaults.standard,
+            service: "construct.model"
+        )
     }
 
     private static func makeConstruct() -> Construct {

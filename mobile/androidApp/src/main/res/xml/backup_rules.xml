@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Backups are off (allowBackup is false). If they are ever turned on, the key still stays out. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="model_settings.xml" />
+    <exclude domain="file" path="model_key.bin" />
+    <exclude domain="file" path="model_key.bin.part" />
+</full-backup-content>

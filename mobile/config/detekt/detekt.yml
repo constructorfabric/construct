@@ -2,6 +2,11 @@ complexity:
   TooManyFunctions:
     # The fake implements an interface; its overrides are not a design choice.
     ignoreOverridden: true
+  LongParameterList:
+    # A composable takes its state and its callbacks as parameters; that is how Compose is written.
+    ignoreDefaultParameters: true
+    functionThreshold: 6
+    ignoreAnnotated: [Composable]
 style:
   MagicNumber:
     ignoreNamedArgument: true
