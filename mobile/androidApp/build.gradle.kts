@@ -34,6 +34,24 @@ android {
                 .toInt()
         versionCode = providers.gradleProperty("constructVersionCode").get().toInt()
         versionName = providers.gradleProperty("constructVersionName").get()
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // The chat core is built for these two only; this keeps the 32-bit libraries of the JNA AAR out, so
+        // a device of another ABI cannot install an app whose core would not load.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    sourceSets {
+        // The Rust library of each ABI, built outside the repository by scripts/build-core.sh.
+        getByName("main").jniLibs.directories.add(
+            rootProject.extra
+                .get("coreBuildDir")
+                .let { (it as Provider<*>).get() }
+                .toString() + "/android",
+        )
+        // The chat core's tests run on the emulator from here, because this module packs the library.
+        getByName("androidTest").kotlin.directories.add("../core/chat/src/commonTest/kotlin")
+        getByName("androidTest").kotlin.directories.add("../core/chat/build/generated/fixtures")
+        getByName("androidTest").assets.directories.add("build/generated/testAssets")
     }
 
     testOptions {
@@ -75,6 +93,7 @@ androidComponents {
 }
 
 dependencies {
+    implementation(project(":core:chat"))
     implementation(project(":core:construct"))
     implementation(project(":core:database"))
     implementation(project(":core:designsystem"))
@@ -83,5 +102,56 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.activity)
     testImplementation(libs.kotlin.test.junit)
+    androidTestImplementation(libs.kotlin.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     testImplementation(libs.sqldelight.sqlite.driver)
+}
+
+// The Rust library is built before the app packs it, and the fixtures of the chat core's tests are
+// written before the tests compile.
+tasks.configureEach {
+    if (name.startsWith("merge") && name.endsWith("JniLibFolders")) dependsOn(":buildChatCoreAndroid")
+    if (name.contains("AndroidTest") && name.startsWith("compile")) dependsOn(":core:chat:generateFixtures")
+}
+
+// A TLS server with a certificate no phone trusts, for the test that an https address is refused by the
+// system's check and not by a crash. It is made for each build with the JDK's keytool and not stored.
+val testKeystore = layout.buildDirectory.file("generated/testAssets/untrusted-server.p12")
+val generateTestKeystore =
+    tasks.register<Exec>("generateTestKeystore") {
+        outputs.file(testKeystore)
+        // No inputs: it is made again for every build, so the 30-day certificate never goes stale.
+        outputs.upToDateWhen { false }
+        doFirst {
+            testKeystore
+                .get()
+                .asFile
+                .apply { parentFile.mkdirs() }
+                .delete()
+        }
+        commandLine(
+            File(System.getProperty("java.home"), "bin/keytool").path,
+            "-genkeypair",
+            "-alias",
+            "server",
+            "-keyalg",
+            "RSA",
+            "-keysize",
+            "2048",
+            "-validity",
+            "30",
+            "-dname",
+            "CN=127.0.0.1",
+            "-ext",
+            "san=ip:127.0.0.1",
+            "-storetype",
+            "PKCS12",
+            "-storepass",
+            "untrusted",
+            "-keystore",
+            testKeystore.get().asFile.path,
+        )
+    }
+tasks.configureEach {
+    if (name.contains("AndroidTest") && name.endsWith("Assets")) dependsOn(generateTestKeystore)
 }

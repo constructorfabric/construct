@@ -11,6 +11,7 @@ Multiplatform. This folder holds the shared Gradle project.
 | `core/construct`    | The one interface the screens use for chats, memory and the dashboard, and `FakeConstruct`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `core/database`     | The phone's copy in SQLite (SQLDelight), behind the same interface. Sending says "not available yet".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `core/designsystem` | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `core/chat`         | The chat core (Rust) as Kotlin sees it: `ChatCore` with the request body of the fixed test conversation and the Test of a model setting. Android calls the shared library through JNA, the iPhone reads the C header with cinterop. See "The chat core". |
 | `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `feature/memory`    | The first feature made from the template: the person's facts as a plain list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `shared`            | The one Kotlin framework the iPhone app links (`ConstructShared`): it re-exports the modules above, adds `UiScope` (a main-thread scope Swift can create and close) and uses SKIE, which shows Kotlin flows to Swift as `AsyncSequence`. Its analytics upload is off.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -29,6 +30,83 @@ a field needs no migration; adding a required field or renaming a field or a con
 
 Targets: Android (minimum API 26, set once in `gradle/libs.versions.toml`), `iosArm64` and
 `iosSimulatorArm64`. Every version lives in `gradle/libs.versions.toml`.
+
+## The chat core
+
+The chat is one Rust library, the `chat-core` crate, shared with the desktop agent. The `chat-bridge`
+crate puts a plain C interface on it (`chat-bridge/include/construct_chat.h`), and the shared Kotlin
+code calls that through `core/chat`:
+
+- `ChatCore.fixedRequestBody(toolsFile)` builds the request body of a fixed test conversation. The
+  bytes are the ones the provider's prompt cache sees, and equal the stored files of
+  `chat-core/tests/golden`.
+- `ChatCore.testModel(baseUrl, model, apiKey)` tests a model setting and returns `Works` or
+  `Failed(reason)`, the reason in the desktop app's words. The address check of the core refuses a
+  plain `http` address that is not on `localhost` or `127.0.0.1`. The key is an argument only: it is in
+  no log and in no returned text.
+
+Why a C interface: Kotlin/Native cannot load the Kotlin bindings that Rust bridge generators write,
+and a C header is read by cinterop as it is. Android calls the same functions by name through JNA
+(no glue code to write for JNI; the one exception is the JNI function that gives Android's certificate
+check the JVM, see `https` on Android below). One interface, no generator, and a streamed answer will cross the
+same way, as a C function pointer with a context.
+
+`scripts/build-core.sh [ios|android|all]` builds the core once for each target into a folder outside
+the repository, `CONSTRUCT_CORE_BUILD_DIR` (default `~/Library/Caches/construct-chat-core`), where the
+cargo cache is too unless `CARGO_TARGET_DIR` is set:
+
+```text
+<dir>/ios/device/libconstruct_chat_bridge.a        iPhone device (aarch64-apple-ios)
+<dir>/ios/simulator/libconstruct_chat_bridge.a     iPhone Simulator (aarch64-apple-ios-sim)
+<dir>/android/<abi>/libconstruct_chat_bridge.so    arm64-v8a and x86_64
+```
+
+The Gradle tasks `buildChatCoreIos` and `buildChatCoreAndroid` run the script, and the iPhone
+framework and the Android app depend on them, so Xcode and Gradle builds build the core first. Their
+inputs are the Rust sources, `Cargo.lock`, the script and the two files it reads the platform versions
+from, and their outputs are the libraries, so a
+build with unchanged sources does not start cargo. Nothing compiled is committed.
+
+What a Mac needs for the Rust part, in addition to the list below:
+
+- `rustup` and the Rust toolchain of `rust-toolchain.toml`, with the four targets:
+  `rustup target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-linux-android x86_64-linux-android`
+- `cargo-ndk`, which builds a Rust library for each Android ABI with the NDK's compiler (the bridge itself has no generator): `cargo install cargo-ndk`
+- The Android NDK, any recent release (27.2 was proven): `sdkmanager 'ndk;27.2.12479018'`. The script takes
+  `ANDROID_NDK_HOME`, or else the newest one under `$ANDROID_HOME/ndk`
+- `cmake`, which the build script of the TLS library may ask for: `brew install cmake`
+- Xcode, the app (the command line tools carry no iPhone SDK), as in the list below
+
+The first build compiles every crate the core uses for each of the four targets and takes a quarter
+of an hour on an Apple Silicon laptop; a second one with nothing changed does nothing. `./gradlew :androidApp:connectedDebugAndroidTest` runs the chat core's tests on a running emulator,
+by hand: the workflow only compiles them, because it starts no emulator. `./gradlew
+:core:chat:iosSimulatorArm64Test` runs them in the iPhone Simulator, and the workflow runs that one.
+
+The Android minimum API level and the iPhone deployment target of the Rust build are read from
+`gradle/libs.versions.toml` and `iosApp/project.yml`, and both files are inputs of the Gradle tasks.
+`rustSources` in `build.gradle.kts` and the paths of the workflow list the crates the library is built
+from. The script stops when `cargo metadata` shows other crates than `chat-bridge`, `chat-core` and
+`connectors` (the list it keeps), so a new path dependency cannot leave those two lists stale.
+
+`https` on Android: the TLS stack checks certificates through Android's own trust store, which it
+reaches through the JVM. The app calls `initChatCore(context)` (`core/chat`, in `Application.onCreate`)
+once, which hands the context to the Rust library through one JNI function. If the init fails, or the
+library does not load, the app logs it and goes on, since the memory screens do not need the core. The
+Kotlin part of the check, `org.rustls:rustls-platform-verifier`, is an AAR that its authors publish as a Maven repository
+on GitHub (`settings.gradle.kts` limits that repository to its own group). Its version is read from
+`Cargo.lock`, so it follows the crate. A call made before a successful init
+answers "unreachable" for an `https` address. If the library itself did not load, every call throws
+`UnsatisfiedLinkError`: the library is built for `arm64-v8a` and `x86_64` only, so the app keeps only
+those two (`abiFilters` in `androidApp/build.gradle.kts`, which also drops the 32-bit libraries of JNA) and a
+32-bit device cannot install it.
+
+The first `https` call of a process was slow on the emulator: 10 s, and once more than the core's
+15 s deadline, so it came back as `timeout`; the next calls took under half a second. The emulator has
+no DNS, and it is not known whether a real phone has the stall. Check it on a device before the chat
+depends on it.
+`AndroidTlsTest` shows the system check at work (and that `ConstructApp` started it): a local TLS
+server with a certificate no phone trusts is refused with a TLS alert. The Gradle build stops when
+`Cargo.lock` holds two copies of the verifier. No test reaches a real provider.
 
 ## Rules
 

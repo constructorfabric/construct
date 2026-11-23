@@ -19,8 +19,9 @@ settings:
     KOTLIN_FRAMEWORK_DIR: $(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework
     "KOTLIN_FRAMEWORK_DIR[sdk=iphoneos*]": $(SRCROOT)/../shared/build/bin/iosArm64/releaseFramework
     EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
-    # The framework is static, so what the Kotlin code needs from the system is linked here.
-    OTHER_LDFLAGS: -lsqlite3
+    # The framework is static, so what the Kotlin code and the Rust chat core need from the system is
+    # linked here.
+    OTHER_LDFLAGS: -lsqlite3 -lresolv -lc++ -framework Security -framework CoreFoundation -framework SystemConfiguration
     "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": "NO"
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: JNCXJMSX3P
@@ -62,7 +63,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.1.1"
         # <YYMMDD>.<count of the day>: scripts/build-ios.sh raises it with every upload.
-        CURRENT_PROJECT_VERSION: "261122.4"
+        CURRENT_PROJECT_VERSION: "261122.5"
   ConstructTests:
     type: bundle.unit-test
     platform: iOS

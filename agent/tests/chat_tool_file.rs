@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use chat_core::fixture as conversation;
 use chat_core::wire::request_body;
 use construct_agent::chat::tool::{
     ChatTools, chat_list, desktop_config, setup_list, setup_tools, standard_tools,
@@ -13,9 +14,6 @@ use construct_agent::chat::tool::{
 use construct_agent::workspace::Workspace;
 
 mod common;
-
-#[path = "../../chat-core/tests/golden/conversation.rs"]
-mod conversation;
 
 use common::sessions::render_tool;
 

@@ -20,6 +20,7 @@ kotlin {
             isStatic = true
             binaryOption("bundleId", "cf.construct.mobile.shared")
             export(project(":core:model"))
+            export(project(":core:chat"))
             export(project(":core:construct"))
             export(project(":core:database"))
             export(project(":core:designsystem"))
@@ -30,6 +31,7 @@ kotlin {
     sourceSets {
         iosMain.dependencies {
             api(project(":core:model"))
+            api(project(":core:chat"))
             api(project(":core:construct"))
             api(project(":core:database"))
             api(project(":core:designsystem"))
