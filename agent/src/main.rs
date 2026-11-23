@@ -123,6 +123,10 @@ fn run() -> std::io::Result<()> {
         .with_activity(activity.clone())
         .with_model(model_state.clone())
         .with_service(login_service());
+    let server = match open_phones(&rt) {
+        Some(phones) => server.with_phones(phones),
+        None => server,
+    };
     let (server, render_tool) = match dashboard {
         Some(dashboard) => {
             let numbers = construct_agent::dashboard_numbers::Numbers::new(
@@ -335,6 +339,32 @@ fn open_settings() -> Option<construct_agent::settings::Settings> {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("settings unavailable: {e}");
+            None
+        }
+    }
+}
+
+/// The phone service: it listens only when a phone is paired or a pairing is open. When it cannot
+/// start (the phones' file is unreadable, or the port of the paired phones is taken), the phone
+/// commands answer an error and the rest of the agent runs.
+#[cfg(unix)]
+fn open_phones(rt: &tokio::runtime::Runtime) -> Option<construct_agent::phone::Service> {
+    use construct_agent::phone::{DEFAULT_PORT, Service};
+
+    let started = match construct_agent::settings::config_dir() {
+        Ok(dir) => rt
+            .block_on(Service::start(
+                dir,
+                ([0, 0, 0, 0], DEFAULT_PORT).into(),
+                None,
+            ))
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    match started {
+        Ok(phones) => Some(phones),
+        Err(e) => {
+            eprintln!("phones unavailable: {e}");
             None
         }
     }

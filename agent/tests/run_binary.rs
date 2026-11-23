@@ -63,3 +63,48 @@ fn the_agent_follows_the_claude_logs_of_its_home() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(turns, Some(1), "the agent did not read the log");
 }
+
+#[test]
+fn the_agent_opens_no_phone_port_and_answers_the_phone_commands() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    fn ask(socket: &std::path::Path, line: &str) -> Option<serde_json::Value> {
+        let mut stream = UnixStream::connect(socket).ok()?;
+        stream.write_all(format!("{line}\n").as_bytes()).ok()?;
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).ok()?;
+        serde_json::from_str(&reply).ok()
+    }
+
+    let dir = std::env::temp_dir().join(format!("agent-phones-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+    let agent = Agent(
+        Command::new(env!("CARGO_BIN_EXE_construct-agent"))
+            .arg("run")
+            .env("HOME", dir.join("home"))
+            .env("XDG_RUNTIME_DIR", dir.join("run"))
+            .env("XDG_DATA_HOME", dir.join("data"))
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("TMPDIR", dir.join("run"))
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let socket = dir.join("run/construct/agent.sock");
+    let mut listed = None;
+    for _ in 0..400 {
+        listed = ask(&socket, "phone-list");
+        if listed.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(agent);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(listed, Some(serde_json::json!({"phones": []})));
+}

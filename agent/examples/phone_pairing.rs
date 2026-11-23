@@ -80,7 +80,7 @@ mod unix {
         println!("ready");
         let _ = std::io::stdout().flush();
         let _ = tokio::signal::ctrl_c().await;
-        endpoint.shutdown();
+        endpoint.stop().await;
     }
 }
 
