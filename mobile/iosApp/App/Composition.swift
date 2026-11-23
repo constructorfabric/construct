@@ -1,3 +1,4 @@
+import Combine
 import ConstructShared
 import SwiftUI
 
@@ -7,22 +8,36 @@ final class Composition: ObservableObject {
     let construct: Construct
     /// The provider setting stored together in the Keychain.
     let modelSettings: ModelSettingsStore
+    let modelSettingsDidCommit = PassthroughSubject<Void, Never>()
 
     init() {
+        var service = "construct.model"
+        var defaults = UserDefaults.standard
+        var copyName = CopyFileKt.COPY_FILE
+        var seed = false
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        seed = true
+        // UI tests exercise the real Keychain and database in their own namespace.
+        if let id = environment["CONSTRUCT_UI_TEST_ID"].flatMap(UUID.init(uuidString:)) {
+            service += ".test.\(id.uuidString)"
+            defaults = UserDefaults(suiteName: service) ?? .standard
+            copyName = "ui-test-\(id.uuidString).sqlite"
+            seed = environment["CONSTRUCT_UI_TEST_EMPTY_COPY"] != "1"
+        }
+        #endif
         let settings = IosModelSettingsKt.iosModelSettingsStore(
-            defaults: UserDefaults.standard,
-            service: "construct.model"
+            defaults: defaults,
+            service: service
         )
         modelSettings = settings
-        construct = Composition.makeConstruct(settings: settings)
+        construct = Composition.makeConstruct(settings: settings, copyName: copyName, seed: seed)
     }
 
-    private static func makeConstruct(settings: ModelSettingsStore) -> Construct {
-        let store = CopyStore(driver: NativeDriverKt.nativeCopyDriver(name: CopyFileKt.COPY_FILE))
-        #if DEBUG
+    private static func makeConstruct(settings: ModelSettingsStore, copyName: String, seed: Bool) -> Construct {
+        let store = CopyStore(driver: NativeDriverKt.nativeCopyDriver(name: copyName))
         // There is no sync yet, so a debug build fills an empty copy with the sample data.
-        _ = store.seedWithSampleData()
-        #endif
+        if seed { _ = store.seedWithSampleData() }
         return PhoneConstruct(store: store, settings: settings, dispatcher: BackgroundKt.backgroundDispatcher())
     }
 }

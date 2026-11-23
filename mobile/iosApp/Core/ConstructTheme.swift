@@ -57,6 +57,8 @@ enum ConstructTheme {
         static let body: CGFloat = 16
         static let secondary: CGFloat = 14
         static let caption: CGFloat = 12
+        static let section: CGFloat = 20
+        static let heading: CGFloat = 22
     }
 
     enum Radius {
@@ -69,6 +71,14 @@ enum ConstructTheme {
         /// The smallest area a tap may land on.
         static let touch: CGFloat = 44
         static let icon: CGFloat = 24
+        static let smallIcon: CGFloat = 16
+        static let sendIcon: CGFloat = 20
+        static let composerButton: CGFloat = 36
+        static let composer: CGFloat = 52
+        static let stroke: CGFloat = 1
+        static let focusStroke: CGFloat = 2
+        static let bubbleWidth: CGFloat = 0.82
+        static let rowGap: CGFloat = 2
         /// The icon in the middle of an empty page.
         static let iconLarge: CGFloat = 40
         /// The dot of the connection line.
@@ -77,6 +87,7 @@ enum ConstructTheme {
 
     /// The spacing steps of the shared tokens, in points.
     enum Space {
+        static let none: CGFloat = 0
         static let extraSmall = CGFloat(Spacing.shared.XS)
         static let small = CGFloat(Spacing.shared.S)
         static let medium = CGFloat(Spacing.shared.M)
