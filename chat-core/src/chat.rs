@@ -69,7 +69,7 @@ const WIRE_LIMIT: usize = 64 * TEXT_LIMIT;
 const ERROR_BODY_LIMIT: usize = 64 * 1024;
 const ERROR_BODY_DEADLINE: Duration = Duration::from_secs(5);
 /// A conversation is listed under its first message cut to this many characters.
-const TITLE_CHARS: usize = 60;
+pub const TITLE_CHARS: usize = 60;
 /// The result of a call that was cut short by `chat-stop`.
 pub(crate) const STOPPED_RESULT: &str = "stopped by the user";
 /// How long the erasure waits for a running answer to end after it was stopped.
@@ -1105,6 +1105,24 @@ impl Chat {
             })
             .map(|v| v.to_string())
             .collect()
+    }
+
+    /// Every stored conversation with its records, the newest first, for a reader that copies them.
+    ///
+    /// # Errors
+    /// When the conversations cannot be listed or one cannot be read.
+    pub fn conversations(&self) -> io::Result<Vec<(String, Vec<Record>)>> {
+        let sessions = lock(&self.inner.sink).list_sessions(SOURCE)?;
+        sessions
+            .into_iter()
+            .map(|s| self.read(&s.session).map(|records| (s.session, records)))
+            .collect()
+    }
+
+    /// The one line the chat shows for a call to the tool `name`.
+    #[must_use]
+    pub fn tool_line(&self, name: &str, arguments: &str) -> String {
+        self.inner.tools.line(name, arguments)
     }
 
     /// Erases every conversation, for the person's erasure: every running answer is stopped first and
