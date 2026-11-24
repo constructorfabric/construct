@@ -67,6 +67,7 @@ enum class ConnectionStatusKind(
 data class ConnectionStatus(
     val kind: ConnectionStatusKind,
     val lastContactMillis: Long = 0,
+    val endpoint: String? = null,
 ) {
     companion object {
         internal fun from(snapshot: LinkSnapshot): ConnectionStatus {
@@ -81,7 +82,7 @@ data class ConnectionStatus(
                     ComputerLink.ComputerUpdate -> ConnectionStatusKind.ComputerUpdate
                     ComputerLink.StorageError -> ConnectionStatusKind.StorageError
                 }
-            return ConnectionStatus(kind, snapshot.lastContactMillis)
+            return ConnectionStatus(kind, snapshot.lastContactMillis, snapshot.endpoint)
         }
     }
 }

@@ -186,17 +186,28 @@ class CopyStore(
     /** Deleting a fact that is not there is not an error. */
     fun deleteFact(factId: String) = queries.deleteFact(factId)
 
+    /** Removes the computer's copy while preserving phone chats and their native records. */
+    fun removeComputerCopy() =
+        queries.transaction {
+            queries.computerConversations().executeAsList().forEach(::removeConversation)
+            removeComputerData()
+        }
+
     /** Empties the conversations, the facts, the dashboard and the record of the sync. */
     fun deleteEverything() =
         queries.transaction {
             queries.deleteAllRecords()
             queries.deleteAllMessages()
             queries.deleteAllConversations()
-            queries.deleteAllFacts()
-            queries.deleteDocument()
-            queries.deleteAllNumbers()
-            queries.deleteSync()
+            removeComputerData()
         }
+
+    private fun removeComputerData() {
+        queries.deleteAllFacts()
+        queries.deleteDocument()
+        queries.deleteAllNumbers()
+        queries.deleteSync()
+    }
 
     fun document(): DocumentState =
         queries

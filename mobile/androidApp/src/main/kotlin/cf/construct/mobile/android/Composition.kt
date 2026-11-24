@@ -23,13 +23,11 @@ import kotlinx.coroutines.Dispatchers
  * instead of the phone's copy, change [createConstruct] and nothing else.
  */
 internal fun createConstruct(
-    context: Context,
+    store: CopyStore,
     modelSettings: ModelSettingsStore,
-): Construct {
-    val store = CopyStore(androidCopyDriver(context))
-    seedCopy(store)
-    return PhoneConstruct(store, modelSettings, Dispatchers.IO)
-}
+): Construct = PhoneConstruct(store, modelSettings, Dispatchers.IO)
+
+internal fun createCopy(context: Context): CopyStore = CopyStore(androidCopyDriver(context)).also(::seedCopy)
 
 /** The provider setting encrypted under an Android Keystore key. */
 internal fun createModelSettingsStore(context: Context): ModelSettingsStore = androidModelSettingsStore(context)

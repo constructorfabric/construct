@@ -25,7 +25,8 @@ internal fun ChatRoute(
     chat: ChatViewModel,
     connection: ConnectionStatus,
     onTryAgain: () -> Unit,
-    otherPage: @Composable (Page) -> Unit,
+    computerContent: @Composable (ComputerPage, (ComputerPage) -> Unit) -> Unit,
+    otherPage: @Composable (Page, () -> Unit) -> Unit,
 ) {
     var selected by rememberSaveable { mutableStateOf(Page.Chat) }
     var fromChat by rememberSaveable { mutableStateOf(false) }
@@ -67,11 +68,12 @@ internal fun ChatRoute(
             pageActions = {
                 if (selected == Page.Chat) ChatListMenu(state, chat.holder::delete)
             },
-        ) { page ->
+            computerContent = computerContent,
+        ) { page, openComputer ->
             if (page == Page.Chat) {
                 ChatListScreen(state, chat.listActions)
             } else {
-                otherPage(page)
+                otherPage(page, openComputer)
             }
         }
     }
