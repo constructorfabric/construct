@@ -15,7 +15,8 @@ class FakeModelSettingsStoreTest : ModelSettingsStoreContract() {
     fun aFailingFakeThrowsAPlainReasonThatHoldsNoKey() {
         val store = FakeModelSettingsStore(backing).apply { failing = true }
 
-        val reason = assertFailsWith<ModelSettingsException> { store.saveKey(FAKE_KEY) }
+        val reason =
+            assertFailsWith<ModelSettingsException> { store.saveProvider("https://example.com", "model", FAKE_KEY) }
 
         assertFalse(reason.message.orEmpty().contains(FAKE_KEY))
     }

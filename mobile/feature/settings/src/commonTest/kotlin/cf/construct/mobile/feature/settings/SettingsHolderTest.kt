@@ -4,6 +4,10 @@ import cf.construct.mobile.core.chat.ChatCore
 import cf.construct.mobile.core.chat.ModelTestResult
 import cf.construct.mobile.core.keys.FakeBacking
 import cf.construct.mobile.core.keys.FakeModelSettingsStore
+import cf.construct.mobile.core.keys.ModelSettingsStore
+import cf.construct.mobile.core.keys.SecretValue
+import cf.construct.mobile.core.keys.StoredModelSettings
+import cf.construct.mobile.core.keys.TextValues
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -47,7 +51,7 @@ class SettingsHolderTest {
     private val store = FakeModelSettingsStore(backing)
     private val core = RecordingCore()
 
-    private fun TestScope.holder(store: FakeModelSettingsStore = this@SettingsHolderTest.store) =
+    private fun TestScope.holder(store: ModelSettingsStore = this@SettingsHolderTest.store) =
         UnconfinedTestDispatcher(testScheduler).let { immediate ->
             SettingsHolder(store, core, CoroutineScope(immediate), immediate)
         }
@@ -82,7 +86,7 @@ class SettingsHolderTest {
             assertEquals("", state.keyEntry)
             assertFalse(state.toString().contains(FAKE_KEY))
             assertEquals("demo-model", store.read().model)
-            assertEquals(FAKE_KEY, store.readKey())
+            assertEquals(FAKE_KEY, store.readProvider().key)
         }
 
     @Test
@@ -121,7 +125,7 @@ class SettingsHolderTest {
             holder.change(SettingsField.ModelName, "other-model")
             holder.save()
 
-            assertEquals(FAKE_KEY, store.readKey())
+            assertEquals(FAKE_KEY, store.readProvider().key)
             assertEquals("other-model", store.read().model)
         }
 
@@ -135,7 +139,7 @@ class SettingsHolderTest {
             holder.removeKey()
 
             assertFalse(holder.state.value.keyIsSet)
-            assertNull(store.readKey())
+            assertNull(store.readProvider().key)
             assertEquals("demo-model", store.read().model)
         }
 
@@ -164,6 +168,20 @@ class SettingsHolderTest {
             holder.test()
 
             assertEquals(FAKE_KEY, core.asked.single().third)
+        }
+
+    @Test
+    fun testDoesNotReuseASavedKeyAfterTheAddressIsEdited() =
+        runTest {
+            val holder = holder()
+            holder.fill()
+            holder.save()
+            holder.change(SettingsField.Address, "https://other.example/v1")
+
+            holder.test()
+
+            assertEquals("", core.asked.single().third)
+            assertEquals(FAKE_KEY, store.readProvider().key)
         }
 
     @Test
@@ -257,7 +275,7 @@ class SettingsHolderTest {
             holder.save()
             holder.removeKey()
             advanceUntilIdle()
-            assertNull(store.readKey())
+            assertNull(store.readProvider().key)
             assertFalse(holder.state.value.keyIsSet)
         }
 
@@ -265,7 +283,7 @@ class SettingsHolderTest {
     fun testUsesTheReplacementOnlyAfterSaveFinishes() =
         runTest {
             val holder = SettingsHolder(store, core, this, StandardTestDispatcher(testScheduler))
-            store.saveKey("previous")
+            store.saveProvider("http://127.0.0.1:8080/v1", "demo-model", "previous")
             advanceUntilIdle()
             holder.fill()
             holder.save()
@@ -303,7 +321,7 @@ class SettingsHolderTest {
             }
 
             val holder = SettingsHolder(store, core, this, io)
-            store.saveKey("previous")
+            store.saveProvider("http://127.0.0.1:8080/v1", "demo-model", "previous")
             completeNextIo()
             holder.fill()
             holder.save()
@@ -312,13 +330,13 @@ class SettingsHolderTest {
             assertFalse(holder.state.value.canTest)
             completeNextIo() // Save completed. Remove is still queued on the I/O dispatcher.
             assertTrue(holder.state.value.saved)
-            assertEquals(FAKE_KEY, store.readKey())
+            assertEquals(FAKE_KEY, store.readProvider().key)
             assertFalse(holder.state.value.canTest)
             holder.test()
             assertFalse(holder.state.value.testing)
 
             completeNextIo()
-            assertNull(store.readKey())
+            assertNull(store.readProvider().key)
             assertTrue(core.asked.isEmpty())
             assertEquals(SettingsCheck.None, holder.state.value.check)
 
@@ -326,6 +344,34 @@ class SettingsHolderTest {
             holder.test()
             completeNextIo()
             assertEquals("", core.asked.single().third)
+        }
+
+    @Test
+    fun anUnreadableRecordLeavesTheFormOpenForAReplacement() =
+        runTest {
+            var record = "unreadable"
+            val secret =
+                object : SecretValue {
+                    override fun read() = record
+
+                    override fun write(secret: String) {
+                        record = secret
+                    }
+                }
+            val saved = StoredModelSettings(TextValues { null }, secret)
+            val holder = holder(saved)
+
+            assertFalse(holder.state.value.loading)
+            assertNull(holder.state.value.unavailable)
+            assertEquals("The saved setting cannot be opened. Enter it again.", holder.state.value.failure)
+            assertFalse(holder.state.value.keyIsSet)
+
+            holder.fill()
+            holder.save()
+
+            assertTrue(holder.state.value.saved)
+            assertNull(holder.state.value.failure)
+            assertEquals(FAKE_KEY, saved.readProvider().key)
         }
 
     @Test

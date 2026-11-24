@@ -6,8 +6,8 @@ import cf.construct.mobile.core.chat.initChatCore
 
 /** Holds the app's one [cf.construct.mobile.core.construct.Construct], so a new screen reuses its open copy. */
 class ConstructApp : Application() {
-    val construct by lazy { createConstruct(this) }
     val modelSettings by lazy { createModelSettingsStore(this) }
+    val construct by lazy { createConstruct(this, modelSettings) }
     val chatCore by lazy { createChatCore() }
 
     // The init throws a plain RuntimeException from Java when the check cannot start.

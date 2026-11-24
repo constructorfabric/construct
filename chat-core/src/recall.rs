@@ -94,7 +94,7 @@ pub(super) async fn facts(client: &reqwest::Client, source: &dyn Facts) -> Strin
 ///
 /// # Errors
 /// The body is not a profile.
-fn render(body: &[u8]) -> Result<Option<String>, serde_json::Error> {
+pub fn render(body: &[u8]) -> Result<Option<String>, serde_json::Error> {
     let profile: Profile = serde_json::from_slice(body)?;
     let mut lines: Vec<(String, String, String, String)> = profile
         .categories

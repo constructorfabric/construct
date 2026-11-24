@@ -10,35 +10,35 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** The preferences file of the address and the model name, and the file of the encrypted key. */
+/** The legacy text preferences and the file of the encrypted provider record. */
 const val MODEL_SETTINGS_PREFERENCES = "model_settings"
-const val MODEL_KEY_FILE = "model_key.bin"
+const val MODEL_KEY_FILE = "model_provider.bin"
+private const val LEGACY_KEY_FILE = "model_key.bin"
 private const val KEYSTORE_ALIAS = "construct.model.key"
 private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
 
 /**
- * The model setting of an Android phone. The address and the model name sit in a private preferences
- * file. The key sits in a file under `noBackupFilesDir`, which the system never backs up, encrypted
+ * The model setting of an Android phone sits in a file under `noBackupFilesDir`,
+ * which the system never backs up. The address, model and key are encrypted together
  * with an AES key that lives in the Android Keystore and cannot be taken out of it.
  */
 fun androidModelSettingsStore(context: Context): ModelSettingsStore {
     val app = context.applicationContext
     val preferences = app.getSharedPreferences(MODEL_SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
-    val texts =
-        object : TextValues {
-            override fun get(name: String) = preferences.getString(name, null)
+    val texts = TextValues { preferences.getString(it, null) }
+    val directory = app.noBackupFilesDir
+    return StoredModelSettings(texts, KeystoreFileSecret(File(directory, MODEL_KEY_FILE), ::keystoreAesKey)) {
+        retireLegacyAndroidKey(directory)
+    }
+}
 
-            override fun put(
-                name: String,
-                value: String,
-            ) {
-                // commit(), not apply(): a failed write has to be seen, and a restart right after must find it.
-                if (!preferences.edit().putString(name, value).commit()) {
-                    throw ModelSettingsException("The setting could not be saved on this phone.")
-                }
-            }
+internal fun retireLegacyAndroidKey(directory: File) {
+    for (name in listOf(LEGACY_KEY_FILE, "$LEGACY_KEY_FILE.part")) {
+        val file = File(directory, name)
+        if (!file.delete() && file.exists()) {
+            throw ModelSettingsException("The old saved key could not be removed. Try again.")
         }
-    return StoredModelSettings(texts, KeystoreFileSecret(File(app.noBackupFilesDir, MODEL_KEY_FILE), ::keystoreAesKey))
+    }
 }
 
 /** The AES key of the Keystore, made on first use. It never leaves the Keystore. */
@@ -71,8 +71,6 @@ class KeystoreFileSecret(
     private val file: File,
     private val key: () -> SecretKey,
 ) : SecretValue {
-    override fun isSet() = file.isFile
-
     override fun read(): String? {
         if (!file.isFile) return null
         try {
@@ -94,11 +92,12 @@ class KeystoreFileSecret(
             cipher.init(Cipher.ENCRYPT_MODE, key())
             val sealed = cipher.iv + cipher.doFinal(secret.toByteArray(Charsets.UTF_8))
             // Written aside and moved over the old file, so a failed write never leaves half a key.
-            val partial = File(file.parentFile, file.name + ".part")
-            partial.writeBytes(sealed)
-            if (!partial.renameTo(file)) {
+            val partial = File.createTempFile(file.name, ".part", file.parentFile)
+            try {
+                partial.writeBytes(sealed)
+                if (!partial.renameTo(file)) throw ModelSettingsException("The key could not be saved on this phone.")
+            } finally {
                 partial.delete()
-                throw ModelSettingsException("The key could not be saved on this phone.")
             }
         } catch (e: ModelSettingsException) {
             throw e
@@ -107,10 +106,6 @@ class KeystoreFileSecret(
         ) {
             throw ModelSettingsException("The key could not be saved on this phone.")
         }
-    }
-
-    override fun delete() {
-        if (file.exists() && !file.delete()) throw ModelSettingsException("The key could not be removed.")
     }
 
     private companion object {

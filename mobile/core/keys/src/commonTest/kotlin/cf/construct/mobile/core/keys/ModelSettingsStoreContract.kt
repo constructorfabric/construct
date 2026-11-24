@@ -11,6 +11,8 @@ import kotlin.test.assertTrue
  * store, and a second open of the same phone's storage stands for a restart of the app.
  */
 abstract class ModelSettingsStoreContract {
+    private val address = "http://127.0.0.1:8080/v1"
+
     /** A store over this test's own empty storage; [reopen] reaches the same storage again. */
     abstract fun open(): ModelSettingsStore
 
@@ -19,45 +21,44 @@ abstract class ModelSettingsStoreContract {
     @Test
     fun anEmptyPhoneHasNothingSet() {
         assertEquals(ModelSettings(), open().read())
-        assertNull(open().readKey())
+        assertNull(open().readProvider().key)
     }
 
     @Test
     fun theTextSurvivesARestart() {
-        open().saveText("http://127.0.0.1:8080/v1", "demo-model")
+        open().saveProvider(address, "demo-model", null)
 
-        assertEquals(ModelSettings("http://127.0.0.1:8080/v1", "demo-model", false), reopen().read())
+        assertEquals(ModelSettings(address, "demo-model", false), reopen().read())
     }
 
     @Test
     fun theKeySurvivesARestartAndIsOnlySaidToBeSet() {
-        open().saveKey(FAKE_KEY)
+        open().saveProvider(address, "demo-model", FAKE_KEY)
 
         val again = reopen()
         assertTrue(again.read().keyIsSet)
-        assertEquals(FAKE_KEY, again.readKey())
+        assertEquals(FAKE_KEY, again.readProvider().key)
         assertFalse(again.read().toString().contains(FAKE_KEY))
     }
 
     @Test
     fun aNewKeyReplacesTheOldOne() {
         val store = open()
-        store.saveKey(FAKE_KEY)
-        store.saveKey(OTHER_KEY)
+        store.saveProvider(address, "demo-model", FAKE_KEY)
+        store.saveProvider(address, "demo-model", OTHER_KEY)
 
-        assertEquals(OTHER_KEY, reopen().readKey())
+        assertEquals(OTHER_KEY, reopen().readProvider().key)
     }
 
     @Test
     fun aRemovedKeyIsGoneAfterARestartAndTheTextStays() {
         val store = open()
-        store.saveText("http://127.0.0.1:8080/v1", "demo-model")
-        store.saveKey(FAKE_KEY)
+        store.saveProvider(address, "demo-model", FAKE_KEY)
         store.removeKey()
 
         val again = reopen()
         assertFalse(again.read().keyIsSet)
-        assertNull(again.readKey())
+        assertNull(again.readProvider().key)
         assertEquals("demo-model", again.read().model)
     }
 
@@ -69,20 +70,23 @@ abstract class ModelSettingsStoreContract {
     }
 
     @Test
-    fun savingTheTextLeavesTheKeyAlone() {
+    fun theKeyIsRetainedOnlyForTheSameAddress() {
         val store = open()
-        store.saveKey(FAKE_KEY)
-        store.saveText("http://127.0.0.1:8080/v1", "demo-model")
+        store.saveProvider(address, "demo-model", FAKE_KEY)
+        store.saveProvider("$address/", "renamed-model", null)
 
-        assertEquals(FAKE_KEY, reopen().readKey())
+        assertEquals(FAKE_KEY, reopen().readProvider().key)
+
+        store.saveProvider("https://different.example/v1", "renamed-model", null)
+        assertNull(reopen().readProvider().key)
     }
 
     @Test
     fun aKeyWithAnyCharactersComesBackAsItWas() {
-        val odd = "sk-ключ \"quoted\" 'x' \n tail ✓"
-        open().saveKey(odd)
+        val odd = "construct-model-v1:ключ \"quoted\" 'x' \n tail ✓"
+        open().saveProvider(address, "demo-model", odd)
 
-        assertEquals(odd, reopen().readKey())
+        assertEquals(odd, reopen().readProvider().key)
     }
 
     companion object {

@@ -29,6 +29,23 @@ import kotlin.test.assertNull
 class DatabaseConstructTest {
     private val driver = newInMemoryDriver()
     private val store = CopyStore(driver)
+
+    @Test
+    fun conversationsSortByInstantAndTruncateTitlesByCodePoint() {
+        val older = "2026-01-02T03:04:05Z"
+        val newer = "2026-01-02T03:04:05.001Z"
+        val title = "🌱".repeat(60)
+        store.saveConversation(ConversationSummary("computer", "Older", older), emptyList())
+        store.appendPhoneRecord(
+            PhoneRecord("phone", newer, ChatMessage(ChatRole.USER, title + " and more")),
+            0,
+            "turn",
+        )
+        val chats = store.conversations()
+        assertEquals(listOf("phone", "computer"), chats.map { it.id })
+        assertEquals(title, chats.first().title)
+    }
+
     private val construct = DatabaseConstruct(store, Dispatchers.Unconfined)
 
     @Test
@@ -133,6 +150,21 @@ class DatabaseConstructTest {
         store.saveConversation(chat, listOf(ChatMessage(ChatRole.USER, "Hi"), ChatMessage(ChatRole.TOOL, "Looked")))
         store.saveConversation(chat, listOf(ChatMessage(ChatRole.USER, "Hi")))
         assertEquals(listOf(ChatMessage(ChatRole.USER, "Hi")), store.messages("c1"))
+    }
+
+    @Test
+    fun hiddenRecordsAndOriginSurviveConversationUpdatesAndAreDeletedWithIt() {
+        val chat = ConversationSummary("c1", "Hi", "2026-01-01T00:00:00Z")
+        store.appendPhoneRecord(PhoneRecord(chat.id, chat.time, ChatMessage(ChatRole.USER, "Hi")), 0, "turn")
+        store.appendPhoneRecord(PhoneRecord(chat.id, chat.time, null), 2, "result")
+        store.appendPhoneRecord(PhoneRecord(chat.id, chat.time, null), 1, "call")
+        store.saveConversation(chat.copy(title = "Updated"), listOf(ChatMessage(ChatRole.USER, "Hi")))
+        assertEquals("phone", store.conversationOrigin("c1"))
+        assertEquals(listOf("turn", "call", "result"), store.chatRecords("c1"))
+        assertEquals(listOf(ChatMessage(ChatRole.USER, "Hi")), store.messages("c1"))
+        store.deleteConversation("c1")
+        assertNull(store.conversationOrigin("c1"))
+        assertEquals(emptyList(), store.chatRecords("c1"))
     }
 
     @Test

@@ -426,18 +426,31 @@ impl Chat {
     /// Run `chat-send` with `argument` (a JSON object). Every line to the client goes through
     /// `out`, which returns `false` when the client is gone.
     pub fn send(&self, argument: &str, out: &mut dyn FnMut(&str) -> bool) {
-        self.inner.handle.block_on(self.send_async(argument, out));
+        self.inner
+            .handle
+            .block_on(self.send_on_runtime(argument, CancellationToken::new(), out));
     }
 
+    /// Run an answer on an already driven Tokio runtime with a host-owned stop token.
     // One sequence of steps for one answer; split it when a part grows its own logic.
     #[allow(clippy::too_many_lines)]
-    async fn send_async(&self, argument: &str, out: &mut dyn FnMut(&str) -> bool) {
+    pub async fn send_on_runtime(
+        &self,
+        argument: &str,
+        cancel: CancellationToken,
+        out: &mut dyn FnMut(&str) -> bool,
+    ) {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Request {
             #[serde(default)]
             conversation: String,
             message: String,
+        }
+        // The desktop transport counts the command prefix as part of the request line.
+        if argument.len() > MAX_REQUEST - "chat-send ".len() {
+            out(&event_error("request too large"));
+            return;
         }
         let inner = &self.inner;
         let Ok(request) = serde_json::from_str::<Request>(argument) else {
@@ -458,7 +471,7 @@ impl Chat {
             out(&event_error("no model"));
             return;
         };
-        let (slot, cancel) = self.acquire(&conversation);
+        let slot = self.acquire_with_stop(&conversation, &cancel);
         // One message at a time is checked and stored: the second sees the first's turn.
         let intake = lock(&inner.intake);
         // Read once the slot is held: a `chat-delete` cannot slip in between.
@@ -619,21 +632,23 @@ impl Chat {
     /// on the number of calls.
     #[must_use]
     pub fn acquire(&self, conversation: &str) -> (Slot, CancellationToken) {
-        let id = self.inner.next_call.fetch_add(1, Ordering::SeqCst);
         let cancel = CancellationToken::new();
+        let slot = self.acquire_with_stop(conversation, &cancel);
+        (slot, cancel)
+    }
+
+    fn acquire_with_stop(&self, conversation: &str, cancel: &CancellationToken) -> Slot {
+        let id = self.inner.next_call.fetch_add(1, Ordering::SeqCst);
         lock(&self.inner.running).push(Running {
             id,
             conversation: conversation.to_string(),
             cancel: cancel.clone(),
             turn: None,
         });
-        (
-            Slot {
-                inner: Arc::clone(&self.inner),
-                id,
-            },
-            cancel,
-        )
+        Slot {
+            inner: Arc::clone(&self.inner),
+            id,
+        }
     }
 
     /// Records that call `id` answers the user turn stored at `turn`.

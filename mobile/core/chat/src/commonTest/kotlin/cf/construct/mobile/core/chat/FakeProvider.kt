@@ -8,6 +8,12 @@ sealed interface Reply {
         val body: String,
     ) : Reply
 
+    /** Sends server-sent events, optionally keeping the connection open until the test closes it. */
+    data class Stream(
+        val body: String,
+        val holdOpen: Boolean = false,
+    ) : Reply
+
     /** Accepts the request and never answers. */
     data object Hang : Reply
 }

@@ -3,6 +3,7 @@ package cf.construct.mobile.feature.settings
 import cf.construct.mobile.core.chat.ChatCore
 import cf.construct.mobile.core.chat.ModelTestResult
 import cf.construct.mobile.core.keys.FakeModelSettingsStore
+import cf.construct.mobile.core.keys.ModelSettings
 import cf.construct.mobile.core.keys.ModelSettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,10 +30,14 @@ class SettingsWriteRaceTest {
         val delegate = FakeModelSettingsStore()
         val store =
             object : ModelSettingsStore by delegate {
-                override fun saveKey(key: String) {
+                override fun saveProvider(
+                    address: String,
+                    model: String,
+                    key: String?,
+                ): ModelSettings {
                     saved.countDown()
                     check(release.await(5, TimeUnit.SECONDS))
-                    delegate.saveKey(key)
+                    return delegate.saveProvider(address, model, key)
                 }
 
                 override fun removeKey() {
@@ -64,7 +69,7 @@ class SettingsWriteRaceTest {
             assertFalse(removed.await(200, TimeUnit.MILLISECONDS))
             release.countDown()
             assertTrue(removed.await(5, TimeUnit.SECONDS))
-            assertNull(delegate.readKey())
+            assertNull(delegate.readProvider().key)
         } finally {
             release.countDown()
             scope.cancel()

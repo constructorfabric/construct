@@ -1,9 +1,13 @@
 package cf.construct.mobile.core.chat
 
+import androidx.test.platform.app.InstrumentationRegistry
+import app.cash.sqldelight.db.SqlDriver
+import cf.construct.mobile.core.database.androidCopyDriver
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Collections
+import java.util.UUID
 import kotlin.concurrent.thread
 
 private class JvmFakeProvider(
@@ -31,6 +35,15 @@ private class JvmFakeProvider(
                         socket.close()
                     }
 
+                    is Reply.Stream -> {
+                        if (reply.holdOpen) held += socket
+                        socket.getOutputStream().apply {
+                            write(streamBytes(reply))
+                            flush()
+                        }
+                        if (!reply.holdOpen) socket.close()
+                    }
+
                     Reply.Hang -> {
                         held += socket
                     }
@@ -56,4 +69,17 @@ private object JvmFakes : Fakes {
 
 class AndroidChatCoreTest : ChatCoreTestCases() {
     override val fakes: Fakes = JvmFakes
+}
+
+class AndroidPhoneConstructTest : PhoneConstructTestCases() {
+    override val fakes: Fakes = JvmFakes
+    private val database = "chat-test-${UUID.randomUUID()}.db"
+    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+
+    override fun openCopy(): SqlDriver = androidCopyDriver(context, database)
+
+    override fun closeCopy(driver: SqlDriver) {
+        driver.close()
+        context.deleteDatabase(database)
+    }
 }

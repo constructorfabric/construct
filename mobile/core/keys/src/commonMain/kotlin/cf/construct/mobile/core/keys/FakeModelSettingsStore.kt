@@ -2,9 +2,7 @@ package cf.construct.mobile.core.keys
 
 /** What a [FakeModelSettingsStore] keeps; two fakes over one backing are one phone before and after a restart. */
 class FakeBacking {
-    var address = ""
-    var model = ""
-    var key: String? = null
+    internal var provider = ProviderSettings("", "", null)
 }
 
 /** A store in memory, for tests and previews. [failing] makes every call throw [ModelSettingsException]. */
@@ -17,33 +15,27 @@ class FakeModelSettingsStore(
         if (failing) throw ModelSettingsException(UNREADABLE)
     }
 
-    override fun read(): ModelSettings {
+    override fun read(): ModelSettings = readProvider().publicSettings()
+
+    override fun readProvider(): ProviderSettings {
         check()
-        return ModelSettings(backing.address, backing.model, backing.key != null)
+        return backing.provider
     }
 
-    override fun saveText(
+    override fun saveProvider(
         address: String,
         model: String,
-    ) {
+        key: String?,
+    ): ModelSettings {
         check()
-        backing.address = address
-        backing.model = model
-    }
-
-    override fun readKey(): String? {
-        check()
-        return backing.key
-    }
-
-    override fun saveKey(key: String) {
-        check()
-        backing.key = key
+        val saved = ProviderSettings(address, model, key ?: backing.provider.keyFor(address))
+        backing.provider = saved
+        return saved.publicSettings()
     }
 
     override fun removeKey() {
-        check()
-        backing.key = null
+        val current = readProvider()
+        backing.provider = ProviderSettings(current.address, current.model, null)
     }
 
     companion object {

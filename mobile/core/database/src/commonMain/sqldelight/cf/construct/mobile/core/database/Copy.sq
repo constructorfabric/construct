@@ -1,7 +1,16 @@
 CREATE TABLE conversation (
     id TEXT NOT NULL PRIMARY KEY,
     title TEXT NOT NULL,
-    time TEXT NOT NULL
+    time TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'computer'
+);
+
+-- Opaque core records include the hidden recall calls and results.
+CREATE TABLE chat_record (
+    conversation_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, position)
 );
 
 CREATE TABLE message (
@@ -43,16 +52,43 @@ CREATE TABLE sync (
 );
 
 listConversations:
-SELECT id, title, time FROM conversation ORDER BY time DESC, id;
+SELECT id, title, time FROM conversation;
 
 conversationExists:
 SELECT COUNT(*) FROM conversation WHERE id = ?;
+
+conversationOrigin:
+SELECT origin FROM conversation WHERE id = ?;
+
+setConversationOrigin:
+UPDATE conversation SET origin = ? WHERE id = ?;
+
+phoneConversations:
+SELECT id FROM conversation WHERE origin = 'phone';
+
+updateConversationTime:
+UPDATE conversation SET time = ? WHERE id = ?;
+
+recordsOf:
+SELECT record_json FROM chat_record WHERE conversation_id = ? ORDER BY position;
+
+saveRecord:
+INSERT INTO chat_record(conversation_id, position, record_json) VALUES (?, ?, ?);
+
+deleteRecordsOf:
+DELETE FROM chat_record WHERE conversation_id = ?;
+
+deleteAllRecords:
+DELETE FROM chat_record;
 
 messagesOf:
 SELECT role, text FROM message WHERE conversation_id = ? ORDER BY position;
 
 saveConversation:
-INSERT OR REPLACE INTO conversation(id, title, time) VALUES (?, ?, ?);
+INSERT OR IGNORE INTO conversation(id, title, time) VALUES (?, ?, ?);
+
+updateConversation:
+UPDATE conversation SET title = ?, time = ? WHERE id = ?;
 
 saveMessage:
 INSERT INTO message(conversation_id, position, role, text) VALUES (?, ?, ?, ?);

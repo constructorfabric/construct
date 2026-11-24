@@ -1,5 +1,6 @@
 package cf.construct.mobile.core.chat
 
+import com.sun.jna.Callback
 import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.Pointer
@@ -20,6 +21,27 @@ private interface Bridge : Library {
     ): Pointer
 
     fun cf_chat_free(text: Pointer)
+
+    fun cf_chat_stop_new(): Pointer
+
+    fun cf_chat_stop_answer(stop: Pointer)
+
+    fun cf_chat_stop_free(stop: Pointer)
+
+    fun cf_chat_send(
+        input: ByteArray,
+        stop: Pointer,
+        callback: AnswerCallback,
+        context: Pointer?,
+    )
+}
+
+internal fun interface AnswerCallback : Callback {
+    fun write(
+        context: Pointer?,
+        kind: Int,
+        text: Pointer,
+    ): Int
 }
 
 private val bridge: Bridge by lazy { Native.load("construct_chat_bridge", Bridge::class.java) }
@@ -48,3 +70,36 @@ internal actual fun nativeTestModel(
     model: String,
     apiKey: String,
 ): String = take(bridge.cf_chat_test_model(cString(baseUrl), cString(model), cString(apiKey)))
+
+actual fun newChatAnswer(): ChatAnswer =
+    object : ChatAnswer {
+        private val token =
+            try {
+                bridge.cf_chat_stop_new()
+            } catch (_: UnsatisfiedLinkError) {
+                throw ChatCoreException("the chat core could not load")
+            }
+
+        override fun send(
+            input: String,
+            writeRecord: (String) -> Boolean,
+            emitEvent: (String) -> Boolean,
+        ) {
+            val callback =
+                AnswerCallback { _, kind, pointer ->
+                    val text = pointer.getString(0, "UTF-8")
+                    val ok =
+                        when (kind) {
+                            CHAT_EVENT -> emitEvent(text)
+                            CHAT_RECORD -> writeRecord(text)
+                            else -> false
+                        }
+                    if (ok) 1 else 0
+                }
+            bridge.cf_chat_send(cString(input), token, callback, null)
+        }
+
+        override fun stop() = bridge.cf_chat_stop_answer(token)
+
+        override fun close() = bridge.cf_chat_stop_free(token)
+    }

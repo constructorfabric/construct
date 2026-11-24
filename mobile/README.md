@@ -9,10 +9,10 @@ Multiplatform. This folder holds the shared Gradle project.
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `core/model`        | The types: conversation, message, fact, dashboard.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `core/construct`    | The one interface the screens use for chats, memory and the dashboard, and `FakeConstruct`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `core/database`     | The phone's copy in SQLite (SQLDelight), behind the same interface. Sending says "not available yet".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `core/database`     | The phone's copy in SQLite (SQLDelight) and `PhoneConstruct`, which runs chat with the copy as its history and facts. |
 | `core/designsystem` | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `core/chat`         | The chat core (Rust) as Kotlin sees it: `ChatCore` with the request body of the fixed test conversation and the Test of a model setting. Android calls the shared library through JNA, the iPhone reads the C header with cinterop. See "The chat core". |
-| `core/keys`         | The model setting on the phone: `ModelSettingsStore` keeps the address and the model name in the phone's own storage and the API key in the Keychain (iPhone) or under a Keystore key (Android), with `FakeModelSettingsStore` and a contract test every store passes. See "The model setting and its key". |
+| `core/chat`         | The Rust chat core as Kotlin sees it: streaming answers, testing a model setting, and building the fixed request fixture. Android calls it through JNA and iOS uses cinterop. |
+| `core/keys`         | `ModelSettingsStore` keeps the model address, model name and API key together in the Keychain (iPhone) or under a Keystore key (Android). Its contract tests also run against `FakeModelSettingsStore`. See "The model setting and its key". |
 | `feature/template`  | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `feature/memory`    | The first feature made from the template: the person's facts as a plain list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `feature/settings`  | The model setup of the Settings page, made from the template: a state, a state holder (read, save, test, remove the key) and the Android screen with its form row and message line.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -46,12 +46,16 @@ code calls that through `core/chat`:
   `Failed(reason)`, the reason in the desktop app's words. The address check of the core refuses a
   plain `http` address that is not on `localhost` or `127.0.0.1`. The key is an argument only: it is in
   no log and in no returned text.
+- `PhoneConstruct` takes the model setting from the phone's settings store and passes a snapshot of
+  the saved history and facts to Rust. The native answer sends desktop chat events and commits
+  records to SQLite as the answer runs. Only `recall_facts` is offered on the phone. Chats copied
+  from a computer are read-only, and deleting all chats leaves them in place.
 
 Why a C interface: Kotlin/Native cannot load the Kotlin bindings that Rust bridge generators write,
 and a C header is read by cinterop as it is. Android calls the same functions by name through JNA
 (no glue code to write for JNI; the one exception is the JNI function that gives Android's certificate
-check the JVM, see `https` on Android below). One interface, no generator, and a streamed answer will cross the
-same way, as a C function pointer with a context.
+check the JVM, see `https` on Android below). A streamed answer calls back through a C function
+pointer with a context, and a separate stop token can be cancelled while the answer is running.
 
 `scripts/build-core.sh [ios|android|all]` builds the core once for each target into a folder outside
 the repository, `CONSTRUCT_CORE_BUILD_DIR` (default `~/Library/Caches/construct-chat-core`), where the
@@ -65,7 +69,7 @@ cargo cache is too unless `CARGO_TARGET_DIR` is set:
 
 The Gradle tasks `buildChatCoreIos` and `buildChatCoreAndroid` run the script, and the iPhone
 framework and the Android app depend on them, so Xcode and Gradle builds build the core first. Their
-inputs are the Rust sources, `Cargo.lock`, the script and the two files it reads the platform versions
+inputs are the Rust sources, the phone tool file, `Cargo.lock`, the script and the two files it reads the platform versions
 from, and their outputs are the libraries, so a
 build with unchanged sources does not start cargo. Nothing compiled is committed.
 
@@ -115,19 +119,26 @@ server with a certificate no phone trusts is refused with a TLS alert. The Gradl
 `core/keys` keeps what the person typed on the Settings page: the address of the model, its name and the
 API key. `ModelSettingsStore` is the one interface; a screen's state holder reads and writes it and the
 screen never sees it. A setting read back says only that a key is set (`ModelSettings.keyIsSet`); the whole
-key comes out through `readKey()` for a call to the model and is never part of a state, a log line, an
+key comes out with its provider through `readProvider()` for a call to the model and is never part of a state, a log line, an
 error text or a copy. Every store call waits for the disk: the holder runs it off the main thread. A call
 that fails throws `ModelSettingsException` with a fixed plain reason.
 
-- Android: the address and the model name sit in a private preferences file. The key sits in a file under
+- Android: the address, model and key sit in one file under
   `noBackupFilesDir`, which the system never backs up, encrypted with AES-GCM under a 256-bit Keystore key
   that cannot be taken out of the Keystore. `res/xml/backup_rules.xml` and `data_extraction_rules.xml`
   exclude the key file and the preferences too, should `allowBackup` ever be turned on (`BackupRulesTest`
   reads them). A key that cannot be opened (a restored phone has no Keystore key) is reported and replaced
   by saving a new one.
-- iPhone: the same text storage in `UserDefaults`; the key is a generic-password Keychain item with
+- iPhone: the address, model and key form one generic-password Keychain item with
   `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` and `kSecAttrSynchronizable` false, so it is in no backup and not
-  in iCloud Keychain. Saving removes the old item and adds a new one.
+  in iCloud Keychain. Saving replaces that item in one operation.
+
+On upgrade, the existing address and model remain available from preferences until the next save.
+Enter the key again to bind it to the selected provider. Earlier releases stored keys separately
+from their addresses, so the app cannot establish which provider an old key belongs to. The first
+settings access deletes the old credential from secure storage without opening it.
+A saved key stays with its provider when the model changes. If the provider record cannot be read,
+Settings keeps the form available for an explicit replacement.
 
 Tests: `ModelSettingsStoreContract` (`core/keys`, common) is what every store does; the fake, the shared
 store over memory and the encrypted file (JVM, with an AES key of the JVM in place of the Keystore key) pass it.
@@ -136,6 +147,7 @@ Settings page against a fake provider on a local port. `iosApp/Tests/ModelSettin
 iPhone store over the real Keychain; the Keychain exists only inside the app, so it is an app test, not a
 Kotlin one. `scripts/check-key-not-leaked.sh android|ios` saves a made-up key through the app, proves its
 search by planting the key in a file, and then looks for the key in the app's files and in the log.
+It uses a separate Android app ID or a disposable iOS Simulator.
 
 ## Rules
 
