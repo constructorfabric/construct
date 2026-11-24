@@ -1,0 +1,17 @@
+[package]
+name = "phone-pairing"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Authentication shared by the phone and computer during pairing"
+license.workspace = true
+publish = false
+
+[dependencies]
+opaque-ke = { version = "4.0.1", default-features = false, features = ["ristretto255"] }
+rand = { version = "0.8", default-features = false, features = ["getrandom"] }
+ring = "0.17"
+sha2 = "0.10"
+
+[lints]
+workspace = true
