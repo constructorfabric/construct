@@ -9,6 +9,7 @@
 # Nothing is published. When it is true, the signed APK is published as a GitHub pre-release.
 #
 # Set RELEASE_DRAFT=1 to make the GitHub release a draft (for trying the flow out).
+# --ci-release requires an explicitly authorized release of protected canonical main.
 # A release needs a new constructVersionName (its tag is android-v<name>) and a higher
 # constructVersionCode in gradle.properties; the tag points at the pushed HEAD the APK was built from.
 set -euo pipefail
@@ -20,6 +21,13 @@ fail() {
   exit 1
 }
 
+ci_release=false
+case "$#:$*" in
+  0:) ;;
+  1:--ci-release) ci_release=true ;;
+  *) fail "usage: release-android.sh [--ci-release]" ;;
+esac
+
 prop() {
   sed -n "s/^$1=//p" gradle.properties | tail -n 1
 }
@@ -28,6 +36,11 @@ app_id=$(prop constructApplicationId)
 is_final=$(prop constructApplicationIdIsFinal)
 [ -n "$app_id" ] || fail "constructApplicationId is not set in gradle.properties"
 case "$is_final" in true | false) ;; *) fail "constructApplicationIdIsFinal in gradle.properties must be true or false" ;; esac
+
+if [ "$ci_release" = true ]; then
+  scripts/check-ci-release.sh
+  [ "$is_final" = true ] || fail "set the final Android application ID before releasing"
+fi
 
 # An APK from an earlier run must not outlive a failed one.
 apk_dir=androidApp/build/outputs/apk/release
@@ -91,6 +104,9 @@ if [ "$is_final" = true ]; then
     1 | true | yes) flags+=(--draft) ;;
     *) fail "RELEASE_DRAFT must be 1, true, yes, 0, false or no" ;;
   esac
+  if [ "$ci_release" = true ]; then
+    scripts/check-ci-release.sh
+  fi
   gh release create "$tag" "$asset" --target "$head" "${flags[@]}"
   exit 0
 fi
