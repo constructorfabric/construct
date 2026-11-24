@@ -19,9 +19,8 @@ test: build ## Agent checks (fmt, clippy, tests), then the app tests
 lint: ## App lint and type check
 	cd app && npm run lint && npm run lint:ts
 
-# npm skips the Electron download script, so it runs by hand.
-app/node_modules: app/package-lock.json
-	cd app && npm ci && node node_modules/electron/install.js
+app/node_modules: app/package-lock.json scripts/install-app-deps.sh
+	bash scripts/install-app-deps.sh
 	@touch app/node_modules
 
 app-deps: app/node_modules ## Install the app's dependencies

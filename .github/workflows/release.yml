@@ -144,6 +144,48 @@ jobs:
           path: ${{ matrix.path }}
           if-no-files-found: error
 
+  build-windows:
+    needs: version
+    name: Build (windows-x64)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      installer-url: ${{ steps.installer.outputs.artifact-url }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      INSTALLER: app/out/make/squirrel.windows/x64/construct-browser-x64-Setup.exe
+    steps:
+      - *checkout
+      - *rust-cache
+      - *build-agent
+      - *setup-node
+      - name: Install Windows app dependencies
+        run: bash scripts/install-app-deps.sh
+      - *package-app
+      - name: Test the Windows agent path
+        working-directory: app
+        run: npm exec -- vitest run unit/agent-service.test.ts
+      - name: Verify the unsigned Windows installer
+        run: |
+          if [[ ! -s "$INSTALLER" ]]; then
+            echo "::error::Squirrel did not create $INSTALLER"
+            exit 1
+          fi
+          pwsh -NoProfile -NonInteractive -Command '
+            $signature = Get-AuthenticodeSignature -LiteralPath $env:INSTALLER
+            if ($signature.Status -ne "NotSigned") {
+              throw "Expected an unsigned installer, got $($signature.Status)"
+            }
+          '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: installer
+        with:
+          name: windows-x64-setup
+          path: ${{ env.INSTALLER }}
+          if-no-files-found: error
+
   smoke:
     needs: build-linux
     runs-on: ubuntu-24.04
@@ -166,8 +208,10 @@ jobs:
     if: >-
       github.repository == 'constructorfabric/construct' &&
       (github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref_type == 'tag'))
-    needs: [version, build-linux, smoke]
+      (github.event_name == 'push' && github.ref_type == 'tag')) &&
+      !cancelled() && needs.version.result == 'success' &&
+      needs.build-linux.result == 'success' && needs.smoke.result == 'success'
+    needs: [version, build-linux, smoke, build-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -182,33 +226,117 @@ jobs:
           path: dist
           pattern: '*-deb'
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: download-windows
+        if: needs.build-windows.result == 'success'
+        continue-on-error: true
+        with:
+          name: windows-x64-setup
+          path: dist
       - name: Publish the package and checksums
         shell: bash
         working-directory: dist
+        env:
+          WINDOWS_ARTIFACT_URL: ${{ needs.build-windows.outputs.installer-url }}
+          WINDOWS_DOWNLOAD_OUTCOME: ${{ steps.download-windows.outcome }}
         run: |
           set -euo pipefail
-          sha256sum -- *.deb > SHA256SUMS
-          if release=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets); then
+          installer=construct-browser-x64-Setup.exe
+          packages=(*.deb)
+          windows_available=false
+          for file in "${packages[@]}"; do
+            test -s "$file"
+          done
+
+          report_installer() {
+            printf '::warning::%s\n' "$1"
+            if [[ -n "$WINDOWS_ARTIFACT_URL" ]]; then
+              printf '%s [Verified Windows installer](%s).\n' "$1" "$WINDOWS_ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          installer_uploaded() {
+            jq -e --arg name "$installer" \
+              'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' <<< "$1" > /dev/null
+          }
+
+          if [[ "$WINDOWS_DOWNLOAD_OUTCOME" == success && -s "$installer" ]]; then
+            windows_available=true
+          elif [[ -n "$WINDOWS_ARTIFACT_URL" ]]; then
+            report_installer 'The Windows artifact could not be included. Linux publication can continue.'
+          fi
+          if release=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isImmutable,assets); then
             draft=$(jq -r '.isDraft' <<< "$release")
             if [[ "$draft" == true ]]; then
-              echo "::error::Release $TAG is a draft. Add any missing .deb and SHA256SUMS assets. Verify the package against SHA256SUMS before publishing."
+              echo "::error::Release $TAG is a draft. Add any missing packages and SHA256SUMS. Verify the packages against SHA256SUMS before publishing."
               exit 1
             fi
             existing=$(jq -r '.assets[].name' <<< "$release")
+            immutable=$(jq -r '.isImmutable' <<< "$release")
+            if [[ "$immutable" == true ]] && ! installer_uploaded "$release"; then
+              report_installer "Immutable release $TAG has no complete Windows installer. The next release can include it."
+            fi
+
             # Keep checksums immutable for consumers that pin them.
-            for file in *.deb; do
+            for file in "${packages[@]}"; do
               if ! grep -Fxq -- "$file" <<< "$existing"; then
+                if [[ "$immutable" == true ]]; then
+                  echo "::error::Immutable release $TAG is missing $file"
+                  exit 1
+                fi
                 gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$file"
                 echo "::warning::$TAG lacked $file; the existing SHA256SUMS was left as published"
               fi
             done
+
+            if [[ "$immutable" == false && "$windows_available" == true ]] && ! installer_uploaded "$release"; then
+              if grep -Fxq -- "$installer" <<< "$existing"; then
+                report_installer "Release $TAG has an incomplete Windows asset. Remove that asset before retrying."
+                exit 1
+              fi
+              gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$installer"
+              echo "::warning::$TAG lacked $installer; the existing SHA256SUMS was left as published"
+            fi
             exit 0
           fi
 
           flags=(--repo "$GITHUB_REPOSITORY" --title "Construct Browser $VERSION" --target "$GITHUB_SHA")
+          publish_flags=()
           if [[ "$PRERELEASE" == true ]]; then
             flags+=(--prerelease --notes "Snapshot build from $GITHUB_SHA.")
           else
-            flags+=(--latest --verify-tag --generate-notes)
+            flags+=(--verify-tag --generate-notes)
+            publish_flags+=(--latest)
           fi
-          gh release create "$TAG" "${flags[@]}" *.deb SHA256SUMS
+          gh release create "$TAG" "${flags[@]}" --draft "${packages[@]}"
+
+          if [[ "$windows_available" == true ]]; then
+            if ! gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$installer"; then
+              echo "::warning::Windows installer upload failed. Checking the draft assets."
+            fi
+            draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft,assets)
+            if ! jq -e '.isDraft == true' <<< "$draft" > /dev/null; then
+              echo "::error::Release $TAG was published before its checksums were attached"
+              exit 1
+            fi
+            if installer_uploaded "$draft"; then
+              packages+=("$installer")
+            else
+              if jq -e --arg name "$installer" 'any(.assets[]; .name == $name)' <<< "$draft" > /dev/null; then
+                if ! gh release delete-asset "$TAG" "$installer" --repo "$GITHUB_REPOSITORY" --yes; then
+                  draft_id=$(jq -er '.databaseId | select(type == "number" and . > 0)' <<< "$draft")
+                  draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft,assets)
+                  if ! jq -e --argjson id "$draft_id" --arg name "$installer" \
+                    '.databaseId == $id and .isDraft == true and all(.assets[]; .name != $name)' <<< "$draft" > /dev/null; then
+                    report_installer "Could not confirm removal of the incomplete Windows asset from draft $TAG."
+                    exit 1
+                  fi
+                fi
+              fi
+              report_installer "The verified Windows installer could not be attached to $TAG. The next release can include it."
+            fi
+          fi
+
+          sha256sum -- "${packages[@]}" > SHA256SUMS
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" SHA256SUMS
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false "${publish_flags[@]}"
