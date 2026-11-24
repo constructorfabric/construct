@@ -116,6 +116,8 @@ server with a certificate no phone trusts is refused with a TLS alert. The Gradl
 
 ## The model setting and its key
 
+Computer pairing uses a separate secure record in `core/keys`. See [Connect to a computer](#connect-to-a-computer).
+
 `core/keys` keeps what the person typed on the Settings page: the address of the model, its name and the
 API key. `ModelSettingsStore` is the one interface; a screen's state holder reads and writes it and the
 screen never sees it. A setting read back says only that a key is set (`ModelSettings.keyIsSet`); the whole
@@ -262,6 +264,38 @@ adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sl
 cd mobile
 ./gradlew :androidApp:installDebug
 adb shell am start -n cf.construct.mobile/cf.construct.mobile.android.MainActivity
+```
+
+## Connect to a computer
+
+`core/connection` accepts the IPv4 or bracketed IPv6 address shown by the computer. Pairing uses
+an eight-digit typed code or a `construct-pair://` QR payload, over the native bridge's TLS 1.3
+client. A QR offer pins the certificate before sending its proof; a typed offer asks for the OPAQUE
+protocol during the TLS negotiation, and the phone saves the pin and the token only after the
+exchange has authenticated the channel. The pairing record stays in Android's Keystore-backed
+storage.
+
+`feature/status` watches the connection while the app is in the foreground. A paired phone pings on
+the authenticated channel. A revocation received on that channel clears the pairing; a lost route or
+a computer that does not answer keeps the pairing and shows the last contact.
+
+On Android, Settings opens the Computer page: scan the QR code with the camera, or type the address
+and the code. The scanner uses CameraX and the ZXing core QR reader, which decode frames on the phone
+without an account or a network call. Android asks for camera access when the scanner opens, and for
+local network access on a phone that has that permission. Unpair removes the pairing and the
+computer's copied chats and facts, and keeps the chats started on the phone.
+
+Run the page on a disposable emulator against the test program of the computer's endpoint. The test
+slows the app's checks of the computer to two minutes, so that only the Try again button can bring a
+lost link back; a debug build has that setting and a release build does not:
+
+```sh
+cargo build --locked -p construct-agent --example phone_pairing
+./gradlew :androidApp:assembleDebug :androidApp:assembleDebugAndroidTest
+# install both APKs, then:
+python3 scripts/test-phone-pairing.py --device <serial> \
+  --agent <path to the phone_pairing example> --screenshots <folder>
+python3 -I scripts/test_phone_pairing_checks.py   # the script's check of the device log
 ```
 
 ## Run the iPhone app

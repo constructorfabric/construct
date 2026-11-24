@@ -248,22 +248,22 @@ class PhoneConnectionTest {
             val fixture = Fixture(this)
             assertEquals(PairResult.Paired, fixture.connection().pairByCode(ADDRESS, CODE, "Phone"))
             val observed = fixture.watch()
-            assertEquals(LinkSnapshot(ComputerLink.Connected, 1000), observed.last())
+            assertEquals(LinkSnapshot(ComputerLink.Connected, 1000, ADDRESS), observed.last())
 
             fixture.agent.action = PhoneReplyKind.Unavailable
             fixture.network = false
             tick()
-            assertEquals(LinkSnapshot(ComputerLink.NoNetwork, 1000), observed.last())
+            assertEquals(LinkSnapshot(ComputerLink.NoNetwork, 1000, ADDRESS), observed.last())
             assertNotNull(fixture.store.read())
 
             fixture.network = true
             tick()
-            assertEquals(LinkSnapshot(ComputerLink.Unreachable, 1000), observed.last())
+            assertEquals(LinkSnapshot(ComputerLink.Unreachable, 1000, ADDRESS), observed.last())
             assertNotNull(fixture.store.read())
 
             fixture.agent.action = PhoneReplyKind.Line
             tick()
-            assertEquals(LinkSnapshot(ComputerLink.Connected, 1000), observed.last())
+            assertEquals(LinkSnapshot(ComputerLink.Connected, 1000, ADDRESS), observed.last())
 
             fixture.agent.revoked = true
             tick()
@@ -283,15 +283,58 @@ class PhoneConnectionTest {
             runCurrent()
             fixture.now = 2000
             tick()
-            assertEquals(LinkSnapshot(ComputerLink.Connected, 2000), active.last())
+            assertEquals(LinkSnapshot(ComputerLink.Connected, 2000, ADDRESS), active.last())
             assertEquals(1000L, fixture.store.loadPairing(fixture.agent::isNumericAddress)?.lastContactMillis)
             watch.cancelAndJoin()
             assertEquals(2000L, fixture.store.loadPairing(fixture.agent::isNumericAddress)?.lastContactMillis)
 
             fixture.agent.action = PhoneReplyKind.Closed
             val restarted = fixture.watch()
-            assertEquals(LinkSnapshot(ComputerLink.Unreachable, 2000), restarted.last())
+            assertEquals(LinkSnapshot(ComputerLink.Unreachable, 2000, ADDRESS), restarted.last())
             assertNotNull(fixture.store.loadPairing(fixture.agent::isNumericAddress))
+        }
+
+    @Test
+    fun localUnpairRemovesTheCopyAndDoesNotRestoreTheSavedPairing() =
+        runTest {
+            val fixture = Fixture(this)
+            val connection = fixture.connection()
+            assertEquals(PairResult.Paired, connection.pairByCode(ADDRESS, CODE, "Phone"))
+            val observed = mutableListOf<LinkSnapshot>()
+            backgroundScope.launch { connection.monitor { observed.add(it) } }
+            runCurrent()
+            fixture.now = 2000
+            tick()
+
+            var removed = false
+            connection.unpair { removed = true }
+            runCurrent()
+            assertTrue(removed)
+            assertEquals(LinkSnapshot(ComputerLink.NotPaired, 0), observed.last())
+            assertTrue(fixture.store.read() == null)
+        }
+
+    @Test
+    fun aPairingThatCannotBeRemovedThrowsAfterTheCopyIsGoneAndUnpairsOnTheNextTry() =
+        runTest {
+            val fixture = Fixture(this)
+            val connection = fixture.connection()
+            assertEquals(PairResult.Paired, connection.pairByCode(ADDRESS, CODE, "Phone"))
+            val observed = mutableListOf<LinkSnapshot>()
+            backgroundScope.launch { connection.monitor { observed.add(it) } }
+            runCurrent()
+
+            fixture.storeFailing = true
+            var removed = false
+            assertFailsWith<ModelSettingsException> { connection.unpair { removed = true } }
+            assertTrue(removed)
+            fixture.storeFailing = false
+            assertNotNull(fixture.store.read())
+
+            connection.unpair {}
+            runCurrent()
+            assertTrue(fixture.store.read() == null)
+            assertEquals(LinkSnapshot(ComputerLink.NotPaired, 0), observed.last())
         }
 
     @Test
@@ -345,10 +388,10 @@ class PhoneConnectionTest {
             fixture.storeFailing = true
             fixture.now = 40_000
             tick()
-            assertEquals(LinkSnapshot(ComputerLink.Connected, 40_000), observed.last())
+            assertEquals(LinkSnapshot(ComputerLink.Connected, 40_000, ADDRESS), observed.last())
             fixture.now = 41_000
             tick()
-            assertEquals(LinkSnapshot(ComputerLink.Connected, 41_000), observed.last())
+            assertEquals(LinkSnapshot(ComputerLink.Connected, 41_000, ADDRESS), observed.last())
             assertEquals(1000L, fixture.store.loadPairing(fixture.agent::isNumericAddress)?.lastContactMillis)
 
             fixture.storeFailing = false

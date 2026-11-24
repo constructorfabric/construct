@@ -1,13 +1,18 @@
 package cf.construct.mobile.core.connection
 
 private const val DEFAULT_PORT = 47821
-private const val CODE_LENGTH = 8
+
+/** The number of digits of the typed code the computer shows; the screens limit their field to it. */
+const val PAIRING_CODE_LENGTH = 8
 private const val HEX_LENGTH = 64
 
 internal data class ComputerAddress(
     val host: String,
     val port: Int,
 ) {
+    val endpoint: String
+        get() = if (':' in host) "[$host]:$port" else "$host:$port"
+
     companion object {
         fun parse(
             input: String,
@@ -60,7 +65,7 @@ internal class PairingOffer(
             code: String,
         ): PairingOffer? {
             val digits = code.trim()
-            if (digits.length != CODE_LENGTH || digits.any { it !in '0'..'9' }) return null
+            if (digits.length != PAIRING_CODE_LENGTH || digits.any { it !in '0'..'9' }) return null
             return PairingOffer(address, digits, null)
         }
 

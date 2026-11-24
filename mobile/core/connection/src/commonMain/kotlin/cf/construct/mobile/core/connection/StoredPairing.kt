@@ -34,9 +34,7 @@ internal fun PairingSecret.loadPairing(isNumericAddress: (String) -> Boolean): S
 }
 
 internal fun PairingSecret.savePairing(pairing: StoredPairing) {
-    val host = pairing.address.host
-    val address = if (':' in host) "[$host]" else host
-    save("$address:${pairing.address.port}\n${pairing.pin}\n${pairing.token}\n${pairing.lastContactMillis}")
+    save("${pairing.address.endpoint}\n${pairing.pin}\n${pairing.token}\n${pairing.lastContactMillis}")
 }
 
 private fun badRecord(): Nothing = throw ModelSettingsException("The saved computer pairing cannot be opened.")

@@ -18,11 +18,15 @@ import cf.construct.mobile.feature.chat.ChatListMenu
 import cf.construct.mobile.feature.chat.ChatListScreen
 import cf.construct.mobile.feature.chat.ChatThreadActions
 import cf.construct.mobile.feature.chat.ChatThreadScreen
+import cf.construct.mobile.feature.status.ConnectionStatus
 
 @Composable
 internal fun ChatRoute(
     chat: ChatViewModel,
-    otherPage: @Composable (Page) -> Unit,
+    connection: ConnectionStatus,
+    onTryAgain: () -> Unit,
+    computerContent: @Composable (ComputerPage, (ComputerPage) -> Unit) -> Unit,
+    otherPage: @Composable (Page, () -> Unit) -> Unit,
 ) {
     var selected by rememberSaveable { mutableStateOf(Page.Chat) }
     var fromChat by rememberSaveable { mutableStateOf(false) }
@@ -54,7 +58,8 @@ internal fun ChatRoute(
         ChatThreadScreen(state, thread, actions)
     } else {
         AppFrame(
-            connection = currentConnection(),
+            connection = connection,
+            onTryAgain = onTryAgain,
             selected = selected,
             onSelect = {
                 fromChat = false
@@ -63,11 +68,12 @@ internal fun ChatRoute(
             pageActions = {
                 if (selected == Page.Chat) ChatListMenu(state, chat.holder::delete)
             },
-        ) { page ->
+            computerContent = computerContent,
+        ) { page, openComputer ->
             if (page == Page.Chat) {
                 ChatListScreen(state, chat.listActions)
             } else {
-                otherPage(page)
+                otherPage(page, openComputer)
             }
         }
     }
