@@ -15,7 +15,9 @@ configure yourself.
 
 ## Download
 
-When a Linux x86_64 `.deb` is available, download it from [GitHub Releases](https://github.com/constructorfabric/construct/releases).
+When a Linux x86_64 `.deb` or an Apple Silicon `.dmg` is available, download it from [GitHub Releases](https://github.com/constructorfabric/construct/releases).
+A fork can publish its own releases by listing itself in the `RELEASE_REPOSITORIES` Actions variable
+(see [mobile/RELEASING.md](mobile/RELEASING.md)).
 `SHA256SUMS` covers the packages included when the release was first published. A package added later may
 lack an entry. Check that the file lists your package before using it to verify the download.
 Open a terminal in the download directory and install the package.
@@ -24,7 +26,7 @@ Open a terminal in the download directory and install the package.
 sudo apt install ./construct-browser_*.deb
 ```
 
-For Apple Silicon Macs, get the `macos-arm64-dmg` artifact from the
+For Apple Silicon Macs, get the `.dmg` from GitHub Releases, or the `macos-arm64-dmg` artifact from the
 [Desktop release workflow](https://github.com/constructorfabric/construct/actions/workflows/release.yml).
 Choose a successful run for a release tag or a reviewed commit on `main`. Check the run's ref and commit
 before downloading, then extract the ZIP and follow the [macOS installation steps](#macos-apple-silicon).

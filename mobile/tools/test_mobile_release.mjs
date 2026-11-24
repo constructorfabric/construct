@@ -19,6 +19,8 @@ test("release source must be the explicitly confirmed checkout of protected cano
         '  "status --porcelain=v1 --untracked-files=all") printf "%s" "$TEST_STATUS" ;;',
         '  "ls-remote --exit-code https://github.com/constructorfabric/construct.git refs/heads/main")',
         '    printf "%s\\trefs/heads/main\\n" "$TEST_MAIN" ;;',
+        '  "ls-remote --exit-code https://github.com/fork/construct.git refs/heads/main")',
+        '    printf "%s\\trefs/heads/main\\n" "$TEST_FORK_MAIN" ;;',
         "  *) exit 2 ;;",
         "esac",
     ].join("\n"), { mode: 0o700 });
@@ -53,6 +55,23 @@ test("release source must be the explicitly confirmed checkout of protected cano
     const guard = (overrides, ...args) => spawnSync("bash", [script, ...args],
         { cwd: fixture, env: { ...base, ...overrides }, encoding: "utf8" });
     assert.equal(guard({}).status, 0);
+    const listedFork = { GITHUB_REPOSITORY: "fork/construct", RELEASE_REPOSITORIES: '["fork/construct"]' };
+    // The fork's own main is checked, not the canonical one.
+    assert.equal(guard({ ...listedFork, TEST_FORK_MAIN: sha, TEST_MAIN: other }).status, 0);
+    const staleFork = guard({ ...listedFork, TEST_FORK_MAIN: other, TEST_MAIN: sha });
+    assert.equal(staleFork.status, 1);
+    assert.match(staleFork.stderr, /no longer canonical main/);
+    // Repository names compare without regard to case, as the workflow's `contains` does.
+    assert.equal(guard({ ...listedFork, RELEASE_REPOSITORIES: '["Fork/Construct"]', TEST_FORK_MAIN: sha }).status, 0);
+    // A listed repository whose main cannot be read stops with a clear error.
+    const unreadable = guard({ GITHUB_REPOSITORY: "other/repo", RELEASE_REPOSITORIES: '["other/repo"]' });
+    assert.equal(unreadable.status, 1);
+    assert.match(unreadable.stderr, /could not read main of other\/repo/);
+    for (const repositories of ['["fork/construct-browser"]', '"fork/construct"', "[]", "not json"]) {
+        const result = guard({ ...listedFork, RELEASE_REPOSITORIES: repositories, TEST_FORK_MAIN: sha });
+        assert.equal(result.status, 1, repositories);
+        assert.match(result.stderr, /protected canonical main/, repositories);
+    }
     for (const [name, value, error] of [
         ["GITHUB_EVENT_NAME", "pull_request", /dispatch/],
         ["RELEASE_CONFIRMED", "false", /confirm/],

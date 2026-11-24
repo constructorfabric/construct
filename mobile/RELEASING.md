@@ -4,7 +4,14 @@ Use the Mobile release workflow on canonical `main`. It accepts one platform, th
 the current `main` commit, and explicit confirmation. Commit the intended release version and
 build number to `main` before dispatching. The release stops if `main` advances before upload.
 
-Configure these GitHub Actions environments on the canonical repository before adding any
+The desktop publish job and the mobile release jobs run only in repositories named by the
+`RELEASE_REPOSITORIES` Actions variable: a JSON array of exact `owner/name` strings, such as
+`["constructorfabric/construct"]`. Unset, it allows only the canonical repository. Use an array
+and nothing else: the mobile guard rejects any other value, and the workflow condition would
+match a plain string by substring. A malformed value fails those workflow runs. A listed repository is treated as canonical: its own protected
+`main` is the release source, and it needs the environments below.
+
+Configure these GitHub Actions environments on each listed repository before adding any
 secrets. Restrict deployments to the protected `main` branch, require an independent reviewer,
 enable prevention of self-review, and disable bypassing the environment protection rules.
 Keep these credentials as environment secrets.
