@@ -32,7 +32,6 @@ final class FlowStateTests: XCTestCase {
         let facts = state.value.facts
 
         _ = try await construct.deleteMemoryFact(factId: facts[0].factId)
-        holder.refresh()
 
         try await wait { state.value.facts.count == facts.count - 1 }
     }

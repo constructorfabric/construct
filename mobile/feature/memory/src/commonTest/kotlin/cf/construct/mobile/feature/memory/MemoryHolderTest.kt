@@ -6,7 +6,11 @@ import cf.construct.mobile.core.model.MemoryFacts
 import cf.construct.mobile.core.model.Outcome
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -42,17 +46,50 @@ class MemoryHolderTest {
         }
 
     @Test
-    fun refreshShowsWhatChangedInTheFake() =
+    fun aChangeInTheFakeShowsWithoutARefresh() =
         runTest {
             val fake = FakeConstruct(backgroundScope)
             val holder = MemoryHolder(fake, backgroundScope)
             holder.settled()
 
             fake.deleteMemoryFact("f1")
-            holder.refresh()
+            runCurrent()
+
+            val state = holder.state.value
+            assertEquals(FakeConstruct.seededFacts.drop(1), state.facts)
+            assertFalse(state.loading)
+            assertNull(state.failure)
+        }
+
+    @Test
+    fun erasingEverythingEmptiesTheListWithoutARefresh() =
+        runTest {
+            val fake = FakeConstruct(backgroundScope)
+            val holder = MemoryHolder(fake, backgroundScope)
             holder.settled()
 
-            assertEquals(FakeConstruct.seededFacts.drop(1), holder.state.value.facts)
+            fake.eraseEverything()
+            runCurrent()
+
+            assertTrue(
+                holder.state.value.facts
+                    .isEmpty(),
+            )
+            assertFalse(holder.state.value.loading)
+        }
+
+    @Test
+    fun refreshWatchesAgainAndShowsWhatTheFakeHoldsThen() =
+        runTest {
+            val fake = FakeConstruct(backgroundScope)
+            val holder = MemoryHolder(fake, backgroundScope)
+            holder.settled()
+
+            holder.refresh()
+            assertTrue(holder.state.value.loading)
+            holder.settled()
+
+            assertEquals(FakeConstruct.seededFacts, holder.state.value.facts)
         }
 
     @Test
@@ -85,6 +122,25 @@ class MemoryHolderTest {
             assertFalse(state.loading)
             assertEquals(FakeConstruct.seededFacts, state.facts)
             assertEquals(OFFLINE, state.failure)
+        }
+
+    @Test
+    fun aFailureInTheStreamKeepsTheFactsAndALaterGoodValueClearsItWithoutARefresh() =
+        runTest {
+            val pushed = Pushed(this)
+            val holder = MemoryHolder(pushed, backgroundScope)
+            holder.settled()
+
+            pushed.facts.value = Outcome.Failed(OFFLINE)
+            runCurrent()
+            assertEquals(OFFLINE, holder.state.value.failure)
+            assertEquals(FakeConstruct.seededFacts, holder.state.value.facts)
+            assertFalse(holder.state.value.loading)
+
+            pushed.facts.value = Outcome.Ok(MemoryFacts(FakeConstruct.seededFacts.drop(2), FakeConstruct.FACTS_VERSION))
+            runCurrent()
+            assertNull(holder.state.value.failure)
+            assertEquals(FakeConstruct.seededFacts.drop(2), holder.state.value.facts)
         }
 
     @Test
@@ -124,34 +180,48 @@ class MemoryHolderTest {
             assertFalse(holder.state.value.loading)
         }
 
-    /** The fake, which fails the facts read while [down]. */
+    /** The fake, whose stream fails while [down]. */
     private class Offline(
         scope: TestScope,
         private val fake: FakeConstruct = FakeConstruct(scope.backgroundScope),
     ) : Construct by fake {
         var down = false
 
-        override suspend fun getMemoryFacts(): Outcome<MemoryFacts> =
-            if (down) Outcome.Failed(OFFLINE) else fake.getMemoryFacts()
+        override val memoryFacts: Flow<Outcome<MemoryFacts>> =
+            fake.memoryFacts.map { if (down) Outcome.Failed(OFFLINE) else it }
     }
 
     /**
-     * A [Construct] whose Nth facts read waits for `gates[N]`. The first read gives the seeded facts and
-     * every later one gives them without the first fact.
+     * A [Construct] whose Nth watch of the facts waits for `gates[N]`. The first watch gives the seeded
+     * facts and every later one gives them without the first fact.
      */
     private class Slow(
         scope: TestScope,
         private val fake: FakeConstruct = FakeConstruct(scope.backgroundScope),
     ) : Construct by fake {
         val gates = List(GATES) { CompletableDeferred<Unit>() }
-        private var reads = 0
+        private var watches = 0
 
-        override suspend fun getMemoryFacts(): Outcome<MemoryFacts> {
-            val index = reads++
-            gates[index].await()
-            val facts = FakeConstruct.seededFacts
-            return Outcome.Ok(MemoryFacts(if (index == 0) facts else facts.drop(1), FakeConstruct.FACTS_VERSION))
-        }
+        override val memoryFacts: Flow<Outcome<MemoryFacts>> =
+            flow {
+                val index = watches++
+                gates[index].await()
+                val facts = FakeConstruct.seededFacts
+                emit(Outcome.Ok(MemoryFacts(if (index == 0) facts else facts.drop(1), FakeConstruct.FACTS_VERSION)))
+            }
+    }
+
+    /** A [Construct] whose stream gives whatever the test puts in [facts], starting with the seeded facts. */
+    private class Pushed(
+        scope: TestScope,
+        private val fake: FakeConstruct = FakeConstruct(scope.backgroundScope),
+    ) : Construct by fake {
+        val facts =
+            MutableStateFlow<Outcome<MemoryFacts>>(
+                Outcome.Ok(MemoryFacts(FakeConstruct.seededFacts, FakeConstruct.FACTS_VERSION)),
+            )
+
+        override val memoryFacts: Flow<Outcome<MemoryFacts>> = facts
     }
 
     private companion object {

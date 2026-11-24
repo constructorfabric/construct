@@ -38,8 +38,12 @@ interface ChatApi {
 }
 
 interface MemoryApi {
-    /** Every fact of the person, with the profile's version. */
-    suspend fun getMemoryFacts(): Outcome<MemoryFacts>
+    /**
+     * Every fact of the person, with the profile's version: what the copy holds now, and again each
+     * time it changes. It never ends and never throws. A read that fails is an [Outcome.Failed] item
+     * and the stream goes on, so a collector gets the facts again once they can be read.
+     */
+    val memoryFacts: Flow<Outcome<MemoryFacts>>
 
     /** Only the profile's version. */
     suspend fun getMemoryVersion(): Outcome<Long?>

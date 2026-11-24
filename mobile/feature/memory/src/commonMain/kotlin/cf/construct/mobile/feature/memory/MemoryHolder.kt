@@ -11,20 +11,22 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * Reads from [construct] and turns what it gets into one [MemoryState]. It is plain common
+ * Watches the facts of [construct] and turns what it gets into one [MemoryState]. It is plain common
  * Kotlin with no Android type, so the Android screen and the iPhone screen watch the same class.
  *
- * A [Construct] reports a failed read as [Outcome.Failed] and does not throw, so the holder does not
- * catch. Call [refresh] and run [scope] on one thread, the main one: the newest read wins because
- * a refresh cancels the read before it, and that holds only without a second thread in between.
+ * The facts are a stream, so a change in the copy shows by itself. A [Construct] reports a failed read
+ * as [Outcome.Failed] and goes on, so the holder does not catch: the failure shows beside the facts
+ * already on screen, and the next good read clears it. Call [refresh] and run [scope] on one thread,
+ * the main one: the newest watch wins because a refresh cancels the watch before it, and that holds
+ * only without a second thread in between.
  *
- * @param scope where the reads run; the screen's owner cancels it.
+ * @param scope where the watch runs; the screen's owner cancels it.
  */
 class MemoryHolder(
     private val construct: Construct,
     private val scope: CoroutineScope,
 ) {
-    private var reading: Job? = null
+    private var watching: Job? = null
     private val mutableState = MutableStateFlow(MemoryState())
     val state: StateFlow<MemoryState> = mutableState.asStateFlow()
 
@@ -33,19 +35,21 @@ class MemoryHolder(
     }
 
     /**
-     * Reads again. The facts stay on screen while it runs, and a read still running is dropped,
-     * so the newest read is the one that shows.
+     * Starts the watch again, to read at once. The facts stay on screen while it runs, and a watch
+     * still running is dropped, so the newest watch is the one that shows.
      */
     fun refresh() {
-        reading?.cancel()
+        watching?.cancel()
         mutableState.update { it.copy(loading = true, failure = null) }
-        reading =
+        watching =
             scope.launch {
-                mutableState.value =
-                    when (val read = construct.getMemoryFacts()) {
-                        is Outcome.Ok -> MemoryState(loading = false, facts = read.value.facts)
-                        is Outcome.Failed -> mutableState.value.copy(loading = false, failure = read.error)
-                    }
+                construct.memoryFacts.collect { read ->
+                    mutableState.value =
+                        when (read) {
+                            is Outcome.Ok -> MemoryState(loading = false, facts = read.value.facts)
+                            is Outcome.Failed -> mutableState.value.copy(loading = false, failure = read.error)
+                        }
+                }
             }
     }
 }

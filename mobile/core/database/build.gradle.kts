@@ -34,6 +34,7 @@ kotlin {
             api(project(":core:construct"))
             api(project(":core:keys"))
             implementation(project(":core:chat"))
+            implementation(libs.sqldelight.coroutines)
         }
         androidMain.dependencies {
             implementation(libs.sqldelight.android.driver)

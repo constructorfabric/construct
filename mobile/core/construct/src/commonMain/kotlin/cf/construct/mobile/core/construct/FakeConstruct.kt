@@ -34,7 +34,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
@@ -52,13 +55,15 @@ class FakeConstruct(
     private val deltaDelayMillis: Long = 0,
 ) : Construct {
     private val threads = LinkedHashMap(seededConversations)
-    private val facts = seededFacts.toMutableList()
+    private val stored = MutableStateFlow(MemoryFacts(seededFacts, FACTS_VERSION))
     private val events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = EVENT_BUFFER)
     private var answer: Job? = null
     private var erased = false
     private var created = 0
 
     override val chatEvents: Flow<ChatEvent> = events.asSharedFlow()
+
+    override val memoryFacts: Flow<Outcome<MemoryFacts>> = stored.map { Outcome.Ok(it) }
 
     override suspend fun listConversations(): Outcome<List<ConversationSummary>> =
         Outcome.Ok(
@@ -151,19 +156,16 @@ class FakeConstruct(
         threads[summary] = earlier + ChatMessage(ChatRole.USER, input.message) + reply
     }
 
-    override suspend fun getMemoryFacts(): Outcome<MemoryFacts> =
-        Outcome.Ok(MemoryFacts(facts.toList(), if (erased) null else FACTS_VERSION))
-
-    override suspend fun getMemoryVersion(): Outcome<Long?> = Outcome.Ok(if (erased) null else FACTS_VERSION)
+    override suspend fun getMemoryVersion(): Outcome<Long?> = Outcome.Ok(stored.value.version)
 
     override suspend fun deleteMemoryFact(factId: String): Outcome<Unit> {
-        facts.removeAll { it.factId == factId }
+        stored.update { it.copy(facts = it.facts.filterNot { fact -> fact.factId == factId }) }
         return Outcome.Ok(Unit)
     }
 
     override suspend fun eraseEverything(): Outcome<EraseStarted> {
         val already = erased
-        facts.clear()
+        stored.value = MemoryFacts(emptyList(), null)
         threads.clear()
         erased = true
         return Outcome.Ok(EraseStarted(running = already))

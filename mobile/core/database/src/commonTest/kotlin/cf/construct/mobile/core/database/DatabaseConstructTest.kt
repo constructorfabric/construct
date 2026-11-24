@@ -16,9 +16,11 @@ import cf.construct.mobile.core.model.Outcome
 import cf.construct.mobile.core.model.Period
 import cf.construct.mobile.core.model.Whose
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.test.Test
@@ -26,6 +28,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /** What only the store does, beside what [ConstructContract] asks of every implementation. */
+@OptIn(ExperimentalCoroutinesApi::class)
 class DatabaseConstructTest {
     private val driver = newInMemoryDriver()
     private val store = CopyStore(driver)
@@ -87,7 +90,7 @@ class DatabaseConstructTest {
     fun anEmptyCopyAnswersWithEmptyReads() =
         runTest {
             assertEquals(Outcome.Ok(emptyList<ConversationSummary>()), construct.listConversations())
-            assertEquals(Outcome.Ok(MemoryFacts(emptyList(), null)), construct.getMemoryFacts())
+            assertEquals(Outcome.Ok(MemoryFacts(emptyList(), null)), construct.memoryFacts.first())
             assertEquals(Outcome.Ok(DocumentState(null, null)), construct.getDashboardDocument())
         }
 
@@ -122,12 +125,119 @@ class DatabaseConstructTest {
                 "INSERT INTO fact VALUES ('f8', 'GONE', 'title', '\"x\"', '2026-01-01T08:00:00Z', NULL)",
                 0,
             )
-            assertEquals(Outcome.Failed(DatabaseConstruct.UNREADABLE), construct.getMemoryFacts())
+            assertEquals(Outcome.Failed(DatabaseConstruct.UNREADABLE), construct.memoryFacts.first())
             assertEquals(Outcome.Ok(2L), construct.getMemoryVersion())
             construct.deleteMemoryFact("f9")
-            assertEquals(Outcome.Failed(DatabaseConstruct.UNREADABLE), construct.getMemoryFacts())
+            assertEquals(Outcome.Failed(DatabaseConstruct.UNREADABLE), construct.memoryFacts.first())
             construct.deleteMemoryFact("f8")
-            assertEquals(Outcome.Ok(MemoryFacts(emptyList(), 2L)), construct.getMemoryFacts())
+            assertEquals(Outcome.Ok(MemoryFacts(emptyList(), 2L)), construct.memoryFacts.first())
+        }
+
+    @Test
+    fun aFailedReadIsAnItemAndTheStreamGoesOnToTheFactsOnceTheyCanBeRead() =
+        runTest {
+            store.saveFacts(MemoryFacts(emptyList(), 2L))
+            driver.execute(
+                null,
+                "INSERT INTO fact VALUES ('f9', 'ROLE', 'title', 'not json', '2026-01-01T08:00:00Z', NULL)",
+                0,
+            )
+            val seen = collectFacts(construct)
+            runCurrent()
+            assertEquals(listOf(Outcome.Failed(DatabaseConstruct.UNREADABLE)), seen)
+
+            construct.deleteMemoryFact("f9")
+            runCurrent()
+
+            assertEquals(Outcome.Ok(MemoryFacts(emptyList(), 2L)), seen.last())
+            assertEquals(2, seen.size)
+        }
+
+    @Test
+    fun aWriteToTheCopyGivesANewValueToACollectorThatIsAlreadyCollecting() =
+        runTest {
+            val (first, second) = FakeConstruct.seededFacts
+            val seen = collectFacts(construct)
+            runCurrent()
+            assertEquals(listOf(Outcome.Ok(MemoryFacts(emptyList(), null))), seen)
+
+            store.saveFacts(MemoryFacts(listOf(first), 1L))
+            runCurrent()
+            store.saveFacts(MemoryFacts(listOf(first, second), 2L))
+            runCurrent()
+
+            assertEquals(
+                listOf(
+                    Outcome.Ok(MemoryFacts(emptyList(), null)),
+                    Outcome.Ok(MemoryFacts(listOf(first), 1L)),
+                    Outcome.Ok(MemoryFacts(listOf(first, second), 2L)),
+                ),
+                seen,
+            )
+        }
+
+    @Test
+    fun theFactsOfAWriteReachTheCollectorWholeAndNeverHalfWritten() =
+        runTest {
+            val (first, second, third) = FakeConstruct.seededFacts
+            store.saveFacts(MemoryFacts(listOf(first, second), 1L))
+            val seen = collectFacts(construct)
+            runCurrent()
+
+            // The write empties the table before it fills it again; the collector sees only the end.
+            store.saveFacts(MemoryFacts(listOf(third), 2L))
+            runCurrent()
+
+            assertEquals(
+                listOf(
+                    Outcome.Ok(MemoryFacts(listOf(first, second), 1L)),
+                    Outcome.Ok(MemoryFacts(listOf(third), 2L)),
+                ),
+                seen,
+            )
+        }
+
+    @Test
+    fun aWriteThatLeavesTheFactsAsTheyWereGivesNothing() =
+        runTest {
+            val fact = FakeConstruct.seededFacts.first()
+            store.saveFacts(MemoryFacts(listOf(fact), 1L))
+            val seen = collectFacts(construct)
+            runCurrent()
+
+            store.saveFacts(MemoryFacts(listOf(fact), 1L))
+            store.markSynced("2026-01-02T10:00:00Z")
+            store.deleteFact("not-there")
+            runCurrent()
+
+            assertEquals(listOf(Outcome.Ok(MemoryFacts(listOf(fact), 1L))), seen)
+        }
+
+    @Test
+    fun aNewVersionWithTheSameFactsGivesANewValue() =
+        runTest {
+            val fact = FakeConstruct.seededFacts.first()
+            store.saveFacts(MemoryFacts(emptyList(), 1L))
+            val seen = collectFacts(construct)
+            runCurrent()
+
+            // Each write changes one thing. The first leaves the table empty, so no row changes at all.
+            store.saveFacts(MemoryFacts(emptyList(), 2L))
+            runCurrent()
+            store.saveFacts(MemoryFacts(listOf(fact), 2L))
+            runCurrent()
+            store.saveFacts(MemoryFacts(listOf(fact), 3L))
+            runCurrent()
+
+            assertEquals(
+                listOf(
+                    Outcome.Ok(MemoryFacts(emptyList(), 1L)),
+                    Outcome.Ok(MemoryFacts(emptyList(), 2L)),
+                    Outcome.Ok(MemoryFacts(listOf(fact), 2L)),
+                    Outcome.Ok(MemoryFacts(listOf(fact), 3L)),
+                ),
+                seen,
+            )
         }
 
     @Test
@@ -141,9 +251,7 @@ class DatabaseConstructTest {
 
     @Test
     fun savingFactsReplacesTheFactsThatWereThere() {
-        val first = MemoryFact("f1", EntityKind.ROLE, "title", JsonPrimitive("A"), "2026-01-01T08:00:00Z")
-        val second = MemoryFact("f2", EntityKind.ROLE, "title", JsonPrimitive("B"), "2026-01-01T08:01:00Z")
-        val third = MemoryFact("f3", EntityKind.ROLE, "title", JsonPrimitive("C"), "2026-01-01T08:02:00Z")
+        val (first, second, third) = FakeConstruct.seededFacts
         store.saveFacts(MemoryFacts(listOf(first, second), 1L))
         store.saveFacts(MemoryFacts(listOf(third), 2L))
         assertEquals(MemoryFacts(listOf(third), 2L), store.facts())
