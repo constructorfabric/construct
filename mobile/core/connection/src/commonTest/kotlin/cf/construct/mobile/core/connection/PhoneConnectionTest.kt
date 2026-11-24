@@ -106,6 +106,29 @@ class PhoneConnectionTest {
         }
 
     @Test
+    fun aLocalNetworkDenialExplainsFailedPairingAndFailedReconnect() =
+        runTest {
+            val fixture = Fixture(this)
+            val phone = fixture.connection()
+            fixture.agent.codeFailure = PhoneReplyKind.Unavailable
+            fixture.localNetworkDenied = true
+            assertEquals(PairResult.NetworkPermission, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            assertTrue(fixture.store.read() == null)
+
+            fixture.agent.codeFailure = null
+            fixture.localNetworkDenied = false
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            val observed = fixture.watch()
+            assertEquals(ComputerLink.Connected, observed.last().link)
+
+            fixture.agent.action = PhoneReplyKind.Closed
+            fixture.localNetworkDenied = true
+            tick()
+            assertEquals(ComputerLink.NetworkPermission, observed.last().link)
+            assertNotNull(fixture.store.read())
+        }
+
+    @Test
     fun aSavedPairingSurvivesALostReplyAndARejectedCodeUntilReplacementIsConfirmed() =
         runTest {
             val fixture = Fixture(this)
@@ -228,6 +251,7 @@ class PhoneConnectionTest {
         val store = fakePairingSecret()
         val agent = FakeAgent()
         var network = true
+        var localNetworkDenied = false
         var now = 1000L
 
         fun connection(version: Int = PHONE_PROTOCOL) =
@@ -239,6 +263,11 @@ class PhoneConnectionTest {
                 StandardTestDispatcher(scope.testScheduler),
                 1.seconds,
                 { now },
+                localNetworkDenied = { address ->
+                    assertEquals("192.0.2.10", address.host)
+                    assertEquals(47821, address.port)
+                    localNetworkDenied
+                },
             )
 
         fun watch(): List<LinkSnapshot> {

@@ -1,7 +1,7 @@
 package cf.construct.mobile.core.connection
 
 private const val DEFAULT_PORT = 47821
-private const val CODE_LENGTH = 8
+const val PHONE_PAIRING_CODE_LENGTH = 8
 private const val HEX_LENGTH = 64
 
 internal data class ComputerAddress(
@@ -63,7 +63,7 @@ internal class PairingOffer(
             code: String,
         ): PairingOffer? {
             val digits = code.trim()
-            if (digits.length != CODE_LENGTH || digits.any { it !in '0'..'9' }) return null
+            if (digits.length != PHONE_PAIRING_CODE_LENGTH || digits.any { it !in '0'..'9' }) return null
             return PairingOffer(address, digits, null)
         }
 

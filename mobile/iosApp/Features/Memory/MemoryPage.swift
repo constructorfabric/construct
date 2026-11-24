@@ -11,6 +11,7 @@ struct MemoryPage: View {
 
     var body: some View {
         MemoryScreen(state: model.state)
+            .onAppear(perform: model.refresh)
     }
 }
 
@@ -18,10 +19,16 @@ struct MemoryPage: View {
 @MainActor
 final class MemoryModel: ObservableObject {
     let state: FlowState<MemoryState>
+    private let holder: MemoryHolder
     private let scope = UiScope()
 
     init(construct: Construct) {
-        state = FlowState(MemoryHolder(construct: construct, scope: scope).state)
+        holder = MemoryHolder(construct: construct, scope: scope)
+        state = FlowState(holder.state)
+    }
+
+    func refresh() {
+        holder.refresh()
     }
 
     deinit {
