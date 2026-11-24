@@ -20,6 +20,7 @@ use chat_core::model_test;
 use serde_json::json;
 
 mod answer;
+mod phone;
 
 /// The request body of the fixed conversation over the tool file `tools_file`.
 ///

@@ -1,15 +1,10 @@
 package cf.construct.mobile.android
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -21,12 +16,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import cf.construct.mobile.core.designsystem.Spacing
+import cf.construct.mobile.feature.status.ConnectionLine
+import cf.construct.mobile.feature.status.ConnectionStatus
 
 /**
  * The frame every page sits in: the top app bar with the page title, the connection line under it
@@ -34,11 +29,12 @@ import cf.construct.mobile.core.designsystem.Spacing
  */
 @Composable
 fun AppFrame(
-    connection: ConnectionState,
+    connection: ConnectionStatus,
+    onTryAgain: () -> Unit,
     selected: Page,
     onSelect: (Page) -> Unit,
     modifier: Modifier = Modifier,
-    pageActions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {},
+    pageActions: @Composable RowScope.() -> Unit = {},
     content: @Composable (Page) -> Unit,
 ) {
     Scaffold(
@@ -51,7 +47,7 @@ fun AppFrame(
                     actions = pageActions,
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
                 )
-                if (selected != Page.Chat) ConnectionLine(connection)
+                ConnectionLine(connection, onTryAgain, LocalControlSizes.current.dot)
             }
         },
         bottomBar = { PageBar(selected, onSelect) },
@@ -93,30 +89,5 @@ private fun PageBar(
                 )
             }
         }
-    }
-}
-
-/** One line under the top bar: a dot and the connection state in words. */
-@Composable
-internal fun ConnectionLine(
-    state: ConnectionState,
-    modifier: Modifier = Modifier,
-) {
-    val connected = state == ConnectionState.Connected
-    val dot = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-    Row(
-        modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = Spacing.L.dp, vertical = Spacing.S.dp),
-        horizontalArrangement = Arrangement.spacedBy(Spacing.S.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(LocalControlSizes.current.dot).background(dot, CircleShape))
-        Text(
-            stringResource(if (connected) R.string.connection_connected else R.string.connection_not_connected),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelMedium,
-        )
     }
 }

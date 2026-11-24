@@ -28,4 +28,24 @@ void cf_chat_send(const char *input, const cf_chat_stop *stop, cf_chat_callback 
 
 void cf_chat_free(char *text);
 
+/* TLS 1.3 phone channel. A null pin is only for the OPAQUE exchange of a typed pairing.
+   A channel is used by one caller at a time. Free it once with cf_phone_close. */
+typedef void cf_phone_channel;
+uint8_t cf_phone_is_numeric_address(const char *host);
+/* Returns 0 with a channel in *out, 1 if unavailable, 2 on a certificate pin mismatch,
+   or 4 if the computer rejects the typed pairing protocol during TLS negotiation. */
+int32_t cf_phone_open(const char *host, uint16_t port, const char *pin, cf_phone_channel **out);
+char *cf_phone_fingerprint(const cf_phone_channel *channel);
+/* Sends one line and reads one line. Returns 0 with a line in *out (free with cf_chat_free),
+   1 for a failed exchange, or 2 for an authenticated TLS close without a line. */
+int32_t cf_phone_exchange(cf_phone_channel *channel, const char *line, char **out);
+/* Pairs over the channel and returns 0 with an authenticated line in *out (free with cf_chat_free),
+   1 for a failed exchange or 3 if the code was refused. */
+int32_t cf_phone_pair_code(cf_phone_channel *channel, const char *code, uint64_t version,
+                           const char *name, char **out);
+void cf_phone_close(cf_phone_channel *channel);
+/* HMAC over the pairing role and certificate fingerprint, returned as hex. A nonzero agent
+   flag selects the agent's proof. The key and fingerprint are hex. Free with cf_chat_free. */
+char *cf_phone_proof(const char *key, const char *fingerprint, uint8_t agent);
+
 #endif
