@@ -1,3 +1,4 @@
+import org.jetbrains.kotlin.konan.target.HostManager
 import org.jetbrains.kotlin.konan.target.KonanTarget
 
 plugins {
@@ -123,7 +124,10 @@ kotlin {
             // A change to the Rust library must run the interop again: its content is an input.
             val library = File(coreBuildDir.get(), "ios/$folder/libconstruct_chat_bridge.a")
             tasks.named(interopProcessingTaskName) {
-                dependsOn(":buildChatCoreIos")
+                // Gradle would run the dependency even when Kotlin disables the cinterop task on Linux.
+                if (HostManager.hostIsMac) {
+                    dependsOn(":buildChatCoreIos")
+                }
                 inputs.files(library)
             }
         }
