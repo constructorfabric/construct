@@ -1,8 +1,8 @@
 import { Button, Input } from '@gears-frontx/ui-kit';
-import { ArrowLeft, ArrowRight, RotateCw } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Lock, RotateCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import type { GlasshouseProblem, GlasshouseState } from '../glasshouse';
+import type { BlockedAction, GlasshouseProblem, GlasshouseState } from '../glasshouse';
 import { t } from '../translation';
 import styles from './glasshouse.module.css';
 
@@ -14,6 +14,12 @@ const problemTexts = {
   crashed: 'Glasshouse.Problem.Crashed',
   other: 'Glasshouse.Problem.Other',
 } as const satisfies Record<GlasshouseProblem['kind'], string>;
+
+const blockedTexts = {
+  download: 'Glasshouse.Blocked.Download',
+  print: 'Glasshouse.Blocked.Print',
+  tools: 'Glasshouse.Blocked.Tools',
+} as const satisfies Record<BlockedAction, string>;
 
 /**
  * A browser: an address bar with back, forward and reload, and the web page below it. The page is
@@ -56,6 +62,14 @@ export function GlasshousePage(): ReactNode {
       void api.hideGlasshouse();
     };
   }, []);
+
+  const waiting = state?.waiting ?? false;
+  // The notice is on the screen by now: the page may open.
+  useEffect(() => {
+    if (waiting) {
+      void window.constructAgent.stepGlasshouse('continue');
+    }
+  }, [waiting]);
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
@@ -113,7 +127,25 @@ export function GlasshousePage(): ReactNode {
             setRefused(false);
           }}
         />
+        <span
+          id="glasshouse-restricted"
+          className={styles.sign}
+          title={t('Glasshouse.RestrictedHint')}
+        >
+          <Lock aria-hidden size={14} />
+          {t('Glasshouse.Restricted')}
+        </span>
       </form>
+      {state?.screenshot === 'open' ? (
+        <p id="glasshouse-screenshot" role="status" className={styles.info}>
+          {t('Glasshouse.ScreenshotOpen')}
+        </p>
+      ) : null}
+      {state?.blocked == null ? null : (
+        <p id="glasshouse-blocked" role="status" className={styles.info}>
+          {t(blockedTexts[state.blocked])}
+        </p>
+      )}
       {refused ? (
         <p id="glasshouse-refused" role="alert" className={styles.note}>
           {t('Glasshouse.Refused')}

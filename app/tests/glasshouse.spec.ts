@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { expect, openApp, test as base } from './fixtures';
 import { startSite } from './glasshouse-site';
+import { screenshotBothThemes } from './screenshots';
 import type { Site } from './glasshouse-site';
 
 /** An app that a test opened: `close` ends it early (a restart); the fixture ends any that is still open. */
@@ -438,36 +439,217 @@ test('a page or a redirect cannot take the page to a non-web address, and a wind
   expect(await urls()).not.toContainEqual(expect.stringMatching(/^(file:\/\/\/etc|mailto:)/));
 });
 
-test('a download leaves the choice of the file to a save dialog that starts from its name', async ({
-  launch,
-  site,
-}) => {
+test('a download is refused, nothing is saved, and the app says so', async ({ launch, site }) => {
   const { app, page } = await launch({ start: `${site.url}/second` });
   const dir = mkdtempSync(path.join(tmpdir(), 'cb-save-'));
   await openGlasshouse(page);
   await expect.poll(() => paths(site)).toContain('/second');
-  const target = path.join(dir, 'chosen.txt');
-  // The product sets no path, so Electron raises its one save dialog. A listener of the test, added
-  // after the product's own, reads what that dialog would start from and answers it, as a person does.
-  await app.evaluate(({ session }, target) => {
-    const seen: { name: string; pathSet: boolean }[] = [];
+  // A listener of the test, added after the product's own, sees whether the download was stopped,
+  // and offers a place to save to as a person's choice would: the file must still not appear.
+  await app.evaluate(({ session }, dir) => {
+    const seen: boolean[] = [];
     Object.assign(globalThis, { downloads: seen });
-    session.fromPartition('persist:glasshouse').on('will-download', (_event, item) => {
-      seen.push({
-        name: item.getSaveDialogOptions().defaultPath ?? '',
-        pathSet: item.getSavePath() !== '',
-      });
-      item.setSavePath(target);
+    session.fromPartition('persist:glasshouse').on('will-download', (event, item) => {
+      seen.push(event.defaultPrevented);
+      item.setSavePath(`${dir}/report.txt`);
     });
-  }, target);
+  }, dir);
   await go(page, `${site.url}/download`);
-  await expect.poll(() => existsSync(target) && readFileSync(target, 'utf8')).toBe('the file');
+  await expect(page.locator('#glasshouse-blocked')).toHaveText(
+    'Download is blocked in restricted mode.',
+  );
+  expect(await app.evaluate(() => Reflect.get(globalThis, 'downloads') as boolean[])).toEqual([
+    true,
+  ]);
+  expect(readdirSync(dir)).toEqual([]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('print, developer tools and their shortcuts are refused, and the app says so', async ({
+  launch,
+  site,
+}) => {
+  const { app, page } = await launch({ start: `${site.url}/editor` });
+  await openGlasshouse(page);
+  await expect.poll(() => paths(site)).toContain('/editor');
+  await inPage(app, site.url, '1');
+
+  // window.print() from the page: Chromium ignores it, and the app names it.
+  await inPage(app, site.url, 'document.getElementById("print").click()');
+  await inPage(app, site.url, 'window.print()');
+  await expect(page.locator('#glasshouse-blocked')).toHaveText(
+    'Print is blocked in restricted mode.',
+  );
+
+  // Developer tools: the page's view has them off, so a script of the app and the menu's own
+  // "Toggle Developer Tools" item, run on it as it would be, leave them shut.
+  const tools = await app.evaluate(({ BrowserWindow, Menu, webContents }, base) => {
+    const contents = webContents.getAllWebContents().find((c) => c.getURL().startsWith(base));
+    if (contents === undefined) {
+      throw new Error('no page');
+    }
+    contents.openDevTools();
+    contents.toggleDevTools();
+    // Electron's own "Toggle Developer Tools" item, the one its default menu carries.
+    const item = Menu.buildFromTemplate([{ role: 'toggleDevTools' }]).items[0];
+    item?.click(undefined as never, BrowserWindow.getAllWindows()[0], contents);
+    return {
+      open: contents.isDevToolsOpened(),
+      menuItem: item !== undefined,
+    };
+  }, site.url);
+  expect(tools).toEqual({ open: false, menuItem: true });
+  // Opening is asynchronous, and the absence of an event can only be shown by waiting for it.
   expect(
     await app.evaluate(
-      () => Reflect.get(globalThis, 'downloads') as { name: string; pathSet: boolean }[],
+      ({ webContents }, base) =>
+        new Promise<string>((resolve) => {
+          const contents = webContents.getAllWebContents().find((c) => c.getURL().startsWith(base));
+          contents?.once('devtools-opened', () => resolve('opened'));
+          contents?.openDevTools();
+          setTimeout(() => resolve('stayed shut'), 1500);
+        }),
+      site.url,
     ),
-  ).toEqual([{ name: 'report.txt', pathSet: false }]);
-  rmSync(dir, { recursive: true, force: true });
+  ).toBe('stayed shut');
+
+  // The shortcuts reach the page's input handler first: each is stopped and named.
+  // A synthetic `before-input-event` stands for the key: the page's input handler is what runs. The
+  // chords of each system are pinned by the unit tests; this run is on Linux.
+  const shortcut = (code: string, flags: Record<string, boolean>, key?: string) =>
+    app.evaluate(
+      ({ webContents }, { base, code, flags, key }) => {
+        const contents = webContents.getAllWebContents().find((c) => c.getURL().startsWith(base));
+        let stopped = false;
+        const event = { preventDefault: () => (stopped = true) };
+        contents?.emit('before-input-event', event, {
+          type: 'keyDown',
+          key: key ?? '',
+          code,
+          control: false,
+          meta: false,
+          shift: false,
+          alt: false,
+          ...flags,
+        });
+        return stopped;
+      },
+      { base: site.url, code, flags, key },
+    );
+  expect(await shortcut('F12', {})).toBe(true);
+  await expect(page.locator('#glasshouse-blocked')).toHaveText(
+    'Developer tools are blocked in restricted mode.',
+  );
+  expect(await shortcut('KeyI', { control: true, shift: true })).toBe(true);
+  expect(await shortcut('KeyC', { control: true, shift: true })).toBe(true);
+  expect(await shortcut('KeyP', { control: true }, 'p')).toBe(true);
+  await expect(page.locator('#glasshouse-blocked')).toHaveText(
+    'Print is blocked in restricted mode.',
+  );
+  expect(await shortcut('KeyC', { control: true }, 'c')).toBe(false);
+});
+
+/** The system clipboard, read and written by the app's main process. */
+const clipboardText = (app: ElectronApplication) =>
+  app.evaluate(({ clipboard }) => clipboard.readText());
+const setClipboard = (app: ElectronApplication, text: string) =>
+  app.evaluate(({ clipboard }, text) => clipboard.writeText(text), text);
+
+/** Copies the text of the page's first text box, as a person's copy does after a key press in the page. */
+async function copyInPage(app: ElectronApplication, base: string): Promise<void> {
+  await app.evaluate(async ({ webContents }, base) => {
+    const contents = webContents.getAllWebContents().find((c) => c.getURL().startsWith(base));
+    // The first sign of the page (a hover) has the clipboard read; the key says it has the focus.
+    contents?.sendInputEvent({ type: 'mouseMove', x: 5, y: 5 });
+    contents?.sendInputEvent({ type: 'keyDown', keyCode: 'Shift' });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }, base);
+  await inPage(
+    app,
+    base,
+    'document.getElementById("source").select(); document.execCommand("copy")',
+  );
+}
+
+test('text copied in the page pastes in the page, and the clipboard goes back when the page loses the focus', async ({
+  launch,
+  site,
+}) => {
+  const { app, page } = await launch({ start: `${site.url}/editor` });
+  await openGlasshouse(page);
+  await expect.poll(() => paths(site)).toContain('/editor');
+  await inPage(app, site.url, '1');
+
+  // Each moment, and whether the page is still shown after it. A synthetic `blur` stands for the
+  // system's: the window's own handler is what runs.
+  const leaving: Record<string, { leave: () => Promise<unknown>; stillShown: boolean }> = {
+    'another page of the app': {
+      leave: () => page.getByRole('button', { name: 'Chat', exact: true }).click(),
+      stillShown: false,
+    },
+    'another app or window': {
+      leave: () =>
+        app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.emit('blur')),
+      stillShown: true,
+    },
+    'the address bar of the app': { leave: () => addressBar(page).click(), stillShown: true },
+  };
+  let shown = true;
+  for (const [moment, { leave, stillShown }] of Object.entries(leaving)) {
+    if (!shown) {
+      await openGlasshouse(page);
+    }
+    await setClipboard(app, `before ${moment}`);
+    // A copy made a moment ago is read again at the next hover; a person's copy is never this close.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await copyInPage(app, site.url);
+    // The page has its copy, and pastes it into its other text box.
+    expect(await clipboardText(app), moment).toBe('secret text');
+    await inPage(
+      app,
+      site.url,
+      'document.getElementById("target").value = ""; document.getElementById("target").focus()',
+    );
+    await app.evaluate(({ webContents }, base) => {
+      webContents
+        .getAllWebContents()
+        .find((c) => c.getURL().startsWith(base))
+        ?.paste();
+    }, site.url);
+    await expect
+      .poll(() => inPage(app, site.url, 'document.getElementById("target").value'), {
+        message: moment,
+      })
+      .toBe('secret text');
+    await leave();
+    shown = stillShown;
+    await expect.poll(() => clipboardText(app), { message: moment }).toBe(`before ${moment}`);
+  }
+});
+
+test('the restricted sign shows in the app, and a blocked page is drawn over its box', async ({
+  launch,
+  site,
+}) => {
+  const { page } = await launch({ start: `${site.url}/second` });
+  await openGlasshouse(page);
+  await expect(page.locator('#glasshouse-restricted')).toHaveText('Restricted mode');
+  await expect.poll(() => paths(site)).toContain('/second');
+  await screenshotBothThemes(page, 'glasshouse-restricted');
+});
+
+test('on Linux the notice about the screenshot shows and the page then opens', async ({
+  launch,
+  site,
+}) => {
+  test.skip(process.platform !== 'linux', 'only Linux cannot block a screenshot');
+  const { page } = await launch({ start: `${site.url}/second` });
+  await openGlasshouse(page);
+  await expect(page.locator('#glasshouse-screenshot')).toHaveText(
+    'Restricted mode: a screenshot of this page cannot be blocked on this system.',
+  );
+  // That the page waits for the notice is pinned by a unit test of the page's view.
+  await expect.poll(() => paths(site)).toContain('/second');
 });
 
 test('the start address comes from the environment; with an empty variable the page says so', async ({
