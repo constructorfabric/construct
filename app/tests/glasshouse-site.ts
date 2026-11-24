@@ -56,6 +56,10 @@ const pages: Record<string, string> = {
   '/third': page('<h1>Third</h1>'),
   '/frame': page('<h1>Frame</h1><script>fetch("/from-frame")</script>'),
   '/counter': counter,
+  '/editor': page(
+    `<textarea id="source">secret text</textarea><textarea id="target"></textarea>
+     <button id="print" onclick="window.print()">print</button>`,
+  ),
   '/echo': page('<h1>Echo</h1>'),
   '/other': page('<h1>Other</h1>'),
 };
