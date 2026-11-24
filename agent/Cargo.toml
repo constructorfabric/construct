@@ -84,7 +84,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 sha2 = "0.11"
-hmac = "0.13"
+phone-pairing = { path = "../phone-pairing" }
 
 # The signals of a Mac (see `mac_signals`). Safe bindings only: the workspace forbids unsafe code.
 [target.'cfg(target_os = "macos")'.dependencies]

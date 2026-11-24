@@ -62,7 +62,7 @@ val rustSources =
         // The crates the library is built from; scripts/build-core.sh stops when a new one appears.
         include("Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
         include("tools/phone.json")
-        include("chat-bridge/**", "chat-core/**", "connectors/**")
+        include("chat-bridge/**", "chat-core/**", "connectors/**", "phone-pairing/**")
         exclude("**/tests/**", "**/target/**")
     }
 

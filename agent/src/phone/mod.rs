@@ -1,28 +1,35 @@
 //! The phone endpoint: how a phone on the same network talks to the agent.
 //!
-//! **Channel.** TLS 1.3 over TCP, with one self-signed certificate of the agent. A phone trusts
-//! that certificate only by its SHA-256 fingerprint, which it reads from the QR code of the
-//! pairing; the address does not have to match any name, so `10.0.2.2` of an emulator or a
-//! hotspot address work. There is no plain HTTP, not even for the pairing.
+//! **Channel.** TLS 1.3 over TCP, with one self-signed certificate of the agent. The phone pins
+//! its SHA-256 fingerprint from the QR offer or after authenticating a typed pairing. The
+//! address just routes the connection, so `10.0.2.2` of an emulator or a hotspot address work.
 //!
 //! **Pairing.** The agent opens a pairing and shows a QR payload (address, fingerprint, a long
-//! secret) and a short code to type. The phone connects, sends a proof of the secret (see
-//! `pairing`; the secret itself never travels) and gets a token. The agent keeps a hash of the
-//! token (see `paired`); the phone keeps the token. A secret works once.
+//! secret) and a short code to type. The phone connects and authenticates with the QR secret or
+//! OPAQUE with the typed code. The agent keeps a hash of the issued token (see `paired`); the
+//! phone keeps the token. A secret works once.
 //!
 //! **Talking.** Later the phone sends its token as the first line of a connection, then one JSON
 //! line per command, and the agent answers one JSON line each. Every line is at most
 //! [`MAX_LINE`] bytes.
 //!
-//! **Silence.** A connection that does not prove itself, with a wrong secret or an unknown
-//! token or a line that is not what the agent expects, gets no answer: after the TLS handshake,
-//! which any peer can make, the agent sends no byte and just closes it. Only a phone that proved
-//! itself is told that its version is too old.
+//! **Silence.** The agent answers only what it can authenticate. A wrong QR proof, an unknown
+//! token, a typed-code request on a connection that did not negotiate the typed protocol, and a
+//! line the agent does not expect get no reply: the agent just closes the connection. A typed-code
+//! request for a pairing that is closed, used up or expired gets the fixed error
+//! `pairing code rejected`, and one for an open pairing gets an OPAQUE challenge. Only a phone
+//! that proved itself (a right QR proof, a verified typed confirmation or a known token) is told
+//! that its version is too old. A phone with a token-authenticated session that sets
+//! `watch_revocation` also gets a final `{"revoked": true}` line when it is unpaired while
+//! connected; a phone that does not set it is closed without one.
 //!
-//! **Limits of a pairing.** The wrong proofs of all peers count together: three from anyone on
-//! the network close the pairing, and the person opens a new one. This is on purpose, since it
-//! is what keeps a short code from being guessed; it also means a peer on the network can stop
-//! a pairing.
+//! **Limits of a pairing.** One budget of [`pairing::MAX_FAILURES`] failed attempts covers the
+//! whole pairing and every peer on the network: a wrong QR proof, and a typed challenge that
+//! ends without a verified confirmation (the phone left, or its confirmation does not verify).
+//! Challenges still waiting for their confirmation hold a part of the budget too, so a pairing
+//! never hands out more guesses than it allows. When the budget is used the pairing closes and
+//! the person opens a new one. This is on purpose, since it is what keeps a short code from
+//! being guessed; it also means a peer on the network can stop a pairing.
 //!
 //! **Versions.** Both sides state a protocol number (`v`). The agent answers phones from
 //! [`MIN_PROTOCOL`] to [`PROTOCOL`].
@@ -59,8 +66,7 @@ pub use tls::fingerprint_of;
 pub const PROTOCOL: u64 = 1;
 /// The oldest protocol number this agent still answers.
 pub const MIN_PROTOCOL: u64 = 1;
-/// The longest line, in bytes, either side sends.
-pub const MAX_LINE: usize = 16 * 1024;
+pub use phone_pairing::MAX_LINE;
 /// How long a pairing stays open when the caller gives no time.
 pub const DEFAULT_PAIRING_TIME: Duration = Duration::from_secs(300);
 /// The port the agent listens on for phones, so a paired phone finds it again after a restart.
@@ -326,13 +332,24 @@ async fn serve(stream: TcpStream, acceptor: TlsAcceptor, state: &State) -> Optio
         .await
         .ok()?
         .ok()?;
+    let typed = tls.get_ref().1.alpn_protocol() == Some(phone_pairing::TYPED_CAPABILITY);
+    let exporter = tls
+        .get_ref()
+        .1
+        .export_keying_material(
+            [0; phone_pairing::BINDING_LEN],
+            phone_pairing::EXPORTER_LABEL,
+            None,
+        )
+        .ok()?;
     let (reader, mut writer) = tokio::io::split(tls);
     let mut reader = BufReader::new(reader);
     let first = tokio::time::timeout(FIRST_LINE_TIME, read_line(&mut reader))
         .await
         .ok()??;
     let hello: Value = serde_json::from_str(&first).ok()?;
-    let version = check_version(hello.get("v")?.as_u64()?);
+    let offered_version = hello.get("v")?.as_u64()?;
+    let version = check_version(offered_version);
 
     if let Some(pair) = hello.get("pair") {
         let proof = pair.get("proof")?.as_str()?;
@@ -344,27 +361,37 @@ async fn serve(stream: TcpStream, acceptor: TlsAcceptor, state: &State) -> Optio
         let _redeeming = state.pairing.redeeming();
         return match state.pairing.redeem(proof, &fingerprint, version) {
             pairing::Redeem::Granted(agent_proof) => {
-                // The secret is spent by now. When the file cannot be written the phone gets no
-                // answer, and the person opens a new pairing; this text is the only sign.
-                let Ok(token) = state.paired.add(name) else {
-                    eprintln!("phone endpoint: a paired phone could not be saved");
-                    return None;
-                };
-                write_line(
-                    &mut writer,
-                    &json!({"v": PROTOCOL, "paired": true, "token": token, "agent_proof": agent_proof}),
-                )
-                .await
-                .ok()
+                let mut reply = save_pairing(state, name)?;
+                reply["agent_proof"] = json!(agent_proof);
+                write_line(&mut writer, &reply).await.ok()
             }
-            pairing::Redeem::Version(version) => {
-                write_line(&mut writer, &version_reply(version)).await.ok()
+            pairing::Redeem::Version(version, agent_proof) => {
+                let mut reply = version_reply(version);
+                reply["agent_proof"] = json!(agent_proof);
+                write_line(&mut writer, &reply).await.ok()
             }
             pairing::Redeem::Refused => None,
         };
     }
 
+    if let Some(pair) = hello.get("pair_code") {
+        if !typed {
+            return None;
+        }
+        let request = hex::decode(pair.get("request")?.as_str()?).ok()?;
+        return pair_by_code(
+            &mut reader,
+            &mut writer,
+            state,
+            &exporter,
+            &request,
+            offered_version,
+        )
+        .await;
+    }
+
     let token = hello.get("token")?.as_str()?;
+    let watch = hello.get("watch_revocation") == Some(&Value::Bool(true));
     // Hear the unpairing before looking the phone up, so none falls between the two.
     let mut revoked = state.paired.subscribe();
     let id = state.paired.id_of(token)?;
@@ -374,7 +401,78 @@ async fn serve(stream: TcpStream, acceptor: TlsAcceptor, state: &State) -> Optio
     write_line(&mut writer, &json!({"v": PROTOCOL, "ok": true}))
         .await
         .ok()?;
-    commands(&mut reader, &mut writer, &state.paired, &id, &mut revoked).await
+    let result = commands(&mut reader, &mut writer, &state.paired, &id, &mut revoked).await;
+    if watch && !state.paired.has_id(&id) {
+        // Only a session that passed token authentication receives the final notification.
+        write_line(&mut writer, &json!({"revoked": true}))
+            .await
+            .ok()?;
+        writer.shutdown().await.ok()?;
+        // Closing a socket with an unread ping can reset the connection before the phone
+        // reads the notice. Allow the normal session idle window for a delayed phone, while
+        // the half-closed socket can no longer answer it.
+        let mut remaining = reader.take(MAX_LINE as u64);
+        let _ = tokio::time::timeout(
+            IDLE_TIME,
+            tokio::io::copy(&mut remaining, &mut tokio::io::sink()),
+        )
+        .await;
+    }
+    result
+}
+
+async fn pair_by_code<R, W>(
+    reader: &mut BufReader<R>,
+    writer: &mut W,
+    state: &State,
+    exporter: &[u8; phone_pairing::BINDING_LEN],
+    request: &[u8],
+    offered_version: u64,
+) -> Option<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let Some((attempt, challenge)) = state.pairing.start_code(request, exporter, offered_version)
+    else {
+        return write_line(writer, &json!({"error": phone_pairing::CODE_REJECTED}))
+            .await
+            .ok();
+    };
+    write_line(writer, &json!({"challenge": hex::encode(challenge)}))
+        .await
+        .ok()?;
+    let confirmation = tokio::time::timeout(FIRST_LINE_TIME, read_line(reader))
+        .await
+        .ok()??;
+    let confirmation: Value = serde_json::from_str(&confirmation).ok()?;
+    let name = confirmation
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let confirmation = hex::decode(confirmation.get("confirmation")?.as_str()?).ok()?;
+    let _redeeming = state.pairing.redeeming();
+    let version = check_version(offered_version);
+    if !attempt.finish(&confirmation, version) {
+        return write_line(writer, &json!({"error": phone_pairing::CODE_REJECTED}))
+            .await
+            .ok();
+    }
+    let reply = if version == Version::Ok {
+        save_pairing(state, name)?
+    } else {
+        version_reply(version)
+    };
+    write_line(writer, &reply).await.ok()
+}
+
+fn save_pairing(state: &State, name: &str) -> Option<Value> {
+    // The offer is spent. If it cannot be saved, open a fresh offer to retry.
+    let Ok(token) = state.paired.add(name) else {
+        eprintln!("phone endpoint: a paired phone could not be saved");
+        return None;
+    };
+    Some(json!({"v": PROTOCOL, "paired": true, "token": token}))
 }
 
 /// Completes when the phone `id` is unpaired. A receiver that fell behind may have missed it, so

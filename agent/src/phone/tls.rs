@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ServerConfig, version};
-use sha2::{Digest, Sha256};
 
 use super::Error;
 use crate::host::write_private;
@@ -22,7 +21,7 @@ const KEY_FILE: &str = "phone-key.der";
 /// The SHA-256 fingerprint of a DER certificate.
 #[must_use]
 pub fn fingerprint_of(der: &[u8]) -> [u8; 32] {
-    Sha256::digest(der).into()
+    phone_pairing::fingerprint(der)
 }
 
 /// The certificate and its key.
@@ -77,13 +76,14 @@ impl Identity {
     /// Fails when the key is not usable.
     pub fn server_config(&self) -> Result<Arc<ServerConfig>, Error> {
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.key.clone()));
-        let config =
+        let mut config =
             ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
                 .with_protocol_versions(&[&version::TLS13])
                 .map_err(|_| Error::Tls)?
                 .with_no_client_auth()
                 .with_single_cert(vec![CertificateDer::from(self.cert.clone())], key)
                 .map_err(|_| Error::Tls)?;
+        config.alpn_protocols = vec![phone_pairing::TYPED_CAPABILITY.to_vec()];
         Ok(Arc::new(config))
     }
 }
