@@ -98,6 +98,7 @@ dependencies {
     implementation(project(":core:database"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:keys"))
+    implementation(project(":feature:chat"))
     implementation(project(":feature:memory"))
     implementation(project(":feature:settings"))
     implementation(platform(libs.compose.bom))

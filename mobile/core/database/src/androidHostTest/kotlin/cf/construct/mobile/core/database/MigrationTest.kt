@@ -40,7 +40,10 @@ class MigrationTest {
         val driver = JdbcSqliteDriver("jdbc:sqlite:${versionOneFile().path}", Properties(), ConstructDatabase.Schema)
         val store = CopyStore(driver)
 
-        assertEquals(listOf(ConversationSummary("c1", "Plan my week", "2026-01-01T18:30:00Z")), store.conversations())
+        assertEquals(
+            listOf(ConversationSummary("c1", "Plan my week", "2026-01-01T18:30:00Z", preview = "Start on Monday.")),
+            store.conversations(),
+        )
         assertEquals("computer", store.conversationOrigin("c1"))
         assertEquals(emptyList(), store.chatRecords("c1"))
         assertEquals(

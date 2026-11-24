@@ -4,6 +4,7 @@ import cf.construct.mobile.core.model.ChatEvent
 import cf.construct.mobile.core.model.ChatInput
 import cf.construct.mobile.core.model.ChatMessage
 import cf.construct.mobile.core.model.ChatRole
+import cf.construct.mobile.core.model.ConversationOrigin
 import cf.construct.mobile.core.model.ConversationSummary
 import cf.construct.mobile.core.model.DELETE_ALL_CONVERSATIONS
 import cf.construct.mobile.core.model.DashboardDocument
@@ -60,7 +61,12 @@ class FakeConstruct(
     override val chatEvents: Flow<ChatEvent> = events.asSharedFlow()
 
     override suspend fun listConversations(): Outcome<List<ConversationSummary>> =
-        Outcome.Ok(threads.keys.sortedByDescending { it.time })
+        Outcome.Ok(
+            threads.entries
+                .map { (summary, messages) ->
+                    summary.copy(preview = messages.lastOrNull { it.role != ChatRole.TOOL }?.text.orEmpty())
+                }.sortedByDescending { it.time },
+        )
 
     override suspend fun getConversation(conversation: String): Outcome<List<ChatMessage>> {
         val thread = threads.entries.firstOrNull { it.key.id == conversation }?.value
@@ -85,6 +91,7 @@ class FakeConstruct(
                     id = input.conversation.ifEmpty { "new-${created + 1}" },
                     title = input.message.take(TITLE_LENGTH),
                     time = newChatTime(++created),
+                    origin = ConversationOrigin.PHONE,
                 )
         // ATOMIC: a stop that comes before the body runs still reaches the `finally` below.
         answer = scope.launch(start = CoroutineStart.ATOMIC) { streamAnswer(chat, input) }

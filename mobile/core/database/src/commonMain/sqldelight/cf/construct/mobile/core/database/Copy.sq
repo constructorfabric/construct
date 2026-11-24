@@ -52,7 +52,10 @@ CREATE TABLE sync (
 );
 
 listConversations:
-SELECT id, title, time FROM conversation;
+SELECT id, title, time, origin,
+    COALESCE((SELECT text FROM message WHERE conversation_id = conversation.id AND role != 'TOOL'
+        ORDER BY position DESC LIMIT 1), '') AS preview
+FROM conversation;
 
 conversationExists:
 SELECT COUNT(*) FROM conversation WHERE id = ?;

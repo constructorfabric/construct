@@ -269,12 +269,18 @@ class SettingsHolderTest {
     fun removingAfterQueuedSaveLeavesNoKey() =
         runTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
-            val holder = SettingsHolder(store, core, this, dispatcher)
+            val committedKeyStates = mutableListOf<Boolean>()
+            val holder =
+                SettingsHolder(store, core, this, dispatcher) {
+                    committedKeyStates.add(store.read().keyIsSet)
+                }
             advanceUntilIdle()
             holder.fill()
             holder.save()
             holder.removeKey()
+            assertTrue(committedKeyStates.isEmpty())
             advanceUntilIdle()
+            assertEquals(listOf(true, false), committedKeyStates)
             assertNull(store.readProvider().key)
             assertFalse(holder.state.value.keyIsSet)
         }

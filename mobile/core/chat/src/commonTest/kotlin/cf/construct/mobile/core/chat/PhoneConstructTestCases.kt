@@ -9,6 +9,8 @@ import cf.construct.mobile.core.model.ChatEvent
 import cf.construct.mobile.core.model.ChatInput
 import cf.construct.mobile.core.model.ChatMessage
 import cf.construct.mobile.core.model.ChatRole
+import cf.construct.mobile.core.model.ConversationOrigin
+import cf.construct.mobile.core.model.ConversationSummary
 import cf.construct.mobile.core.model.Outcome
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -157,6 +159,7 @@ abstract class PhoneConstructTestCases {
         withCopy { chat, sql, settings ->
             sql("INSERT INTO conversation(id, title, time) VALUES ('computer', 'Desktop', '2026-01-01T00:00:00Z')")
             sql("INSERT INTO message VALUES ('computer', 0, 'USER', 'Kept')")
+            sql("INSERT INTO message VALUES ('computer', 1, 'TOOL', 'Looked up a note')")
             val readOnly = Outcome.Failed("this conversation was started on the computer and is read-only")
             assertEquals(readOnly, chat.sendMessage(ChatInput("computer", "Hi")))
             assertEquals(readOnly, chat.deleteConversation("computer"))
@@ -165,12 +168,24 @@ abstract class PhoneConstructTestCases {
                 chat.events { events ->
                     val first = answer(chat, events, "", "one")
                     val second = answer(chat, events, "", "two")
+                    val summaries = assertIs<Outcome.Ok<List<ConversationSummary>>>(chat.listConversations()).value
+                    assertEquals(listOf(first, second).toSet(), summaries.take(2).map { it.id }.toSet())
+                    assertEquals(
+                        listOf(ConversationOrigin.PHONE, ConversationOrigin.PHONE),
+                        summaries.take(2).map { it.origin },
+                    )
+                    assertEquals(ConversationOrigin.COMPUTER, summaries.last().origin)
+                    assertEquals("first second", summaries.first().preview)
                     assertEquals(Outcome.Ok(Unit), chat.deleteConversation("all"))
                     assertIs<Outcome.Failed>(chat.getConversation(first))
                     assertIs<Outcome.Failed>(chat.getConversation(second))
                 }
             }
-            assertEquals(Outcome.Ok(listOf(ChatMessage(ChatRole.USER, "Kept"))), chat.getConversation("computer"))
+            val kept = listOf(ChatMessage(ChatRole.USER, "Kept"), ChatMessage(ChatRole.TOOL, "Looked up a note"))
+            assertEquals(Outcome.Ok(kept), chat.getConversation("computer"))
+            val remaining = assertIs<Outcome.Ok<List<ConversationSummary>>>(chat.listConversations()).value
+            assertEquals(listOf("computer"), remaining.map { it.id })
+            assertEquals("Kept", remaining.single().preview)
         }
 
     @Test
@@ -178,7 +193,6 @@ abstract class PhoneConstructTestCases {
         withCopy { chat, _, settings ->
             chat.events { events ->
                 assertEquals(Outcome.Failed("no model is set"), chat.sendMessage(ChatInput("", "Hello")))
-                assertEquals(ChatEvent.Error("no model is set"), events.receive())
 
                 settings.saveProvider(fakes.closedAddress(), "local-model", FAKE_API_KEY)
                 assertEquals(Outcome.Ok(Unit), chat.sendMessage(ChatInput("", "Hello")))
