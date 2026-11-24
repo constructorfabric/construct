@@ -33,10 +33,14 @@ enum class ComputerLink {
     StorageError,
 }
 
-/** Safe to publish. The address, certificate pin and credential are kept in the connection. */
+/**
+ * Safe to publish. The endpoint names the paired computer; the certificate pin and the credential are kept
+ * in the connection. The endpoint is null while no pairing is read.
+ */
 data class LinkSnapshot(
     val link: ComputerLink,
     val lastContactMillis: Long,
+    val endpoint: String? = null,
 )
 
 /**
@@ -76,6 +80,21 @@ class PhoneConnection internal constructor(
         val offer = PairingOffer.qr(payload, transport::isNumericAddress) ?: return PairResult.InvalidQr
         return pair(offer, name)
     }
+
+    /**
+     * Removes the computer's copy on the phone and the pairing together, and tells [monitor]. Both go while no
+     * other pairing step runs. A pairing that cannot be removed throws, and the copy is already gone.
+     */
+    suspend fun unpair(removeComputerCopy: () -> Unit) =
+        withContext(dispatcher + NonCancellable) {
+            pairing.withLock {
+                storage.withLock {
+                    removeComputerCopy()
+                    store.clear()
+                    revision.value++
+                }
+            }
+        }
 
     private suspend fun pair(
         offer: PairingOffer,
@@ -140,13 +159,16 @@ class PhoneConnection internal constructor(
                 }
                 currentCoroutineContext().ensureActive()
                 contact.flush()
+                // Inline, not a helper: with unpair a helper would bring this class to detekt's limit of 11 functions.
                 val state =
-                    when (result) {
-                        Probe.PhoneUpdate -> ComputerLink.PhoneUpdate
-                        Probe.ComputerUpdate -> ComputerLink.ComputerUpdate
-                        else -> unavailableReason()
+                    when {
+                        result == Probe.PhoneUpdate -> ComputerLink.PhoneUpdate
+                        result == Probe.ComputerUpdate -> ComputerLink.ComputerUpdate
+                        !networkAvailable() -> ComputerLink.NoNetwork
+                        !localAccess() -> ComputerLink.NetworkPermission
+                        else -> ComputerLink.Unreachable
                     }
-                publish(LinkSnapshot(state, contact.latest))
+                publish(contact.snapshot(state))
                 delay(pollInterval)
             }
         } finally {
@@ -181,13 +203,6 @@ class PhoneConnection internal constructor(
         }
     }
 
-    private fun unavailableReason() =
-        when {
-            !networkAvailable() -> ComputerLink.NoNetwork
-            !localAccess() -> ComputerLink.NetworkPermission
-            else -> ComputerLink.Unreachable
-        }
-
     private suspend fun checkConnection(
         saved: StoredPairing,
         contact: LastContact,
@@ -210,7 +225,7 @@ class PhoneConnection internal constructor(
             contact.latest = maxOf(contact.latest, now())
             currentCoroutineContext().ensureActive()
             if (contact.latest - contact.savedAt >= SAVE_INTERVAL.inWholeMilliseconds) contact.flush()
-            publish(LinkSnapshot(ComputerLink.Connected, contact.latest))
+            publish(contact.snapshot(ComputerLink.Connected))
             delay(pollInterval)
             result = protocol.ping(channel)
         }
@@ -224,6 +239,8 @@ class PhoneConnection internal constructor(
         var latest = pairing.lastContactMillis
         var savedAt = latest
             private set
+
+        fun snapshot(link: ComputerLink) = LinkSnapshot(link, latest, pairing.address.endpoint)
 
         /**
          * The time of the last contact is only a hint to the person. A write that fails leaves the old time in

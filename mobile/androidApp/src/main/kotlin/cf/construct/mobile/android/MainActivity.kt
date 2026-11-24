@@ -1,13 +1,16 @@
 package cf.construct.mobile.android
 
+import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -23,8 +26,23 @@ import cf.construct.mobile.feature.memory.MemoryScreen
 import cf.construct.mobile.feature.settings.SettingsActions
 import cf.construct.mobile.feature.settings.SettingsHolder
 import cf.construct.mobile.feature.settings.SettingsScreen
+import cf.construct.mobile.feature.status.ConnectionStatusKind
 
 class MainActivity : ComponentActivity() {
+    private val connection: ConnectionViewModel by viewModels {
+        viewModelFactory {
+            initializer {
+                val app = application as ConstructApp
+                ConnectionViewModel(app.phoneConnection, app.copy::removeComputerCopy)
+            }
+        }
+    }
+    private val localNetworkPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            connection.holder.tryAgain()
+            if (granted) connection.clearOperation()
+        }
+
     private val chat: ChatViewModel by viewModels {
         viewModelFactory {
             initializer {
@@ -54,17 +72,92 @@ class MainActivity : ComponentActivity() {
             ConstructTheme {
                 val state by memory.holder.state.collectAsState()
                 val settingsState by settings.holder.state.collectAsState()
+                val connectionState by connection.holder.state.collectAsState()
+                val operation by connection.operation.collectAsState()
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    ChatRoute(chat) { page ->
+                    ChatRoute(
+                        chat,
+                        connectionState,
+                        onTryAgain = ::retryConnection,
+                        computerContent = { page, open ->
+                            LaunchedEffect(page) { connection.clearOperation() }
+                            LaunchedEffect(operation.paired) {
+                                if (operation.paired && page != ComputerPage.Overview) open(ComputerPage.Overview)
+                            }
+                            when (page) {
+                                ComputerPage.Overview -> {
+                                    ComputerScreen(connectionState, operation, open, ::retryConnection) {
+                                        connection.unpair(::refreshAfterUnpair)
+                                    }
+                                }
+
+                                ComputerPage.Manual -> {
+                                    ManualPairingScreen(operation, connection::pairByCode, ::requestLocalNetwork)
+                                }
+
+                                ComputerPage.Scan -> {
+                                    ScanPairingScreen(
+                                        operation,
+                                        connection::pairByQr,
+                                        connection::clearOperation,
+                                        ::requestLocalNetwork,
+                                    ) { open(ComputerPage.Manual) }
+                                }
+                            }
+                        },
+                    ) { page, openComputer ->
                         when (page) {
-                            Page.Memory -> MemoryScreen(state, onRefresh = memory.holder::refresh)
-                            Page.Settings -> SettingsScreen(settingsState, settings.actions)
-                            else -> PlaceholderPage(page)
+                            Page.Memory -> {
+                                MemoryScreen(state, onRefresh = memory.holder::refresh)
+                            }
+
+                            Page.Settings -> {
+                                SettingsScreen(settingsState, settings.actions) {
+                                    ComputerSettingsRow(connectionState, openComputer)
+                                }
+                            }
+
+                            else -> {
+                                PlaceholderPage(page)
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        connection.holder.setForeground(true)
+    }
+
+    private fun refreshAfterUnpair() {
+        memory.holder.refresh()
+        chat.holder.refresh()
+    }
+
+    private fun retryConnection() {
+        if (connection.holder.state.value.kind == ConnectionStatusKind.NetworkPermission &&
+            !hasLocalNetworkPermission()
+        ) {
+            requestLocalNetwork()
+        } else {
+            connection.holder.tryAgain()
+        }
+    }
+
+    private fun requestLocalNetwork() {
+        if (!hasLocalNetworkPermission()) {
+            localNetworkPermission.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        } else {
+            connection.clearOperation()
+        }
+    }
+
+    override fun onStop() {
+        connection.holder.setForeground(false)
+        super.onStop()
     }
 }
 

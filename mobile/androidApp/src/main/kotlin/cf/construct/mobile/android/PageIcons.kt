@@ -3,6 +3,14 @@ package cf.construct.mobile.android
 import cf.construct.mobile.core.designsystem.lucide
 
 internal object PageIcons {
+    val unlink =
+        lucide(
+            "unlink",
+            "M9 7V2m6 20v-5M2 9h5m10 6h5",
+            "m8 16-2 2a3 3 0 0 0 4 4l4-4a3 3 0 0 0 0-4",
+            "m16 8 2-2a3 3 0 0 0-4-4l-4 4a3 3 0 0 0 0 4",
+        )
+
     val chat =
         lucide(
             "message-square",
