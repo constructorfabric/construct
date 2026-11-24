@@ -13,6 +13,7 @@
 # build number and version come from iosApp/project.yml.
 #
 # --archive-only verifies the version and build number in a local device archive without uploading.
+# --ci-release requires a checked unsigned archive, protected release context and an API key.
 #
 # IOS_SIMULATOR names the simulator to use (default: the first single-screen iPhone that is
 # available; the two-screen "Duo" needs a display chosen for each screenshot).
@@ -26,10 +27,13 @@ fail() {
 }
 
 archive_only=false
-if [ "$#" -gt 0 ]; then
-  [ "$#" -eq 1 ] && [ "$1" = "--archive-only" ] || fail "usage: build-ios.sh [--archive-only]"
-  archive_only=true
-fi
+ci_release=false
+case "$#:$*" in
+  0:) ;;
+  1:--archive-only) archive_only=true ;;
+  1:--ci-release) ci_release=true ;;
+  *) fail "usage: build-ios.sh [--archive-only | --ci-release]" ;;
+esac
 
 spec=iosApp/project.yml
 prop() {
@@ -57,8 +61,8 @@ if [ -z "${JAVA_HOME:-}" ]; then
   export JAVA_HOME
 fi
 
-# Choose how the upload signs in, before anything is built. The key values go to xcodebuild only;
-# they are never printed.
+# Assemble Xcode's authentication arguments without printing the values.
+# In CI, testflight-release.mjs also uses the team key to verify build history and availability.
 choose_upload_auth() {
   local key_vars name set_count
   team=$(prop DEVELOPMENT_TEAM)
@@ -84,11 +88,26 @@ choose_upload_auth() {
   fi
 }
 
+verify_archive() {
+  local out=$1
+  local info archived_id archived_version archived_build
+
+  info="$out/Construct.xcarchive/Products/Applications/Construct.app/Info.plist"
+  archived_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info") \
+    || fail "could not read the bundle ID from the archive"
+  archived_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info") \
+    || fail "could not read the app version from the archive"
+  archived_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info") \
+    || fail "could not read the build number from the archive"
+  if [ "$archived_id" != "$bundle_id" ] || [ "$archived_version" != "$version" ] || [ "$archived_build" != "$build" ]; then
+    fail "archive bundle ID, version or build number does not match $spec"
+  fi
+  echo "Verified archive: $archived_version ($archived_build) at $out/Construct.xcarchive"
+}
+
 archive() {
   local out=$1
   shift
-  local info archived_version archived_build
-
   rm -rf "$out"
   mkdir -p "$out"
   (cd iosApp && xcodegen generate --quiet)
@@ -96,22 +115,21 @@ archive() {
   xcodebuild -project iosApp/Construct.xcodeproj -scheme Construct -configuration Release \
     -destination generic/platform=iOS -derivedDataPath build/ios-device \
     -archivePath "$out/Construct.xcarchive" "$@" -quiet archive
+  verify_archive "$out"
+}
 
-  info="$out/Construct.xcarchive/Products/Applications/Construct.app/Info.plist"
-  archived_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info") \
-    || fail "could not read the app version from the archive"
-  archived_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info") \
-    || fail "could not read the build number from the archive"
-  if [ "$archived_version" != "$version" ] || [ "$archived_build" != "$build" ]; then
-    fail "archive version $archived_version ($archived_build) does not match $version ($build) in $spec"
-  fi
-  echo "Verified archive: $archived_version ($archived_build) at $out/Construct.xcarchive"
+testflight() {
+  node scripts/testflight-release.mjs "$1" "$bundle_id" "$version" "$build"
 }
 
 upload() {
   local out=build/ios-release
+  local version_options=
   archive "$out" "${auth[@]}"
 
+  if [ "$ci_release" = true ]; then
+    version_options='  <key>manageAppVersionAndBuildNumber</key><false/>'
+  fi
   cat >"$out/ExportOptions.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -121,15 +139,24 @@ upload() {
   <key>destination</key><string>upload</string>
   <key>teamID</key><string>$team</string>
   <key>signingStyle</key><string>automatic</string>
+$version_options
 </dict>
 </plist>
 EOF
+  if [ "$ci_release" = true ]; then
+    testflight unused
+    scripts/check-ci-release.sh
+  fi
   echo "Upload: $bundle_id $version ($build)"
   xcodebuild -exportArchive -archivePath "$out/Construct.xcarchive" \
     -exportOptionsPlist "$out/ExportOptions.plist" -exportPath "$out/export" \
     "${auth[@]}" -quiet
-  echo "Sent $version ($build) to App Store Connect. Processing takes some minutes; the build then"
-  echo "shows in TestFlight for the internal group."
+  if [ "$ci_release" = true ]; then
+    testflight verify
+  else
+    echo "Sent $version ($build) to App Store Connect. Processing takes some minutes; the build then"
+    echo "shows in TestFlight for the internal group."
+  fi
 }
 
 if [ "$is_final" = YES ] || [ "$archive_only" = true ]; then
@@ -142,6 +169,13 @@ fi
 if [ "$archive_only" = true ]; then
   archive build/ios-archive-check CODE_SIGNING_ALLOWED=NO
   exit 0
+fi
+
+if [ "$ci_release" = true ]; then
+  scripts/check-ci-release.sh
+  [ "$is_final" = YES ] || fail "set the final iOS bundle ID before releasing"
+  verify_archive build/ios-archive-check
+  testflight unused
 fi
 
 if [ "$is_final" = YES ]; then

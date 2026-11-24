@@ -1,0 +1,192 @@
+name: Mobile release
+
+# Configure the protected environments documented in mobile/RELEASING.md.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Mobile platform to release
+        type: choice
+        required: true
+        options: [ios, android]
+      source_sha:
+        description: Full commit SHA of canonical main
+        type: string
+        required: true
+      confirm_release:
+        description: Publish the signed build from this commit
+        type: boolean
+        required: true
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/mobile-release.yml
+      - mobile/scripts/**
+      - mobile/tools/test_mobile_release.mjs
+      - mobile/RELEASING.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-release-${{ github.event_name == 'workflow_dispatch' && inputs.platform || github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+  RELEASE_CONFIRMED: ${{ inputs.confirm_release }}
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+      - name: Check release guards without credentials
+        run: |
+          for script in mobile/scripts/{check-ci-release,setup-android-ci,setup-ios-ci,build-ios,release-android}.sh; do
+            bash -n "$script"
+          done
+          node --test mobile/tools/test_mobile_release.mjs
+
+  authorize:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Authorize the exact release source
+        env:
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          GH_TOKEN: ${{ github.token }}
+        run: mobile/scripts/check-ci-release.sh "$RELEASE_PLATFORM"
+
+  ios:
+    needs: authorize
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'constructorfabric/construct' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.confirm_release && inputs.platform == 'ios'
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: mobile-ios-release
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Recheck canonical source and environment after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: mobile/scripts/check-ci-release.sh ios
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+      - name: Install build tools
+        shell: bash
+        run: |
+          echo "CONSTRUCT_CORE_BUILD_DIR=$RUNNER_TEMP/construct-chat-core" >> "$GITHUB_ENV"
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+          mobile/scripts/setup-ios-ci.sh
+      - name: Verify unsigned archive metadata
+        working-directory: mobile
+        run: scripts/build-ios.sh --archive-only
+      - name: Sign, upload, and verify internal TestFlight availability
+        working-directory: mobile
+        shell: bash
+        env:
+          APP_STORE_CONNECT_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_KEY_P8_BASE64 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          TESTFLIGHT_INTERNAL_GROUP: ${{ vars.TESTFLIGHT_INTERNAL_GROUP }}
+        run: |
+          scripts/check-ci-release.sh
+          if [[ -z "$APP_STORE_CONNECT_KEY_P8_BASE64" || -z "$APP_STORE_CONNECT_KEY_ID" ||
+                -z "$APP_STORE_CONNECT_ISSUER_ID" || -z "$TESTFLIGHT_INTERNAL_GROUP" ]]; then
+            echo "::error::Configure the App Store Connect team key and internal group in the release environment."
+            exit 1
+          fi
+          umask 077
+          signing_dir=$(mktemp -d "$RUNNER_TEMP/construct-ios-signing.XXXXXXXX")
+          keychain="$signing_dir/signing.keychain-db"
+          cleanup() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -rf "$signing_dir"
+          }
+          trap cleanup EXIT
+          export APP_STORE_CONNECT_KEY_PATH="$signing_dir/AuthKey.p8"
+          printf '%s' "$APP_STORE_CONNECT_KEY_P8_BASE64" | base64 -D > "$APP_STORE_CONNECT_KEY_PATH"
+          unset APP_STORE_CONNECT_KEY_P8_BASE64
+          keychain_password=$(openssl rand -hex 24)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 7200 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -s "$keychain"
+          unset keychain_password
+          scripts/build-ios.sh --ci-release
+
+  publish-android:
+    needs: authorize
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'constructorfabric/construct' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.confirm_release && inputs.platform == 'android'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: mobile-android-release
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Recheck canonical source and environment after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: mobile/scripts/check-ci-release.sh android
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android dependencies
+        shell: bash
+        run: |
+          echo "CONSTRUCT_CORE_BUILD_DIR=$RUNNER_TEMP/construct-chat-core" >> "$GITHUB_ENV"
+          mobile/scripts/setup-android-ci.sh
+      - name: Sign and publish the Android pre-release
+        working-directory: mobile
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEYSTORE_PASSWORD" ]]; then
+            echo "::error::Configure the Android keystore, alias and password in the release environment."
+            exit 1
+          fi
+          umask 077
+          ANDROID_KEYSTORE_PATH=$(mktemp "$RUNNER_TEMP/construct-android-keystore.XXXXXXXX")
+          export ANDROID_KEYSTORE_PATH
+          trap 'rm -f "$ANDROID_KEYSTORE_PATH"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          unset ANDROID_KEYSTORE_BASE64
+          scripts/release-android.sh --ci-release
