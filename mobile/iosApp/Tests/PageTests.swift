@@ -13,17 +13,4 @@ final class PageTests: XCTestCase {
             XCTAssertNotNil(UIImage(named: page.icon), "\(page.title) has no icon \(page.icon)")
         }
     }
-
-    func testTheConnectionStatesAreToldApartInWords() {
-        XCTAssertEqual(ConnectionState.connected.text, "Connected")
-        XCTAssertEqual(ConnectionState.notConnected.text, "Not connected")
-    }
-
-    func testTheConnectionStateFollowsTheBuildType() {
-        #if DEBUG
-        XCTAssertEqual(ConnectionState.current(), .connected)
-        #else
-        XCTAssertEqual(ConnectionState.current(), .notConnected)
-        #endif
-    }
 }

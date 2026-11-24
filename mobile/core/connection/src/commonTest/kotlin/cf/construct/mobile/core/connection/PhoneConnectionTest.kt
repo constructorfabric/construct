@@ -9,6 +9,7 @@ import cf.construct.mobile.core.chat.PhoneTransport
 import cf.construct.mobile.core.keys.ModelSettingsException
 import cf.construct.mobile.core.keys.fakePairingSecret
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -434,6 +435,43 @@ class PhoneConnectionTest {
             assertNotNull(fixture.store.read())
         }
 
+    @Test
+    fun aLocalNetworkDenialExplainsFailedPairingAndFailedReconnect() =
+        runTest {
+            val fixture = Fixture(this)
+            val phone = fixture.connection()
+            fixture.agent.codeFailure = PhoneReplyKind.Unavailable
+            fixture.localNetworkDenied = true
+            assertEquals(PairResult.NetworkPermission, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            assertTrue(fixture.store.read() == null)
+
+            fixture.agent.codeFailure = null
+            fixture.localNetworkDenied = false
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            val observed = fixture.watch()
+            assertEquals(ComputerLink.Connected, observed.last().link)
+
+            fixture.agent.action = PhoneReplyKind.Closed
+            fixture.localNetworkDenied = true
+            tick()
+            assertEquals(ComputerLink.NetworkPermission, observed.last().link)
+            assertNotNull(fixture.store.read())
+        }
+
+    @Test
+    fun aCancelWhileTheLocalNetworkCheckBlocksPublishesNothingMore() =
+        runTest {
+            val fixture = Fixture(this)
+            assertEquals(PairResult.Paired, fixture.connection().pairByCode(ADDRESS, CODE, "Phone"))
+            val observed = fixture.watch()
+            assertEquals(ComputerLink.Connected, observed.last().link)
+
+            fixture.agent.action = PhoneReplyKind.Unavailable
+            fixture.duringLocalNetworkCheck = { fixture.watching?.cancel() }
+            tick()
+            assertEquals(ComputerLink.Connected, observed.last().link)
+        }
+
     private fun TestScope.tick() {
         advanceTimeBy(1.seconds)
         runCurrent()
@@ -447,6 +485,9 @@ class PhoneConnectionTest {
         val agent = FakeAgent()
         var network = true
         var localAccess = true
+        var localNetworkDenied = false
+        var duringLocalNetworkCheck: () -> Unit = {}
+        var watching: Job? = null
         var now = 1000L
 
         fun connection(version: Int = PHONE_PROTOCOL) =
@@ -459,11 +500,17 @@ class PhoneConnectionTest {
                 1.seconds,
                 { now },
                 { localAccess },
+                { address ->
+                    assertEquals("192.0.2.10", address.host)
+                    assertEquals(47821, address.port)
+                    duringLocalNetworkCheck()
+                    localNetworkDenied
+                },
             )
 
         fun watch(version: Int = PHONE_PROTOCOL): List<LinkSnapshot> {
             val observed = mutableListOf<LinkSnapshot>()
-            scope.backgroundScope.launch { connection(version).monitor { observed.add(it) } }
+            watching = scope.backgroundScope.launch { connection(version).monitor { observed.add(it) } }
             scope.runCurrent()
             return observed
         }

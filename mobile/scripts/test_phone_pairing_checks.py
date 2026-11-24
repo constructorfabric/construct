@@ -29,9 +29,12 @@ class Device:
         return self.text
 
 
-def check(device):
+MARKER = "Computer page fixture started"
+
+
+def check(device, marker=None):
     with contextlib.redirect_stdout(io.StringIO()):
-        harness.verify_device_logs(device, PROTECTED, DIGESTS)
+        harness.verify_device_logs(device, PROTECTED, DIGESTS, marker=marker)
 
 
 class DeviceLogCheck(unittest.TestCase):
@@ -41,6 +44,15 @@ class DeviceLogCheck(unittest.TestCase):
     def test_a_log_without_the_canary_fails(self):
         with self.assertRaisesRegex(RuntimeError, "missed its planted log marker"):
             check(Device("I ConstructApp: started"))
+
+    def test_a_log_with_the_marker_passes_and_one_without_it_fails(self):
+        check(Device(f"Default 0x0 Construct: {MARKER}"), marker=MARKER)
+        with self.assertRaisesRegex(RuntimeError, "missed its planted log marker"):
+            check(Device("Default 0x0 Construct: started"), marker=MARKER)
+
+    def test_a_planted_value_fails_beside_the_marker(self):
+        with self.assertRaisesRegex(RuntimeError, "protected pairing material"):
+            check(Device(f"Default 0x0 Construct: {MARKER}", f"Info 0x0 Construct: code {CODE}"), marker=MARKER)
 
     def test_each_planted_plain_value_fails(self):
         for name, value in (("code", CODE), ("fingerprint", FINGERPRINT), ("QR secret", QR_SECRET)):
