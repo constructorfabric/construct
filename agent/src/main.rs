@@ -123,10 +123,13 @@ fn run() -> std::io::Result<()> {
         .with_activity(activity.clone())
         .with_model(model_state.clone())
         .with_service(login_service());
-    let server = match open_phones(&rt) {
-        Some(phones) => server.with_phones(phones),
+    let phones = open_phones(&rt);
+    let server = match &phones {
+        Some(phones) => server.with_phones(phones.clone()),
         None => server,
     };
+    let sync_dashboard = dashboard.clone();
+    let mut sync_numbers = None;
     let (server, render_tool) = match dashboard {
         Some(dashboard) => {
             let numbers = construct_agent::dashboard_numbers::Numbers::new(
@@ -134,6 +137,7 @@ fn run() -> std::io::Result<()> {
                 dashboard.clone(),
                 rt.handle().clone(),
             );
+            sync_numbers = Some(numbers.clone());
             let read = numbers.clone();
             let tool = construct_agent::chat::dashboard_view::tool(
                 dashboard.clone(),
@@ -162,6 +166,20 @@ fn run() -> std::io::Result<()> {
         &activity,
         render_tool,
     );
+    if let (Some(phones), Some(chat)) = (&phones, &chat) {
+        let live = construct_agent::phone::live::Live {
+            chat: chat.clone(),
+            link: link.clone(),
+            dashboard: sync_dashboard,
+            numbers: sync_numbers,
+        };
+        rt.block_on(phones.set_sync(std::sync::Arc::new(
+            construct_agent::phone::sync::Engine::new(
+                std::sync::Arc::new(live),
+                construct_agent::phone::sync::local_calendar(),
+            ),
+        )));
+    }
     // The screen samples: the sampler runs on a thread of its own and takes none until the person
     // switches them on. Only a Mac gives the signals yet; any other computer reads as unsupported.
     let screen = settings.as_ref().and_then(|settings| {

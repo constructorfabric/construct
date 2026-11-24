@@ -126,6 +126,16 @@ phone's hotspot; with no default route, or under a VPN that takes all traffic, n
 directory by default) and `--minutes` how long the pairing stays open (5 by default). The tests are
 `cargo test -p construct-agent --test phone`.
 
+- **What a paired phone copies.** The facts, the chats and the dashboard numbers, with a token for each that
+  changes when the part changes. The commands and the format of the items are described in the header of
+  `agent/src/phone/sync.rs`.
+
+To serve made-up facts, chats and numbers instead of the real ones, give the example a file with `--data FILE`
+(its shape is in the header of `agent/examples/phone_pairing.rs`). The example reads the file again at every
+command, so a test can change it while the program runs. Stop it with Ctrl-C (or `stop` on stdin with `--control`)
+and start it again with the same `--dir` and a fixed port in `--bind`, for example `--bind 0.0.0.0:47821`: it keeps its
+certificate and its paired phones, so a paired phone connects again to the same address.
+
 ## Size and memory
 
 Measured on Linux x86_64 with the release build (`make build`): the agent is one 118 MB file, with the

@@ -30,6 +30,7 @@ struct Inner {
     host: Option<IpAddr>,
     paired: Arc<Paired>,
     endpoint: Mutex<Option<Endpoint>>,
+    sync: std::sync::Mutex<Option<Arc<super::sync::Engine>>>,
     handle: Handle,
 }
 
@@ -75,6 +76,7 @@ impl Service {
             host,
             paired,
             endpoint: Mutex::new(None),
+            sync: std::sync::Mutex::new(None),
             handle: Handle::current(),
         }));
         if !service.0.paired.is_empty() {
@@ -92,9 +94,20 @@ impl Service {
                 dir: self.0.dir.clone(),
                 bind: self.0.bind,
             };
-            *slot = Some(Endpoint::start_with(config, Arc::clone(&self.0.paired)).await?);
+            let endpoint = Endpoint::start_with(config, Arc::clone(&self.0.paired)).await?;
+            endpoint.set_sync(crate::sync::lock(&self.0.sync).clone());
+            *slot = Some(endpoint);
         }
         Ok(())
+    }
+
+    /// Serve the sync commands of paired phones from `engine`, now and after the port reopens.
+    pub async fn set_sync(&self, engine: Arc<super::sync::Engine>) {
+        let slot = self.0.endpoint.lock().await;
+        *crate::sync::lock(&self.0.sync) = Some(Arc::clone(&engine));
+        if let Some(endpoint) = slot.as_ref() {
+            endpoint.set_sync(Some(engine));
+        }
     }
 
     /// Open a pairing, and the port with it when it is closed.

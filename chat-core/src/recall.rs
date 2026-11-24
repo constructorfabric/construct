@@ -13,7 +13,7 @@ use serde::Deserialize;
 use tokio::time::timeout;
 
 /// The name of the tool the facts come as.
-pub(super) const NAME: &str = "recall_facts";
+pub const NAME: &str = "recall_facts";
 /// The result when the all-collection switch is off.
 pub(super) const MEMORY_OFF: &str = "Error: memory is off";
 /// The result when there is nothing to tell, and what no call yet stands for.

@@ -237,6 +237,20 @@ impl Chat {
         self.core.get(conversation)
     }
 
+    /// Every stored conversation with its records, the newest first.
+    ///
+    /// # Errors
+    /// When the conversations cannot be read.
+    pub fn conversations(&self) -> io::Result<Vec<(String, Vec<Record>)>> {
+        self.core.conversations()
+    }
+
+    /// The line the chat shows for a call to the tool `name`.
+    #[must_use]
+    pub fn tool_line(&self, name: &str, arguments: &str) -> String {
+        self.core.tool_line(name, arguments)
+    }
+
     /// The JSON line for `chat-delete` of one conversation or `all`. A conversation that is
     /// answering is not deleted.
     #[must_use]

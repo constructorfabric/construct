@@ -1366,3 +1366,913 @@ async fn the_local_socket_serves_the_phone_commands_and_answers_an_error_without
     .await
     .unwrap();
 }
+
+// ---- Sync: the facts, the chats and the dashboard numbers ----
+
+mod sync {
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    use connectors::{Author, Record, Role as ChatRole, ToolCall, ToolResult, Turn};
+    use construct_agent::activity::rules::{SessionMinutes, minute_number};
+    use construct_agent::activity::screen_time::Block;
+    use construct_agent::dashboard::Source;
+    use construct_agent::dashboard_numbers::{Data as Activity, respond};
+    use construct_agent::phone::sync::{
+        ChatRead, Data, Engine, FactsRead, ITEM_MAX, Reason, Zone, chat_items, chat_read,
+        known_kind,
+    };
+
+    use super::*;
+
+    const FACT_TEXT: &str = "Likes tea at four";
+    const CHAT_TEXT: &str = "Remember the blue folder";
+
+    struct Inner {
+        version: Option<u64>,
+        facts: Vec<Value>,
+        chats: Vec<ChatRead>,
+        sessions: Vec<SessionMinutes>,
+        blocks: Vec<Block>,
+        document: Value,
+    }
+
+    /// Made-up data that a test changes while the endpoint runs. The agent's own settings, with a
+    /// key and a model address, sit next to it and must reach no answer.
+    struct Fake {
+        inner: Mutex<Inner>,
+        broken: AtomicBool,
+        reads: AtomicUsize,
+    }
+
+    fn fact(id: &str, text: &str) -> Value {
+        json!({
+            "fact_id": id, "entity_kind": "preference", "property": "drink", "value": text,
+            "stored_at": "2026-11-01T10:00:00Z",
+        })
+    }
+
+    fn message(role: &str, text: &str) -> Value {
+        json!({"kind": "message", "role": role, "time": "2026-11-01T10:00:00Z", "text": text})
+    }
+
+    fn session(name: &str, times: &[&str]) -> SessionMinutes {
+        SessionMinutes {
+            tool: "claude".into(),
+            session: name.into(),
+            project: format!("/w/{name}"),
+            ticket: String::new(),
+            unattended: false,
+            area: String::new(),
+            collection: String::new(),
+            minutes: times.iter().map(|t| minute_number(t).unwrap()).collect(),
+        }
+    }
+
+    fn small_document() -> Value {
+        let mut document = construct_agent::dashboard::default_activity();
+        document["payload"]["widgets"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|w| matches!(w["id"].as_str(), Some("total" | "by-project")));
+        document
+    }
+
+    impl Fake {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: Mutex::new(Inner {
+                    version: Some(1),
+                    facts: vec![fact("f1", FACT_TEXT)],
+                    chats: vec![ChatRead {
+                        id: "c1".into(),
+                        title: "First".into(),
+                        started: "2026-11-01T10:00:00Z".into(),
+                        items: vec![message("user", CHAT_TEXT)],
+                    }],
+                    sessions: vec![session(
+                        "a",
+                        &[
+                            "2026-11-02T09:00:00Z",
+                            "2026-11-02T09:01:00Z",
+                            "2026-11-04T09:00:00Z",
+                        ],
+                    )],
+                    blocks: Vec::new(),
+                    document: small_document(),
+                }),
+                broken: AtomicBool::new(false),
+                reads: AtomicUsize::new(0),
+            })
+        }
+
+        fn change(&self, f: impl FnOnce(&mut Inner)) {
+            f(&mut self.inner.lock().unwrap());
+        }
+
+        fn check(&self) -> Result<(), Reason> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.broken.load(Ordering::SeqCst) {
+                Err("unavailable")
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl Data for Fake {
+        fn facts(&self) -> Result<FactsRead, Reason> {
+            self.check()?;
+            let inner = self.inner.lock().unwrap();
+            Ok(FactsRead {
+                version: inner.version,
+                facts: inner.facts.clone(),
+            })
+        }
+
+        fn chats(&self) -> Result<Vec<ChatRead>, Reason> {
+            self.check()?;
+            Ok(self.inner.lock().unwrap().chats.clone())
+        }
+
+        fn document(&self) -> Result<Option<Value>, Reason> {
+            self.check()?;
+            Ok(Some(self.inner.lock().unwrap().document.clone()))
+        }
+
+        fn activity(&self, _: Source) -> Result<Activity, Reason> {
+            self.check()?;
+            let inner = self.inner.lock().unwrap();
+            Ok(Activity {
+                sessions: inner.sessions.clone(),
+                blocks: inner.blocks.clone().into(),
+            })
+        }
+    }
+
+    struct Rig {
+        endpoint: Endpoint,
+        engine: Arc<Engine>,
+        fake: Arc<Fake>,
+        addr: SocketAddr,
+        fingerprint: [u8; 32],
+        token: String,
+        _dir: Dir,
+    }
+
+    async fn rig() -> Rig {
+        let dir = Dir::new();
+        let endpoint = start(&dir).await;
+        let fake = Fake::new();
+        let engine = Arc::new(Engine::new(
+            Arc::clone(&fake) as Arc<dyn Data>,
+            Arc::new(Zone(chrono_tz::Europe::Berlin, "Europe/Berlin".into())),
+        ));
+        endpoint.set_sync(Some(Arc::clone(&engine)));
+        let offer = endpoint.open_pairing(LOCAL, TTL).unwrap();
+        let addr = server_addr(&offer);
+        let token = pair(addr, &offer).await;
+        Rig {
+            endpoint,
+            engine,
+            fake,
+            addr,
+            fingerprint: fp_bytes(&offer.fingerprint),
+            token,
+            _dir: dir,
+        }
+    }
+
+    impl Rig {
+        async fn phone(&self) -> Phone {
+            let mut phone = Phone::connect(self.addr, Some(self.fingerprint))
+                .await
+                .unwrap();
+            phone
+                .send(&json!({"v": PROTOCOL, "token": self.token}))
+                .await;
+            assert_eq!(phone.recv().await.unwrap()["ok"], true);
+            phone
+        }
+
+        async fn tokens(&self) -> Value {
+            let mut phone = self.phone().await;
+            phone.send(&json!({"cmd": "sync-check"})).await;
+            phone.recv().await.unwrap()["tokens"].clone()
+        }
+    }
+
+    /// Every item of a command, over all its pages, and the first page's answer.
+    async fn pull(phone: &mut Phone, request: Value) -> (Vec<Value>, Value) {
+        let mut items = Vec::new();
+        let mut first = None;
+        let mut after = Value::Null;
+        loop {
+            let mut ask = request.clone();
+            ask["after"] = after.clone();
+            phone.send(&ask).await;
+            let line = phone.recv().await.unwrap();
+            assert_eq!(line["ok"], true, "{line}");
+            assert!(line.to_string().len() < phone_pairing::MAX_LINE);
+            items.extend(line["items"].as_array().unwrap().clone());
+            after = line["next"].clone();
+            first.get_or_insert(line);
+            if after.is_null() {
+                return (items, first.unwrap());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_paired_phone_gets_the_facts_the_chats_and_the_numbers_and_a_stranger_gets_nothing() {
+        let rig = rig().await;
+        let mut phone = rig.phone().await;
+
+        let (facts, page) = pull(&mut phone, json!({"cmd": "sync-facts"})).await;
+        assert_eq!(page["format"], 1);
+        assert_eq!(
+            facts,
+            vec![json!({
+                "kind": "fact", "id": "f1", "entity_kind": "preference", "property": "drink",
+                "value": FACT_TEXT, "time": "2026-11-01T10:00:00Z",
+            })]
+        );
+
+        let (chats, _) = pull(&mut phone, json!({"cmd": "sync-chats"})).await;
+        assert_eq!(
+            chats,
+            vec![json!({"kind": "chat", "id": "c1", "title": "First",
+                        "started": "2026-11-01T10:00:00Z", "count": 1})]
+        );
+        let (items, _) = pull(&mut phone, json!({"cmd": "sync-chat", "id": "c1"})).await;
+        assert_eq!(items, vec![message("user", CHAT_TEXT)]);
+
+        phone.send(&json!({"cmd": "sync-document"})).await;
+        let document = phone.recv().await.unwrap();
+        assert_eq!(document["zone"], "Europe/Berlin");
+        assert_eq!(document["document"], small_document());
+        let (numbers, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        // Two days and one week hold activity; two widgets each.
+        assert_eq!(numbers.len(), 6);
+        assert!(numbers.iter().all(|n| n["kind"] == "numbers"));
+
+        // A phone that did not pair gets nothing, whatever it asks.
+        for hello in [
+            json!({"v": PROTOCOL, "token": "0".repeat(64)}),
+            json!({"v": PROTOCOL}),
+        ] {
+            let mut stranger = Phone::connect(rig.addr, Some(rig.fingerprint))
+                .await
+                .unwrap();
+            stranger.send(&hello).await;
+            assert_eq!(stranger.recv().await, None);
+            stranger.send(&json!({"cmd": "sync-facts"})).await;
+            assert_eq!(stranger.recv().await, None);
+        }
+        // An agent with no source of data says so, and nothing else.
+        rig.endpoint.set_sync(None);
+        let mut phone = rig.phone().await;
+        phone.send(&json!({"cmd": "sync-facts"})).await;
+        assert_eq!(
+            phone.recv().await.unwrap(),
+            json!({"error": "sync unavailable"})
+        );
+    }
+
+    #[tokio::test]
+    async fn the_token_of_a_part_changes_only_when_that_part_changes() {
+        let rig = rig().await;
+        let before = rig.tokens().await;
+        for part in ["facts", "chats", "dashboard"] {
+            assert!(before[part].is_string());
+        }
+        assert_eq!(
+            rig.tokens().await,
+            before,
+            "nothing changed, nothing differs"
+        );
+
+        let changed = |after: &Value, part: &str| {
+            ["facts", "chats", "dashboard"]
+                .iter()
+                .filter(|p| after[**p] != before[**p])
+                .copied()
+                .collect::<Vec<_>>()
+                == [part]
+        };
+
+        rig.fake.change(|d| d.version = Some(2));
+        assert!(changed(&rig.tokens().await, "facts"));
+        rig.fake.change(|d| d.version = Some(1));
+        assert_eq!(rig.tokens().await, before);
+
+        rig.fake
+            .change(|d| d.chats[0].items.push(message("assistant", "Done")));
+        assert!(changed(&rig.tokens().await, "chats"));
+        rig.fake.change(|d| {
+            d.chats[0].items.pop();
+        });
+        assert_eq!(rig.tokens().await, before);
+
+        rig.fake.change(|d| {
+            d.sessions[0]
+                .minutes
+                .push(minute_number("2026-11-04T09:01:00Z").unwrap());
+        });
+        assert!(changed(&rig.tokens().await, "dashboard"));
+    }
+
+    #[tokio::test]
+    async fn a_part_that_cannot_be_read_has_no_token_and_the_error_holds_no_text() {
+        let rig = rig().await;
+        rig.fake.broken.store(true, Ordering::SeqCst);
+        let mut phone = rig.phone().await;
+        phone.send(&json!({"cmd": "sync-check"})).await;
+        let check = phone.recv().await.unwrap();
+        assert_eq!(
+            check["tokens"],
+            json!({"facts": null, "chats": null, "dashboard": null})
+        );
+        let mut seen = vec![check.to_string()];
+        for ask in [
+            json!({"cmd": "sync-facts"}),
+            json!({"cmd": "sync-chats"}),
+            json!({"cmd": "sync-chat", "id": FACT_TEXT}),
+            json!({"cmd": "sync-dashboard"}),
+            json!({"cmd": "sync-facts", "after": "x", "extra": CHAT_TEXT}),
+        ] {
+            phone.send(&ask).await;
+            seen.push(phone.recv().await.unwrap().to_string());
+        }
+        rig.fake.broken.store(false, Ordering::SeqCst);
+        phone
+            .send(&json!({"cmd": "sync-chat", "id": FACT_TEXT}))
+            .await;
+        seen.push(phone.recv().await.unwrap().to_string());
+        for line in &seen {
+            for secret in [FACT_TEXT, CHAT_TEXT] {
+                assert!(!line.contains(secret), "{line}");
+            }
+        }
+        assert_eq!(
+            seen.last().unwrap(),
+            &json!({"error": "no such chat"}).to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_phone_cannot_ask_for_a_setting_a_model_address_or_a_key() {
+        // No command of the channel names a setting: each is answered as an unknown command.
+        let rig = rig().await;
+        let mut phone = rig.phone().await;
+        for command in ["settings", "model", "config", "sync-settings", "sync-key"] {
+            phone.send(&json!({"cmd": command})).await;
+            assert_eq!(
+                phone.recv().await.unwrap(),
+                json!({"error": "unknown command"})
+            );
+        }
+        for extra in ["settings", "model", "key"] {
+            phone.send(&json!({"cmd": "sync-facts", extra: true})).await;
+            assert_eq!(
+                phone.recv().await.unwrap(),
+                json!({"error": "invalid sync request"})
+            );
+        }
+    }
+
+    fn turn(role: ChatRole, text: &str) -> Record {
+        Record::Turn(Turn {
+            tool: "chat".into(),
+            session: "c1".into(),
+            time: "2026-11-01T10:00:00Z".into(),
+            folder: String::new(),
+            branch: String::new(),
+            role,
+            author: Author::default(),
+            text: text.into(),
+            tools: Vec::new(),
+        })
+    }
+
+    fn call(id: &str, name: &str) -> Vec<Record> {
+        vec![
+            Record::ToolCall(ToolCall {
+                tool: "chat".into(),
+                session: "c1".into(),
+                time: "2026-11-01T10:00:01Z".into(),
+                call_id: id.into(),
+                name: name.into(),
+                arguments: "{}".into(),
+            }),
+            Record::ToolResult(ToolResult {
+                tool: "chat".into(),
+                session: "c1".into(),
+                time: "2026-11-01T10:00:02Z".into(),
+                call_id: id.into(),
+                text: "RESULT TEXT".into(),
+            }),
+        ]
+    }
+
+    #[test]
+    fn the_hidden_facts_call_and_every_result_are_not_in_a_chat() {
+        let mut records = vec![turn(ChatRole::User, "Hi")];
+        records.extend(call("1", chat_core::recall::NAME));
+        records.extend(call("2", "read_file"));
+        records.push(turn(ChatRole::Assistant, "Hello"));
+        let items = chat_items(&records, &|name, _| format!("Ran {name}"));
+        assert_eq!(
+            items,
+            vec![
+                json!({"kind": "message", "role": "user", "time": "2026-11-01T10:00:00Z", "text": "Hi"}),
+                json!({"kind": "tool", "time": "2026-11-01T10:00:01Z", "line": "Ran read_file"}),
+                json!({"kind": "message", "role": "assistant", "time": "2026-11-01T10:00:00Z", "text": "Hello"}),
+            ]
+        );
+        assert!(!json!(items).to_string().contains("RESULT TEXT"));
+        assert!(!json!(items).to_string().contains(chat_core::recall::NAME));
+    }
+
+    #[tokio::test]
+    async fn an_item_of_a_kind_nobody_knows_travels_and_an_old_reader_skips_it() {
+        let rig = rig().await;
+        rig.fake.change(|d| {
+            d.chats[0].items.insert(
+                1,
+                json!({"kind": "sticker", "time": "2026-11-01T10:00:00Z", "shape": "star"}),
+            );
+            d.chats[0].items.push(message("assistant", "after"));
+        });
+        let mut phone = rig.phone().await;
+        let (items, page) = pull(&mut phone, json!({"cmd": "sync-chat", "id": "c1"})).await;
+        assert_eq!(page["format"], 1);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[1]["kind"], "sticker");
+        // What a reader of format 1 does: keep the kinds it knows.
+        let kept: Vec<&Value> = items.iter().filter(|i| known_kind(i).is_some()).collect();
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1]["text"], "after");
+    }
+
+    #[tokio::test]
+    async fn a_long_list_comes_in_pages_that_fit_a_line_and_a_long_text_is_cut_and_says_so() {
+        let rig = rig().await;
+        rig.fake.change(|d| {
+            d.facts = (0..400)
+                .map(|i| fact(&format!("f{i}"), &"x".repeat(100)))
+                .collect();
+            d.chats[0].items = vec![message("user", &"y".repeat(9000))];
+        });
+        let mut phone = rig.phone().await;
+        phone.send(&json!({"cmd": "sync-facts"})).await;
+        let first = phone.recv().await.unwrap();
+        assert!(first["next"].is_u64(), "400 facts are more than one page");
+        let (facts, _) = pull(&mut phone, json!({"cmd": "sync-facts"})).await;
+        assert_eq!(facts.len(), 400);
+        assert_eq!(facts[399]["id"], "f399");
+        let (items, _) = pull(&mut phone, json!({"cmd": "sync-chat", "id": "c1"})).await;
+        assert_eq!(items[0]["cut"], true);
+        assert_eq!(items[0]["text"].as_str().unwrap().len(), 4000);
+    }
+
+    /// What `dashboard-numbers` answers for an input, from the same sessions.
+    fn expected(rig: &Rig, input: &Value) -> Value {
+        let inner = rig.fake.inner.lock().unwrap();
+        let line = respond(&input.to_string(), Some(&inner.document), |_| {
+            Ok(inner.sessions.clone())
+        });
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_numbers_equal_dashboard_numbers_for_a_day_and_a_week_across_a_clock_change() {
+        let rig = rig().await;
+        // Berlin ends summer time on 2026-10-25 (a day of 25 hours) and starts it on 2026-03-29
+        // (a day of 23 hours); each holds activity late in the evening and early next morning.
+        rig.fake.change(|d| {
+            d.sessions = vec![
+                session(
+                    "a",
+                    &[
+                        "2026-10-24T21:50:00Z",
+                        "2026-10-24T21:51:00Z",
+                        "2026-10-25T10:00:00Z",
+                        "2026-10-25T10:01:00Z",
+                        "2026-10-25T22:59:00Z",
+                        "2026-10-25T23:00:00Z",
+                        "2026-03-28T23:30:00Z",
+                        "2026-03-28T23:31:00Z",
+                        "2026-03-29T21:59:00Z",
+                        "2026-03-29T22:00:00Z",
+                    ],
+                ),
+                session("b", &["2026-10-25T10:00:00Z", "2026-10-25T10:02:00Z"]),
+            ];
+        });
+        let mut phone = rig.phone().await;
+        let (numbers, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        assert!(!numbers.is_empty());
+        let mut days = 0;
+        let mut weeks = 0;
+        for item in &numbers {
+            assert_eq!(item["answer"], expected(&rig, &item["input"]), "{item}");
+            let seven = item["input"]["days"].as_array().unwrap().len() == 7;
+            assert_eq!(item["period"] == "week", seven);
+            if seven {
+                weeks += 1;
+                // Monday to Sunday.
+                assert!(item["input"]["days"][0]["label"].as_str().is_some());
+            } else {
+                days += 1;
+            }
+        }
+        assert!(days > 0 && weeks > 0);
+
+        let long_day = numbers
+            .iter()
+            .find(|n| n["period"] == "day" && n["input"]["days"][0]["label"] == "2026-10-25")
+            .unwrap();
+        // 25 hours, in UTC, with the label of the computer's date.
+        assert_eq!(
+            long_day["input"]["days"][0],
+            json!({"label": "2026-10-25", "start": "2026-10-24T22:00:00Z", "end": "2026-10-25T23:00:00Z"})
+        );
+        let short_day = numbers
+            .iter()
+            .find(|n| n["period"] == "day" && n["input"]["days"][0]["label"] == "2026-03-29")
+            .unwrap();
+        assert_eq!(
+            short_day["input"]["days"][0],
+            json!({"label": "2026-03-29", "start": "2026-03-28T23:00:00Z", "end": "2026-03-29T22:00:00Z"})
+        );
+        let week = numbers
+            .iter()
+            .find(|n| n["period"] == "week" && n["input"]["days"][0]["label"] == "2026-10-19")
+            .unwrap();
+        assert_eq!(week["input"]["days"][6]["label"], "2026-10-25");
+        assert_eq!(week["input"]["days"][6]["end"], "2026-10-25T23:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn a_day_is_counted_once_and_again_only_when_its_activity_changes() {
+        let rig = rig().await;
+        let mut phone = rig.phone().await;
+        let (first, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        let counted = rig.engine.counted();
+        assert_eq!(counted, first.len());
+
+        // The same copy again, and a check: nothing is counted.
+        let (again, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        rig.tokens().await;
+        assert_eq!(again, first);
+        assert_eq!(rig.engine.counted(), counted);
+
+        // One more minute on 2026-11-04: that day and its week are counted again, in both
+        // widgets, and the day of 2026-11-02 is not.
+        rig.fake.change(|d| {
+            d.sessions[0]
+                .minutes
+                .push(minute_number("2026-11-04T09:02:00Z").unwrap());
+        });
+        let (after, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        assert_eq!(rig.engine.counted(), counted + 4);
+        assert_eq!(after.len(), first.len());
+        let changed: Vec<_> = after.iter().zip(&first).filter(|(a, b)| a != b).collect();
+        assert_eq!(changed.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn the_newest_days_come_first() {
+        let rig = rig().await;
+        let mut phone = rig.phone().await;
+        let (numbers, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        let days: Vec<&str> = numbers
+            .iter()
+            .filter(|n| n["period"] == "day")
+            .map(|n| n["input"]["days"][0]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(days[0], "2026-11-04");
+        assert_eq!(*days.last().unwrap(), "2026-11-02");
+    }
+
+    #[tokio::test]
+    async fn no_line_is_over_the_limit_whatever_an_item_holds() {
+        let rig = rig().await;
+        rig.fake.change(|d| {
+            d.facts = vec![
+                // A value of 20 KiB, as text and as an object.
+                fact("big-text", &"v".repeat(20 * 1024)),
+                json!({"fact_id": "big-object", "entity_kind": "skill", "property": "skills",
+                       "value": {"name": "x".repeat(20 * 1024)}, "stored_at": "2026-11-01T10:00:00Z"}),
+                // Characters that serialise to six bytes each.
+                fact("controls", &"\u{1}".repeat(4000)),
+            ];
+            d.chats[0].items = vec![message("user", &"\u{1}".repeat(4000))];
+        });
+        let mut phone = rig.phone().await;
+        let (facts, _) = pull(&mut phone, json!({"cmd": "sync-facts"})).await;
+        assert_eq!(facts.len(), 3);
+        for fact in &facts {
+            assert!(fact.to_string().len() <= ITEM_MAX, "{}", fact["id"]);
+            assert_eq!(fact["cut"], true);
+        }
+        assert!(facts[1]["value"].is_string());
+        let (items, _) = pull(&mut phone, json!({"cmd": "sync-chat", "id": "c1"})).await;
+        assert!(items[0].to_string().len() <= ITEM_MAX);
+        assert_eq!(items[0]["cut"], true);
+    }
+
+    #[tokio::test]
+    async fn the_document_has_a_line_of_its_own_and_the_pages_of_numbers_stay_small() {
+        let rig = rig().await;
+        // A document of about 9 KiB: its widgets are many and its project names long.
+        rig.fake.change(|d| {
+            d.document["payload"]["project_names"] = json!(
+                (0..120)
+                    .map(|i| (format!("/w/p{i}"), "n".repeat(60)))
+                    .map(|(k, v)| (k, json!(v)))
+                    .collect::<serde_json::Map<String, Value>>()
+            );
+        });
+        let mut phone = rig.phone().await;
+        phone.send(&json!({"cmd": "sync-document"})).await;
+        let line = phone.recv().await.unwrap();
+        assert!(
+            line.to_string().len() > 8 * 1024 && line.to_string().len() < phone_pairing::MAX_LINE
+        );
+        assert_eq!(line["document"], rig.fake.inner.lock().unwrap().document);
+        let (numbers, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        assert!(!numbers.is_empty());
+        // A document too big for a line is refused in fixed words.
+        rig.fake
+            .change(|d| d.document["payload"]["project_names"] = json!({"a": "z".repeat(20_000)}));
+        phone.send(&json!({"cmd": "sync-document"})).await;
+        assert_eq!(
+            phone.recv().await.unwrap(),
+            json!({"error": "dashboard document too large"})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_asked_with_an_old_token_says_changed_and_gives_nothing() {
+        let rig = rig().await;
+        rig.fake.change(|d| {
+            d.facts = (0..400)
+                .map(|i| fact(&format!("f{i}"), &"x".repeat(100)))
+                .collect();
+        });
+        let mut phone = rig.phone().await;
+        phone.send(&json!({"cmd": "sync-facts"})).await;
+        let first = phone.recv().await.unwrap();
+        let (token, next) = (first["token"].clone(), first["next"].clone());
+        // Nothing changed: the same token gets the next page.
+        phone
+            .send(&json!({"cmd": "sync-facts", "after": next, "token": token}))
+            .await;
+        assert_eq!(phone.recv().await.unwrap()["ok"], true);
+        // The profile changed between two pages.
+        rig.fake.change(|d| d.version = Some(7));
+        phone
+            .send(&json!({"cmd": "sync-facts", "after": next, "token": token}))
+            .await;
+        let answer = phone.recv().await.unwrap();
+        assert_eq!(answer["changed"], true);
+        assert_eq!(answer["items"], json!([]));
+        assert_ne!(answer["token"], token);
+        // The same for the numbers, which are not counted for a copy that is out of date.
+        phone.send(&json!({"cmd": "sync-dashboard"})).await;
+        let first = phone.recv().await.unwrap();
+        rig.fake.change(|d| {
+            d.sessions[0]
+                .minutes
+                .push(minute_number("2026-11-04T09:03:00Z").unwrap());
+        });
+        let counted = rig.engine.counted();
+        phone
+            .send(&json!({"cmd": "sync-dashboard", "after": 0, "token": first["token"]}))
+            .await;
+        assert_eq!(phone.recv().await.unwrap()["changed"], true);
+        assert_eq!(rig.engine.counted(), counted);
+    }
+
+    #[tokio::test]
+    async fn the_facts_token_without_a_version_follows_the_facts() {
+        let rig = rig().await;
+        rig.fake.change(|d| d.version = None);
+        let before = rig.tokens().await["facts"].clone();
+        assert!(before.is_string());
+        assert_eq!(rig.tokens().await["facts"], before);
+        rig.fake
+            .change(|d| d.facts.push(fact("f2", "Likes coffee")));
+        assert_ne!(rig.tokens().await["facts"], before);
+    }
+
+    #[tokio::test]
+    async fn a_page_that_is_out_of_time_answers_what_it_counted_and_a_next() {
+        let rig = rig().await;
+        let engine = Arc::new(
+            Engine::new(
+                Arc::clone(&rig.fake) as Arc<dyn Data>,
+                Arc::new(Zone(chrono_tz::Europe::Berlin, "Europe/Berlin".into())),
+            )
+            .with_page_time(Duration::ZERO),
+        );
+        rig.endpoint.set_sync(Some(Arc::clone(&engine)));
+        let mut phone = rig.phone().await;
+        phone.send(&json!({"cmd": "sync-dashboard"})).await;
+        let page = phone.recv().await.unwrap();
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        assert_eq!(page["next"], 1);
+        // The pages together are the whole copy, as with the time to count them.
+        let (all, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        assert_eq!(all.len(), 6);
+    }
+
+    /// What the days of a window change when only the stamps are looked at: the answers counted
+    /// after a change, by what changed.
+    async fn recounted(rig: &Rig, change: impl FnOnce(&mut Inner)) -> usize {
+        let mut phone = rig.phone().await;
+        pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        let before = rig.engine.counted();
+        rig.fake.change(change);
+        pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        rig.engine.counted() - before
+    }
+
+    #[tokio::test]
+    async fn the_stamp_of_a_day_follows_what_counts_in_it() {
+        // Two widgets, so a day and a week recounted are four answers.
+        // A minute next to midnight (Berlin: 23:58 on the 4th) reaches into the 5th.
+        let rig = rig().await;
+        rig.fake.change(|d| {
+            d.sessions[0]
+                .minutes
+                .push(minute_number("2026-11-05T09:00:00Z").unwrap());
+        });
+        let neighbour = recounted(&rig, |d| {
+            d.sessions[0]
+                .minutes
+                .push(minute_number("2026-11-04T22:58:00Z").unwrap());
+        })
+        .await;
+        // The 4th (own), its week, and the 5th (it is within reach of the new minute), two widgets.
+        assert_eq!(neighbour, 6);
+        // A minute at noon of the 4th reaches no other day: only that day and its week.
+        let rig = self::rig().await;
+        rig.fake.change(|d| {
+            d.sessions[0]
+                .minutes
+                .push(minute_number("2026-11-05T09:00:00Z").unwrap());
+        });
+        let far = recounted(&rig, |d| {
+            d.sessions[0]
+                .minutes
+                .push(minute_number("2026-11-04T11:00:00Z").unwrap());
+        })
+        .await;
+        assert_eq!(far, 4);
+
+        // A session of a new project renames none of the days it is not in, yet the names are
+        // chosen over all the sessions, so every answer is counted again.
+        let rig = self::rig().await;
+        let all = recounted(&rig, |d| {
+            d.sessions.push(session("b", &["2026-11-03T09:00:00Z"]));
+        })
+        .await;
+        assert_eq!(all, 8);
+
+        // The document changed: every answer is counted again.
+        let rig = self::rig().await;
+        let document = recounted(&rig, |d| {
+            d.document["payload"]["hidden_projects"] = json!(["/w/a"]);
+        })
+        .await;
+        assert_eq!(document, 6);
+    }
+
+    fn block(start: &str, seconds: u64, app: &str) -> Block {
+        Block {
+            start: start.into(),
+            seconds,
+            app: app.into(),
+            site: String::new(),
+            project: String::new(),
+            ticket: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_stamp_of_a_day_of_the_time_on_screen_follows_its_blocks() {
+        let rig = rig().await;
+        rig.fake.change(|d| {
+            let mut document = construct_agent::dashboard::default_activity_with_screen();
+            document["payload"]["widgets"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|w| w["id"] == "screen-total");
+            d.document = document;
+            d.sessions.clear();
+            d.blocks = vec![block("2026-11-02T09:00:00Z", 600, "Editor")];
+        });
+        // One day and its week; one widget.
+        let changed_seconds = recounted(&rig, |d| d.blocks[0].seconds = 900).await;
+        assert_eq!(changed_seconds, 2);
+        let new_day = recounted(&rig, |d| {
+            d.blocks.push(block("2026-11-03T09:00:00Z", 60, "Editor"));
+        })
+        .await;
+        // The new day, and its week, which holds both days now.
+        assert_eq!(new_day, 2);
+        let mut phone = rig.phone().await;
+        let (numbers, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        assert_eq!(numbers.len(), 3);
+        assert!(numbers.iter().all(|n| n["answer"]["source"] == "on_screen"));
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_numbers_that_is_too_big_for_a_line_loses_groups_and_says_so() {
+        let rig = rig().await;
+        rig.fake.change(|d| {
+            // 600 projects with long names in one day: a table by project of about 70 KiB.
+            d.sessions = (0..600)
+                .map(|i| {
+                    let mut s = session(&format!("s{i}"), &["2026-11-02T09:00:00Z"]);
+                    s.project = format!("/work/{}/{i}", "p".repeat(60));
+                    s
+                })
+                .collect();
+        });
+        let mut phone = rig.phone().await;
+        let (numbers, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        let table = numbers
+            .iter()
+            .find(|n| n["widget"] == "by-project" && n["period"] == "day")
+            .unwrap();
+        assert!(table.to_string().len() <= ITEM_MAX + 11);
+        assert_eq!(table["cut"], true);
+        assert!(!table["answer"]["groups"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_zone_is_part_of_the_dashboard_token() {
+        let rig = rig().await;
+        let berlin = rig.tokens().await["dashboard"].clone();
+        let other = Arc::new(Engine::new(
+            Arc::clone(&rig.fake) as Arc<dyn Data>,
+            Arc::new(Zone(chrono_tz::Asia::Tokyo, "Asia/Tokyo".into())),
+        ));
+        rig.endpoint.set_sync(Some(other));
+        assert_ne!(rig.tokens().await["dashboard"], berlin);
+    }
+
+    #[test]
+    fn a_chat_is_titled_by_its_first_message_of_the_person_and_an_empty_one_is_left_out() {
+        let records = vec![
+            turn(ChatRole::Assistant, "Welcome"),
+            turn(ChatRole::User, &"t".repeat(100)),
+        ];
+        let chat = chat_read("c1".into(), &records, &|_, _| String::new()).unwrap();
+        assert_eq!(chat.title, "t".repeat(60));
+        assert_eq!(chat.started, "2026-11-01T10:00:00Z");
+        assert_eq!(chat.items.len(), 2);
+        assert!(chat_read("c2".into(), &[], &|_, _| String::new()).is_none());
+    }
+
+    /// The first copy of a history of about 140,000 prompts in 30 days, timed. Run it with
+    /// `cargo test -p construct-agent --test phone --release -- --ignored --nocapture heavy`.
+    #[tokio::test]
+    #[ignore = "a measurement, not a check"]
+    async fn heavy_history_first_copy() {
+        let rig = rig().await;
+        let start = minute_number("2026-10-20T00:00:00Z").unwrap();
+        // 140,000 prompts, a prompt a minute in bursts, over 30 days and 20 sessions.
+        let mut sessions: Vec<SessionMinutes> =
+            (0..20).map(|i| session(&format!("s{i}"), &[])).collect();
+        let mut minute = 0_i64;
+        let mut n = 0_usize;
+        while n < 140_000 {
+            let day = minute / 1440;
+            let at = start + day * 1440 + 480 + (minute % 1440) % 600;
+            sessions[n % 20].minutes.push(at);
+            n += 1;
+            minute += 1;
+            if minute >= 30 * 1440 {
+                minute = 0;
+            }
+        }
+        rig.fake.change(|d| d.sessions = sessions);
+        let mut phone = rig.phone().await;
+        let began = std::time::Instant::now();
+        let (numbers, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        println!(
+            "first copy: {} answers in {:?}; the second: {:?}",
+            numbers.len(),
+            began.elapsed(),
+            {
+                let again = std::time::Instant::now();
+                pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+                again.elapsed()
+            }
+        );
+    }
+}

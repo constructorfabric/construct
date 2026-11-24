@@ -36,9 +36,11 @@
 //!
 //! Errors carry fixed texts; the secret, the codes, the tokens and the keys are in no log.
 
+pub mod live;
 pub mod paired;
 pub mod pairing;
 mod service;
+pub mod sync;
 mod tls;
 
 use std::fmt;
@@ -178,6 +180,7 @@ pub struct PairingOffer {
 }
 
 struct State {
+    sync: std::sync::Mutex<Option<Arc<sync::Engine>>>,
     identity: Identity,
     paired: Arc<Paired>,
     pairing: Pairing,
@@ -212,6 +215,7 @@ impl Endpoint {
             .map_err(|_| Error::Bind)?;
         let local = listener.local_addr().map_err(|_| Error::Bind)?;
         let state = Arc::new(State {
+            sync: std::sync::Mutex::new(None),
             identity,
             paired,
             pairing: Pairing::default(),
@@ -224,6 +228,11 @@ impl Endpoint {
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local
+    }
+
+    /// Serve the sync commands from `engine`; without one they answer an error.
+    pub fn set_sync(&self, engine: Option<Arc<sync::Engine>>) {
+        *crate::sync::lock(&self.state.sync) = engine;
     }
 
     /// How many phones have paired.
@@ -401,7 +410,7 @@ async fn serve(stream: TcpStream, acceptor: TlsAcceptor, state: &State) -> Optio
     write_line(&mut writer, &json!({"v": PROTOCOL, "ok": true}))
         .await
         .ok()?;
-    let result = commands(&mut reader, &mut writer, &state.paired, &id, &mut revoked).await;
+    let result = commands(&mut reader, &mut writer, state, &id, &mut revoked).await;
     if watch && !state.paired.has_id(&id) {
         // Only a session that passed token authentication receives the final notification.
         write_line(&mut writer, &json!({"revoked": true}))
@@ -499,7 +508,7 @@ fn version_reply(version: Version) -> Value {
 async fn commands<R, W>(
     reader: &mut BufReader<R>,
     writer: &mut W,
-    paired: &Paired,
+    state: &State,
     id: &str,
     revoked: &mut broadcast::Receiver<String>,
 ) -> Option<()>
@@ -507,6 +516,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let paired = &state.paired;
     loop {
         let line = tokio::select! {
             line = tokio::time::timeout(IDLE_TIME, read_line(reader)) => line.ok()??,
@@ -523,8 +533,25 @@ where
                 "agent": "construct-agent",
                 "agent_version": env!("CARGO_PKG_VERSION"),
             }),
+            Some(command) if sync::handles(command) => {
+                let engine = crate::sync::lock(&state.sync).clone();
+                match engine {
+                    // Counting takes seconds: not on a thread of the runtime.
+                    Some(engine) => {
+                        let request = request.clone();
+                        tokio::task::spawn_blocking(move || engine.answer(&request))
+                            .await
+                            .unwrap_or_else(|_| json!({"error": "sync unavailable"}))
+                    }
+                    None => json!({"error": "sync unavailable"}),
+                }
+            }
             _ => json!({"error": "unknown command"}),
         };
+        // The phone may have been unpaired while the answer was counted.
+        if !paired.has_id(id) {
+            return None;
+        }
         write_line(writer, &reply).await.ok()?;
     }
 }
