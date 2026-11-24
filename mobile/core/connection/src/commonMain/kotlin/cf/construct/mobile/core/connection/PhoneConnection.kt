@@ -49,6 +49,7 @@ class PhoneConnection internal constructor(
     private val pollInterval: Duration = PHONE_POLL_INTERVAL_MILLIS.milliseconds,
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     private val localAccess: () -> Boolean = { true },
+    private val localNetworkDenied: (ComputerAddress) -> Boolean = { false },
 ) {
     private val protocol = PhoneProtocol(transport, version)
     private val pairing = Mutex()
@@ -94,6 +95,9 @@ class PhoneConnection internal constructor(
                 if (!networkAvailable()) return@withLock PairResult.NoNetwork
                 if (!localAccess()) return@withLock PairResult.NetworkPermission
                 val attempt = protocol.pair(offer, name)
+                if (attempt.result == PairResult.Unreachable && localNetworkDenied(offer.address)) {
+                    return@withLock PairResult.NetworkPermission
+                }
                 val granted = attempt.pairing ?: return@withLock attempt.result
                 saveNewPairing(granted)
             }
@@ -146,9 +150,10 @@ class PhoneConnection internal constructor(
                         result == Probe.PhoneUpdate -> ComputerLink.PhoneUpdate
                         result == Probe.ComputerUpdate -> ComputerLink.ComputerUpdate
                         !networkAvailable() -> ComputerLink.NoNetwork
-                        !localAccess() -> ComputerLink.NetworkPermission
+                        !localAccess() || localNetworkDenied(saved.address) -> ComputerLink.NetworkPermission
                         else -> ComputerLink.Unreachable
                     }
+                currentCoroutineContext().ensureActive()
                 publish(contact.snapshot(state))
                 delay(pollInterval)
             }
@@ -228,6 +233,7 @@ fun defaultPhoneConnection(
     protocolVersion: Int = PHONE_PROTOCOL,
     localAccess: () -> Boolean = { true },
     pollIntervalMillis: Long = PHONE_POLL_INTERVAL_MILLIS,
+    localNetworkDenied: (String, Int) -> Boolean = { _, _ -> false },
 ): PhoneConnection =
     PhoneConnection(
         store,
@@ -236,4 +242,5 @@ fun defaultPhoneConnection(
         protocolVersion,
         pollInterval = pollIntervalMillis.milliseconds,
         localAccess = localAccess,
+        localNetworkDenied = { localNetworkDenied(it.host, it.port) },
     )

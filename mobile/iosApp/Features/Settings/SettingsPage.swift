@@ -1,15 +1,24 @@
 import ConstructShared
 import SwiftUI
 
-struct SettingsPage: View {
+struct SettingsPage<Computer: View>: View {
     @StateObject private var model: SettingsModel
+    let status: ComputerStatus
+    let computer: Computer
 
-    init(settings: ModelSettingsStore, onCommit: @escaping () -> Void) {
+    init(
+        settings: ModelSettingsStore,
+        status: ComputerStatus,
+        onCommit: @escaping () -> Void,
+        @ViewBuilder computer: () -> Computer
+    ) {
         _model = StateObject(wrappedValue: SettingsModel(settings: settings, onCommit: onCommit))
+        self.status = status
+        self.computer = computer()
     }
 
     var body: some View {
-        SettingsScreen(state: model.state, actions: model.actions)
+        SettingsScreen(state: model.state, actions: model.actions, status: status, computer: computer)
     }
 }
 

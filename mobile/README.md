@@ -301,6 +301,13 @@ digest and looks for pairing material and the test's synthetic marker in the dev
   Choose identifiers from `xcrun simctl list devicetypes` and `xcrun simctl list runtimes`.
   Run `python3 scripts/test-phone-pairing.py ios --agent <current> --previous-agent <previous> --ios-build <DerivedData> --ios-device-type <type> --ios-runtime <runtime>`.
 
+The iPhone Computer page fixture uses only the current agent. It types an offer into the app,
+checks the loss of contact and recovery, then unpairs and checks that the copied chats and facts
+disappear. Run it with `--computer-page` in place of
+`--previous-agent <previous>`. Add `--ios-theme light` or `--ios-theme dark` and
+`--screenshots <new-directory>` to capture that appearance. Check QR scanning with the desktop
+app and a physical iPhone.
+
 ## Run the iPhone app
 
 A Simulator build links the debug `iosSimulatorArm64` framework and a device build the release

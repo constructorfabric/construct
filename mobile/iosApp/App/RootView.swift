@@ -33,14 +33,48 @@ struct RootView: View {
                 )
             case .memory: MemoryPage(construct: composition.construct)
             case .settings:
-                SettingsPage(settings: composition.modelSettings) {
-                    composition.modelSettingsDidCommit.send(())
-                }
+                let status = connection.state.value.computerStatus
+                SettingsPage(
+                    settings: composition.modelSettings,
+                    status: status,
+                    onCommit: { composition.modelSettingsDidCommit.send(()) },
+                    computer: {
+                        ComputerPage(
+                            status: connection.state.$value.map(\.computerStatus).eraseToAnyPublisher(),
+                            connection: composition.phoneConnection,
+                            copy: composition.copy,
+                            retry: connection.holder.tryAgain
+                        )
+                    }
+                )
             default: PlaceholderPage(page: page)
             }
         }
         .onAppear { connection.holder.setForeground(active: scenePhase == .active) }
         .onChange(of: scenePhase) { phase in connection.holder.setForeground(active: phase == .active) }
+    }
+}
+
+private extension ConnectionStatus {
+    var computerStatus: ComputerStatus {
+        let lastContact = lastContactMillis > 0
+            ? Date(timeIntervalSince1970: TimeInterval(lastContactMillis) / 1000)
+            : nil
+        let unreachable = kind == .unreachable || kind == .noNetwork
+        let needsLocalNetwork = kind == .networkPermission
+        return ComputerStatus(
+            label: unreachable ? "Not reachable" : kind.title,
+            notice: needsLocalNetwork
+                ? "Allow Local Network access for Construct in Settings to connect to your computer."
+                : kind.title + (kind.detail.map { ". \($0)" } ?? "."),
+            endpoint: endpoint,
+            lastContact: lastContact,
+            checking: kind == .checking,
+            unpaired: kind == .notPaired,
+            connected: kind == .connected,
+            canRetry: kind.canRetry,
+            needsLocalNetwork: needsLocalNetwork
+        )
     }
 }
 

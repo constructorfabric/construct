@@ -84,7 +84,8 @@ final class PhonePairingTests: XCTestCase {
             networkAvailable: { KotlinBoolean(bool: true) },
             protocolVersion: version,
             localAccess: { KotlinBoolean(bool: true) },
-            pollIntervalMillis: pollIntervalMillis
+            pollIntervalMillis: pollIntervalMillis,
+            localNetworkDenied: { _, _ in KotlinBoolean(bool: false) }
         )
     }
 

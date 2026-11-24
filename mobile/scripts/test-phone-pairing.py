@@ -27,6 +27,7 @@ ANDROID_TEST = "cf.construct.mobile.android.PhonePairingTest"
 ANDROID_COMPUTER_TEST = "cf.construct.mobile.android.ComputerPageTest"
 IOS_TEST = "ConstructTests/PhonePairingTests"
 IOS_FRAME_TEST = "ConstructUITests/PhonePairingFrameTests"
+IOS_COMPUTER_TEST = "ConstructUITests/ComputerPageTests"
 CANARY = "c3" * 32
 
 
@@ -96,13 +97,17 @@ class Ios:
     host = "127.0.0.1"
     bind = "127.0.0.1:0"
 
-    def __init__(self, device, build):
+    def __init__(self, device, build, screenshots=None):
         self.device = device
         products = Path(build) / "Build" / "Products"
         manifests = list(products.glob("Construct_iphonesimulator*.xctestrun"))
         if len(manifests) != 1:
             raise ValueError("Use a fresh build-for-testing directory with one Simulator test run.")
         self.manifest = str(manifests[0])
+        self.screenshots = Path(screenshots).resolve() if screenshots else None
+        self.result = self.screenshots / "ComputerPage.xcresult" if self.screenshots else None
+        if self.screenshots:
+            self.screenshots.mkdir(parents=True, exist_ok=True)
         project = MOBILE / "iosApp" / "project.yml"
         self.app = next(line.split(":", 1)[1].strip() for line in project.read_text().splitlines()
                         if line.strip().startswith("APP_BUNDLE_ID:"))
@@ -137,15 +142,25 @@ class Ios:
 
     def command(self, method):
         swift = method[:1].upper() + method[1:]
-        suite = IOS_FRAME_TEST if method == "reconnectAfterAppRestart" else IOS_TEST
+        suite = {"reconnectAfterAppRestart": IOS_FRAME_TEST, "computerPage": IOS_COMPUTER_TEST}.get(method, IOS_TEST)
+        result = ("-resultBundlePath", str(self.result)) if self.result else ()
         return ("xcodebuild", "-xctestrun", self.manifest, "-destination",
-                f"id={self.device}", "-parallel-testing-enabled", "NO",
+                f"id={self.device}", "-parallel-testing-enabled", "NO", *result,
                 f"-only-testing:{suite}/test{swift}", "test-without-building")
 
     def environment(self, readiness_port):
         if readiness_port is None:
             return None
-        return dict(os.environ, TEST_RUNNER_CONSTRUCT_PAIRING_READY_PORT=str(readiness_port))
+        env = dict(os.environ, TEST_RUNNER_CONSTRUCT_PAIRING_READY_PORT=str(readiness_port))
+        if self.screenshots:
+            env["TEST_RUNNER_CAPTURE_MOBILE_STATES"] = "1"
+        return env
+
+    def collect_screenshots(self):
+        if self.result is None:
+            return
+        subprocess.run(("xcrun", "xcresulttool", "export", "attachments", "--path", str(self.result),
+                        "--output-path", str(self.screenshots), "--filter", "*.png"), check=True, timeout=30)
 
     def logs(self):
         return read("xcrun", "simctl", "spawn", self.device, "log", "show", "--start", self.since,
@@ -176,14 +191,19 @@ def confirm_credential(device, label, agent_directory, digests):
     digest = device.read(name).strip()
     if not re.fullmatch(r"[0-9a-f]{64}", digest) or digest in digests:
         raise RuntimeError("The app did not provide a distinct, valid credential digest.")
-    try:
-        phones = json.loads((agent_directory / "phones.json").read_text())["phones"]
-        matched = len(phones) == 1 and phones[0]["token_hash"] == digest
-    except (OSError, ValueError, TypeError, KeyError):
-        raise RuntimeError("The agent's pairing record could not be read.") from None
-    if not matched:
+    if credential_digest(agent_directory) != digest:
         raise RuntimeError("The stored phone credential does not match the agent's token digest.")
     digests.add(digest)
+
+
+def credential_digest(agent_directory):
+    try:
+        phones = json.loads((agent_directory / "phones.json").read_text())["phones"]
+        if len(phones) == 1 and re.fullmatch(r"[0-9a-f]{64}", phones[0]["token_hash"]):
+            return phones[0]["token_hash"]
+    except (OSError, ValueError, TypeError, KeyError):
+        raise RuntimeError("The agent's pairing record could not be read.") from None
+    raise RuntimeError("The agent did not store one valid pairing digest.")
 
 
 def stop(process):
@@ -284,7 +304,7 @@ def write_offer(device, name, fields):
     device.write(name, fields["address"] + "\n" + fields["code"] + "\n")
 
 
-def wait_for_outage_probe(listener, process):
+def wait_for_client(listener, process, missing):
     deadline = time.monotonic() + RUNNER_TIMEOUT
     listener.settimeout(1)
     while time.monotonic() < deadline and process.poll() is None:
@@ -292,9 +312,8 @@ def wait_for_outage_probe(listener, process):
             client, _ = listener.accept()
         except TimeoutError:
             continue
-        client.close()
-        return
-    raise RuntimeError("The restarted app did not check its saved computer address.")
+        return client
+    raise RuntimeError(missing)
 
 
 def verify_frame(args, device, directory, latter, protected, digests):
@@ -309,7 +328,7 @@ def verify_frame(args, device, directory, latter, protected, digests):
             ready_socket = sockets.enter_context(socket.create_server(("127.0.0.1", 0)))
         ready_port = ready_socket.getsockname()[1] if ready_socket else None
         with test(device, "reconnectAfterAppRestart", protected, digests, ready_port) as restart:
-            wait_for_outage_probe(outage, restart)
+            wait_for_client(outage, restart, "The restarted app did not check its saved computer address.").close()
             outage.close()
             with agent(args.agent, device, directory, protected, f"{loopback[0]}:{port}"):
                 if ready_socket:
@@ -364,11 +383,12 @@ def verify(args, device):
         device.clear()
 
 
-def verify_device_logs(device, protected, digests):
+def verify_device_logs(device, protected, digests, *, marker=None):
     # No raw log or key material is emitted, including on failure.
     device_log = device.logs()
     canary_digest = hashlib.sha256(CANARY.encode()).hexdigest()
-    if not contains_pairing_material(device_log, set(), {canary_digest}):
+    captured = marker in device_log if marker else contains_pairing_material(device_log, set(), {canary_digest})
+    if not captured:
         raise RuntimeError("The device collector or scanner missed its planted log marker.")
     print("The device collector captured the planted log marker")
     if contains_pairing_material(device_log, protected, digests):
@@ -401,7 +421,47 @@ def verify_computer_page(args, device):
 
 
 @contextlib.contextmanager
-def disposable_simulator(device_type, runtime, build):
+def fixture_request(listener, process, command):
+    client = wait_for_client(listener, process, f"The Simulator did not request {command}.")
+    with client, client.makefile("rb") as request:
+        client.settimeout(CONTROL_TIMEOUT)
+        if request.readline(32) != (command + "\n").encode():
+            raise RuntimeError(f"The Simulator did not request {command}.")
+        yield client
+
+
+def verify_ios_computer_page(args, device):
+    protected = set()
+    digests = set()
+    try:
+        with tempfile.TemporaryDirectory(prefix="construct-computer-test-") as temporary:
+            directory = Path(temporary)
+            with socket.create_server(("127.0.0.1", 0)) as listener:
+                with agent(args.agent, device, directory, protected) as (first, _, offer):
+                    port = listener.getsockname()[1]
+                    with test(device, "computerPage", protected, digests, port) as app:
+                        with fixture_request(listener, app, "offer") as client:
+                            client.sendall((offer["address"] + "\n" + offer["code"]).encode())
+                        with fixture_request(listener, app, "stop") as client:
+                            digests.add(credential_digest(directory))
+                            send(first, "stop")
+                            first.wait(timeout=CONTROL_TIMEOUT)
+                            client.sendall(b"ready")
+                        with contextlib.ExitStack() as agents:
+                            with fixture_request(listener, app, "restart") as client:
+                                endpoint = offer["address"]
+                                agents.enter_context(agent(args.agent, device, directory, protected, endpoint))
+                                client.sendall(b"ready")
+                            if app.wait(timeout=RUNNER_TIMEOUT) != 0:
+                                raise RuntimeError("The Computer page test did not complete.")
+            verify_device_logs(device, protected, digests, marker="Computer page fixture started")
+            device.collect_screenshots()
+    finally:
+        device.clear()
+
+
+@contextlib.contextmanager
+def disposable_simulator(device_type, runtime, build, theme):
     products = Path(build) / "Build" / "Products"
     apps = list(products.glob("*-iphonesimulator/Construct.app"))
     if len(apps) != 1:
@@ -420,6 +480,8 @@ def disposable_simulator(device_type, runtime, build):
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 if attempt == 1:
                     raise
+        if theme:
+            subprocess.run((*simctl, "ui", device, "appearance", theme), check=True, timeout=30)
         yield device
     except BaseException:
         failed = True
@@ -451,12 +513,11 @@ def main():
     parser.add_argument("--ios-build", help="iOS build-for-testing DerivedData path")
     parser.add_argument("--ios-device-type", help="simctl device type identifier")
     parser.add_argument("--ios-runtime", help="simctl runtime identifier")
-    parser.add_argument("--computer-page", action="store_true", help="run the Android Computer page fixture")
-    parser.add_argument("--screenshots", help="optional directory for Android Computer page screenshots")
+    parser.add_argument("--computer-page", action="store_true", help="run the Computer page fixture")
+    parser.add_argument("--screenshots", help="optional directory for Computer page screenshots")
+    parser.add_argument("--ios-theme", choices=("light", "dark"), help="Simulator appearance")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
-    if args.computer_page and args.platform != "android":
-        parser.error("the Computer page fixture requires Android")
     if args.screenshots and not args.computer_page:
         parser.error("screenshots require --computer-page")
     if not args.computer_page and not args.previous_agent:
@@ -472,8 +533,12 @@ def main():
     else:
         if not (args.ios_build and args.ios_device_type and args.ios_runtime) or args.device:
             parser.error("iOS creates its own Simulator and needs --ios-build, --ios-device-type and --ios-runtime")
-        with disposable_simulator(args.ios_device_type, args.ios_runtime, args.ios_build) as device:
-            verify(args, Ios(device, args.ios_build))
+        with disposable_simulator(args.ios_device_type, args.ios_runtime, args.ios_build, args.ios_theme) as device:
+            simulator = Ios(device, args.ios_build, args.screenshots)
+            if args.computer_page:
+                verify_ios_computer_page(args, simulator)
+            else:
+                verify(args, simulator)
 
 
 if __name__ == "__main__":
