@@ -21,6 +21,7 @@ kotlin {
             binaryOption("bundleId", "cf.construct.mobile.shared")
             export(project(":core:model"))
             export(project(":core:chat"))
+            export(project(":core:connection"))
             export(project(":core:construct"))
             export(project(":core:database"))
             export(project(":core:keys"))
@@ -33,6 +34,7 @@ kotlin {
         iosMain.dependencies {
             api(project(":core:model"))
             api(project(":core:chat"))
+            api(project(":core:connection"))
             api(project(":core:construct"))
             api(project(":core:database"))
             api(project(":core:keys"))

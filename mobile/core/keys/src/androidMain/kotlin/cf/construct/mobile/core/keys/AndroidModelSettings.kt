@@ -42,12 +42,14 @@ internal fun retireLegacyAndroidKey(directory: File) {
 }
 
 /** The AES key of the Keystore, made on first use. It never leaves the Keystore. */
-fun keystoreAesKey(): SecretKey {
+fun keystoreAesKey(): SecretKey = keystoreAesKey(KEYSTORE_ALIAS)
+
+internal fun keystoreAesKey(alias: String): SecretKey {
     val keystore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
-    (keystore.getKey(KEYSTORE_ALIAS, null) as? SecretKey)?.let { return it }
+    (keystore.getKey(alias, null) as? SecretKey)?.let { return it }
     val spec =
         KeyGenParameterSpec
-            .Builder(KEYSTORE_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(AES_BITS)
