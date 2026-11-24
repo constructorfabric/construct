@@ -16,7 +16,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 /**
@@ -49,7 +52,16 @@ class DatabaseConstruct(
 
     override suspend fun stopAnswer() = Unit
 
-    override suspend fun getMemoryFacts(): Outcome<MemoryFacts> = onDisk { Outcome.Ok(store.facts()) }
+    /**
+     * The facts now, and again after each write to the copy that changes them or the version. A write
+     * that leaves what is read as it was gives nothing, so a sync that finds nothing new is silent.
+     */
+    override val memoryFacts: Flow<Outcome<MemoryFacts>> =
+        store
+            .factChanges()
+            .conflate()
+            .map { onDisk { Outcome.Ok(store.facts()) } }
+            .distinctUntilChanged()
 
     override suspend fun getMemoryVersion(): Outcome<Long?> = onDisk { Outcome.Ok(store.memoryVersion()) }
 

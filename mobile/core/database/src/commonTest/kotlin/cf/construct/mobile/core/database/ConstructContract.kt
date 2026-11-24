@@ -14,7 +14,12 @@ import cf.construct.mobile.core.model.MemoryFacts
 import cf.construct.mobile.core.model.Outcome
 import cf.construct.mobile.core.model.Whose
 import cf.construct.mobile.core.model.valueOrNull
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -39,15 +44,28 @@ val contractNumbers =
         groups = listOf(GroupMinutes("alpha", 126, 0.7, 1), GroupMinutes("beta", 54, 0.3, 2)),
     )
 
+/** Collects the facts of [construct] from now on, as a screen that stays open does, and returns what it has seen. */
+@OptIn(ExperimentalCoroutinesApi::class)
+fun TestScope.collectFacts(construct: Construct): List<Outcome<MemoryFacts>> {
+    val seen = mutableListOf<Outcome<MemoryFacts>>()
+    backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { construct.memoryFacts.collect { seen += it } }
+    return seen
+}
+
 /**
  * What every [Construct] must answer for the reads and the deletes, whatever keeps its data. Each
  * implementation holds the data [FakeConstruct] is seeded with, and [contractNumbers] for [contractInput].
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 abstract class ConstructContract {
     abstract suspend fun TestScope.construct(): Construct
 
     private suspend fun Construct.conversationIds(): List<String> =
         listConversations().valueOrNull().orEmpty().map { it.id }
+
+    private fun Outcome<MemoryFacts>.factIds(): List<String> = valueOrNull()?.facts.orEmpty().map { it.factId }
+
+    private suspend fun Construct.factIds(): List<String> = memoryFacts.first().factIds()
 
     @Test
     fun listsTheConversationsNewestFirst() =
@@ -87,7 +105,7 @@ abstract class ConstructContract {
     @Test
     fun givesTheFactsInOrderWithTheirToolAndTheVersion() =
         runTest {
-            val facts = construct().getMemoryFacts().valueOrNull()
+            val facts = construct().memoryFacts.first().valueOrNull()
             assertEquals(FakeConstruct.seededFacts, facts?.facts)
             assertEquals(FakeConstruct.FACTS_VERSION, facts?.version)
             assertNull(facts?.facts?.first()?.tool)
@@ -105,14 +123,33 @@ abstract class ConstructContract {
             val construct = construct()
             construct.deleteMemoryFact("f1")
             assertEquals(Outcome.Ok(Unit), construct.deleteMemoryFact("f1"))
-            assertEquals(
-                listOf("f2", "f3", "f4"),
-                construct
-                    .getMemoryFacts()
-                    .valueOrNull()
-                    ?.facts
-                    ?.map { it.factId },
-            )
+            assertEquals(listOf("f2", "f3", "f4"), construct.factIds())
+        }
+
+    @Test
+    fun aCollectorThatIsAlreadyCollectingSeesADeletedFactAndTheErasure() =
+        runTest {
+            val construct = construct()
+            val seen = collectFacts(construct)
+            runCurrent()
+            assertEquals(listOf(FakeConstruct.seededFacts.map { it.factId }), seen.map { it.factIds() })
+
+            construct.deleteMemoryFact("f1")
+            runCurrent()
+            assertEquals(listOf("f2", "f3", "f4"), seen.last().factIds())
+
+            construct.eraseEverything()
+            runCurrent()
+            assertEquals(Outcome.Ok(MemoryFacts(emptyList(), null)), seen.last())
+            assertEquals(3, seen.size)
+        }
+
+    @Test
+    fun aCollectorThatStartsLaterGetsTheFactsAsTheyAreThen() =
+        runTest {
+            val construct = construct()
+            construct.deleteMemoryFact("f1")
+            assertEquals(listOf("f2", "f3", "f4"), construct.memoryFacts.first().factIds())
         }
 
     @Test
@@ -120,7 +157,7 @@ abstract class ConstructContract {
         runTest {
             val construct = construct()
             assertEquals(Outcome.Ok(EraseStarted(running = false)), construct.eraseEverything())
-            assertEquals(Outcome.Ok(MemoryFacts(emptyList(), null)), construct.getMemoryFacts())
+            assertEquals(Outcome.Ok(MemoryFacts(emptyList(), null)), construct.memoryFacts.first())
             assertEquals(Outcome.Ok(null), construct.getMemoryVersion())
             assertEquals(Outcome.Ok(false), construct.getErasing())
             assertTrue(construct.conversationIds().isEmpty())

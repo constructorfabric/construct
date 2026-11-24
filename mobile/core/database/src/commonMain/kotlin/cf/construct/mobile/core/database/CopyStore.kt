@@ -1,5 +1,6 @@
 package cf.construct.mobile.core.database
 
+import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.db.SqlDriver
 import cf.construct.mobile.core.database.sql.ConstructDatabase
 import cf.construct.mobile.core.model.ChatMessage
@@ -16,6 +17,8 @@ import cf.construct.mobile.core.model.EntityKind
 import cf.construct.mobile.core.model.MemoryFact
 import cf.construct.mobile.core.model.MemoryFacts
 import cf.construct.mobile.core.model.Outcome
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlin.time.Instant
@@ -162,6 +165,14 @@ class CopyStore(
                     }.executeAsList()
             MemoryFacts(facts, memoryVersion())
         }
+
+    /**
+     * Signals when it is collected, and again after each write to the `fact` table. That covers the
+     * profile's version too: it is written only in the transaction that rewrites the facts
+     * ([saveFacts], [removeComputerData]), and `markSynced` leaves it alone. A write in a transaction
+     * signals when the transaction ends, so a reader that answers the signal sees the whole write.
+     */
+    internal fun factChanges(): Flow<Unit> = queries.listFacts().asFlow().map { }
 
     fun memoryVersion(): Long? = queries.memoryVersion().executeAsOneOrNull()?.memory_version
 
