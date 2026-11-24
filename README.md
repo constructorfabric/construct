@@ -29,6 +29,11 @@ For Apple Silicon Macs, get the `macos-arm64-dmg` artifact from the
 Choose a successful run for a release tag or a reviewed commit on `main`. Check the run's ref and commit
 before downloading, then extract the ZIP and follow the [macOS installation steps](#macos-apple-silicon).
 
+For Windows x64, get `construct-browser-x64-Setup.exe` from GitHub Releases when available.
+The same file is in the `windows-x64-setup` artifact from a successful Desktop release workflow
+for a release tag or a reviewed commit on `main`. SmartScreen may warn about the unsigned installer.
+Open Status in the app to see why the Construct agent is unavailable on Windows.
+
 ## What it does today
 
 - **Reads your coding tools.** The agent follows the session logs of Claude Code and Codex and turns every
@@ -220,8 +225,7 @@ If macOS stops recognizing that grant after an update, remove the old entry and 
 
 ### Windows
 
-Windows has no installer from source yet, and the agent does not run there. You can start the window in
-development mode, which shows the Status page as `unknown`. With Node.js installed, run in PowerShell:
+To start the window in development mode, install Node.js and run in PowerShell:
 
 ```powershell
 cd app
