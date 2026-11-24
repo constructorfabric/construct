@@ -9,7 +9,20 @@ use opaque_ke::{
     ServerRegistration, ServerSetup,
 };
 use rand::rngs::OsRng;
-use ring::hmac;
+use ring::{digest, hmac};
+
+/// The longest line, in bytes, that either side sends or accepts on the phone channel.
+pub const MAX_LINE: usize = 16 * 1024;
+/// The digits of the code a person types.
+pub const CODE_DIGITS: usize = 8;
+
+/// The SHA-256 fingerprint of a DER certificate: what a phone pins and what the QR offer carries.
+#[must_use]
+pub fn fingerprint(der: &[u8]) -> [u8; 32] {
+    let mut out = [0; 32];
+    out.copy_from_slice(digest::digest(&digest::SHA256, der).as_ref());
+    out
+}
 
 /// TLS 1.3 channel binding (RFC 9266).
 pub const EXPORTER_LABEL: &[u8] = b"EXPORTER-Channel-Binding";
@@ -277,6 +290,17 @@ mod tests {
             let (computer, _) = attempt(&offer);
             assert!(!computer.verify(&wrong));
         }
+    }
+
+    #[test]
+    fn a_fingerprint_is_the_sha256_of_the_certificate() {
+        // SHA-256 of the empty input.
+        let expected = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let expected: Vec<u8> = (0..expected.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&expected[at..at + 2], 16).unwrap())
+            .collect();
+        assert_eq!(fingerprint(b"").as_slice(), expected.as_slice());
     }
 
     #[test]

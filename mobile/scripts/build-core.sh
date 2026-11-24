@@ -77,7 +77,7 @@ while todo:
     todo += [d["pkg"] for d in nodes[current]["deps"]]
 print(" ".join(sorted(packages[i]["name"] for i in seen if packages[i]["source"] is None)))
 ')
-  [ "$found" = "chat-bridge chat-core connectors" ] ||
+  [ "$found" = "chat-bridge chat-core connectors phone-pairing" ] ||
     fail "the library is built from: $found; update rustSources in mobile/build.gradle.kts and the paths in .github/workflows/mobile.yml, then this check"
 }
 

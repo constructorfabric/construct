@@ -10,14 +10,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use construct_agent::phone::pairing::{Role, proof};
 use construct_agent::phone::{Config, Endpoint, PROTOCOL, PairingOffer, Service, fingerprint_of};
+use phone_pairing::{BINDING_LEN, CodeRequest, EXPORTER_LABEL, Role, qr_proof};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme, version};
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
@@ -121,6 +121,8 @@ struct Phone {
     reader: BufReader<ReadHalf<TlsStream<TcpStream>>>,
     writer: WriteHalf<TlsStream<TcpStream>>,
     seen: [u8; 32],
+    binding: [u8; BINDING_LEN],
+    typed: bool,
 }
 
 fn fp_bytes(hex_text: &str) -> [u8; 32] {
@@ -136,24 +138,58 @@ impl Phone {
             seen: Mutex::new(None),
             provider: Arc::clone(&provider),
         });
-        let config = ClientConfig::builder_with_provider(provider)
+        let mut config = ClientConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&version::TLS13])
             .unwrap()
             .dangerous()
             .with_custom_certificate_verifier(Arc::clone(&pin) as Arc<dyn ServerCertVerifier>)
             .with_no_client_auth();
+        if pinned.is_none() {
+            config.alpn_protocols = vec![phone_pairing::TYPED_CAPABILITY.to_vec()];
+        }
         let stream = TcpStream::connect(addr).await.ok()?;
         let tls = TlsConnector::from(Arc::new(config))
             .connect(ServerName::IpAddress(addr.ip().into()), stream)
             .await
             .ok()?;
         let seen = (*pin.seen.lock().unwrap())?;
+        let typed = tls.get_ref().1.alpn_protocol() == Some(phone_pairing::TYPED_CAPABILITY);
+        let binding = tls
+            .get_ref()
+            .1
+            .export_keying_material([0; BINDING_LEN], EXPORTER_LABEL, None)
+            .ok()?;
         let (reader, writer) = tokio::io::split(tls);
         Some(Self {
             reader: BufReader::new(reader),
             writer,
             seen,
+            binding,
+            typed,
         })
+    }
+
+    async fn start_code(&mut self, code: &str, version: u64) -> (CodeRequest, Option<Vec<u8>>) {
+        assert!(self.typed);
+        let (code, request) = CodeRequest::new(code.as_bytes()).unwrap();
+        self.send(&json!({"v": version, "pair_code": {"request": hex::encode(request)}}))
+            .await;
+        let reply = self.recv().await.unwrap();
+        let response = reply["challenge"]
+            .as_str()
+            .map(|challenge| hex::decode(challenge).unwrap());
+        if response.is_none() {
+            // An exhausted, used or expired offer replies explicitly on the typed protocol.
+            // No such reply is available on the QR route.
+            assert_eq!(reply["error"], phone_pairing::CODE_REJECTED);
+        }
+        (code, response)
+    }
+
+    async fn finish_code(&mut self, proof: &[u8]) -> Option<Value> {
+        self.send(&json!({"confirmation": hex::encode(proof), "name": "Typed"}))
+            .await;
+        self.recv().await
     }
 
     async fn send(&mut self, value: &Value) {
@@ -167,12 +203,9 @@ impl Phone {
     /// The next JSON line, or `None` when the agent closed without sending one.
     async fn recv(&mut self) -> Option<Value> {
         let mut line = String::new();
-        let read = tokio::time::timeout(
-            Duration::from_secs(5),
-            tokio::io::AsyncBufReadExt::read_line(&mut self.reader, &mut line),
-        )
-        .await
-        .unwrap_or_else(|_| panic!("the agent neither answered nor closed"));
+        let read = tokio::time::timeout(Duration::from_secs(5), self.reader.read_line(&mut line))
+            .await
+            .unwrap_or_else(|_| panic!("the agent neither answered nor closed"));
         match read {
             Ok(n) if n > 0 => Some(serde_json::from_str(&line).unwrap()),
             _ => None,
@@ -180,7 +213,11 @@ impl Phone {
     }
 }
 
-fn pair_message(secret: &[u8], seen: &[u8; 32], version: u64, name: &str) -> Value {
+fn proof(secret: &[u8; 32], role: Role, seen: &[u8; 32]) -> String {
+    hex::encode(qr_proof(secret, role, seen).as_ref())
+}
+
+fn pair_message(secret: &[u8; 32], seen: &[u8; 32], version: u64, name: &str) -> Value {
     json!({"v": version, "pair": {"proof": proof(secret, Role::Phone, seen), "name": name}})
 }
 
@@ -203,10 +240,10 @@ async fn pair_named(addr: SocketAddr, offer: &PairingOffer, name: &str) -> Strin
     reply["token"].as_str().unwrap().to_owned()
 }
 
-fn qr_secret(offer: &PairingOffer) -> Vec<u8> {
+fn qr_secret(offer: &PairingOffer) -> [u8; 32] {
     let query = offer.payload.split_once('?').unwrap().1;
     let hex_secret = query.split('&').find_map(|p| p.strip_prefix("s=")).unwrap();
-    hex::decode(hex_secret).unwrap()
+    fp_bytes(hex_secret)
 }
 
 fn server_addr(offer: &PairingOffer) -> SocketAddr {
@@ -264,7 +301,7 @@ async fn a_secret_works_once() {
     let addr = server_addr(&offer);
     pair(addr, &offer).await;
 
-    // The same secret again, and the short code of the same pairing, are silent.
+    // The repeated QR proof stays silent, and the typed route explicitly rejects reuse.
     let mut again = Phone::connect(addr, Some(fp_bytes(&offer.fingerprint)))
         .await
         .unwrap();
@@ -273,19 +310,26 @@ async fn a_secret_works_once() {
         .send(&pair_message(&qr_secret(&offer), &seen, PROTOCOL, "Second"))
         .await;
     assert_eq!(again.recv().await, None);
-    let mut by_code = Phone::connect(addr, Some(fp_bytes(&offer.fingerprint)))
+    let mut by_code = Phone::connect(addr, None).await.unwrap();
+    assert!(by_code.start_code(&offer.code, PROTOCOL).await.1.is_none());
+    assert_eq!(endpoint.paired_count(), 1);
+}
+
+#[tokio::test]
+async fn a_code_request_requires_the_negotiated_tls_protocol() {
+    let dir = Dir::new();
+    let endpoint = start(&dir).await;
+    let offer = endpoint.open_pairing(LOCAL, TTL).unwrap();
+    let mut phone = Phone::connect(server_addr(&offer), Some(fp_bytes(&offer.fingerprint)))
         .await
         .unwrap();
-    by_code
-        .send(&pair_message(
-            offer.code.as_bytes(),
-            &seen,
-            PROTOCOL,
-            "Third",
-        ))
+    assert!(!phone.typed);
+    let (_, request) = CodeRequest::new(offer.code.as_bytes()).unwrap();
+    phone
+        .send(&json!({"v": PROTOCOL, "pair_code": {"request": hex::encode(request)}}))
         .await;
-    assert_eq!(by_code.recv().await, None);
-    assert_eq!(endpoint.paired_count(), 1);
+    assert!(phone.recv().await.is_none());
+    assert!(endpoint.pairing_is_open());
 }
 
 #[tokio::test]
@@ -296,25 +340,168 @@ async fn the_short_code_pairs_and_the_phone_checks_the_agent() {
     assert_eq!(offer.code.len(), 8);
     assert!(offer.code.chars().all(|c| c.is_ascii_digit()));
 
-    // Typing a code gives the phone no fingerprint: it takes the certificate it sees and the
-    // proofs bind to it.
+    // The code authenticates the computer on the negotiated TLS channel before it is pinned.
     let mut phone = Phone::connect(server_addr(&offer), None).await.unwrap();
-    let seen = phone.seen;
-    phone
-        .send(&pair_message(
+    let (code, challenge) = phone.start_code(&offer.code, PROTOCOL).await;
+    let confirmation = code
+        .confirm(
             offer.code.as_bytes(),
-            &seen,
+            phone_pairing::CodeChallenge::parse(&challenge.unwrap()).unwrap(),
+            &phone.binding,
             PROTOCOL,
-            "Typed",
-        ))
-        .await;
-    let reply = phone.recv().await.unwrap();
+        )
+        .unwrap();
+    let reply = phone.finish_code(&confirmation).await.unwrap();
     assert_eq!(reply["paired"], true);
+    let token = reply["token"].as_str().unwrap();
+    assert_eq!(phone.seen, fp_bytes(&offer.fingerprint));
     assert_eq!(
-        reply["agent_proof"],
-        proof(offer.code.as_bytes(), Role::Agent, &seen)
+        ping(server_addr(&offer), phone.seen, token).await.unwrap()["ok"],
+        true
     );
-    assert_eq!(seen, fp_bytes(&offer.fingerprint));
+}
+
+#[tokio::test]
+async fn a_confirmation_can_consume_the_code_even_if_the_phone_does_not_read_the_reply() {
+    let dir = Dir::new();
+    let endpoint = start(&dir).await;
+    let offer = endpoint.open_pairing(LOCAL, TTL).unwrap();
+    let addr = server_addr(&offer);
+    let mut phone = Phone::connect(addr, None).await.unwrap();
+    let (code, challenge) = phone.start_code(&offer.code, PROTOCOL).await;
+    let proof = code
+        .confirm(
+            offer.code.as_bytes(),
+            phone_pairing::CodeChallenge::parse(&challenge.unwrap()).unwrap(),
+            &phone.binding,
+            PROTOCOL,
+        )
+        .unwrap();
+    phone
+        .send(&json!({"confirmation": hex::encode(proof), "name": "Typed"}))
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), endpoint.wait_pairing_over())
+        .await
+        .unwrap();
+    drop(phone);
+    assert_eq!(endpoint.paired_count(), 1);
+
+    let mut retry = Phone::connect(addr, None).await.unwrap();
+    assert!(retry.start_code(&offer.code, PROTOCOL).await.1.is_none());
+    let expired = endpoint.open_pairing(LOCAL, Duration::ZERO).unwrap();
+    let mut retry = Phone::connect(addr, None).await.unwrap();
+    assert!(retry.start_code(&expired.code, PROTOCOL).await.1.is_none());
+    assert_eq!(endpoint.paired_count(), 1);
+}
+
+#[tokio::test]
+async fn abandoned_code_challenges_count_toward_the_offer_limit() {
+    let dir = Dir::new();
+    let endpoint = start(&dir).await;
+    let offer = endpoint.open_pairing(LOCAL, TTL).unwrap();
+    let addr = server_addr(&offer);
+    let mut phones = Vec::new();
+    for _ in 0..3 {
+        let mut phone = Phone::connect(addr, None).await.unwrap();
+        assert!(phone.start_code(&offer.code, PROTOCOL).await.1.is_some());
+        phones.push(phone);
+    }
+    let mut later = Phone::connect(addr, None).await.unwrap();
+    assert!(later.start_code(&offer.code, PROTOCOL).await.1.is_none());
+    drop(phones);
+    tokio::time::timeout(Duration::from_secs(5), endpoint.wait_pairing_over())
+        .await
+        .unwrap();
+    assert!(!endpoint.pairing_is_open());
+    assert_eq!(endpoint.paired_count(), 0);
+}
+
+#[tokio::test]
+async fn a_phone_that_is_too_old_is_told_to_update_by_typed_code_and_the_offer_stays_open() {
+    let dir = Dir::new();
+    let endpoint = start(&dir).await;
+    let offer = endpoint.open_pairing(LOCAL, TTL).unwrap();
+    let addr = server_addr(&offer);
+
+    // Both too old and too new prove the code first, and are told only then.
+    for (version, error) in [(0, "update needed"), (PROTOCOL + 1, "agent update needed")] {
+        let mut phone = Phone::connect(addr, None).await.unwrap();
+        let (code, challenge) = phone.start_code(&offer.code, version).await;
+        let confirmation = code
+            .confirm(
+                offer.code.as_bytes(),
+                phone_pairing::CodeChallenge::parse(&challenge.unwrap()).unwrap(),
+                &phone.binding,
+                version,
+            )
+            .unwrap();
+        let reply = phone.finish_code(&confirmation).await.unwrap();
+        assert_eq!(reply["error"], error);
+        assert!(reply.get("token").is_none());
+        assert_eq!(endpoint.paired_count(), 0);
+        assert!(endpoint.pairing_is_open());
+    }
+
+    // The code is not used up: a phone of the right version still pairs with it.
+    let mut phone = Phone::connect(addr, None).await.unwrap();
+    let (code, challenge) = phone.start_code(&offer.code, PROTOCOL).await;
+    let confirmation = code
+        .confirm(
+            offer.code.as_bytes(),
+            phone_pairing::CodeChallenge::parse(&challenge.unwrap()).unwrap(),
+            &phone.binding,
+            PROTOCOL,
+        )
+        .unwrap();
+    assert_eq!(
+        phone.finish_code(&confirmation).await.unwrap()["paired"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn wrong_qr_proofs_and_abandoned_code_challenges_share_the_limit_of_three() {
+    let dir = Dir::new();
+    let endpoint = start(&dir).await;
+    let offer = endpoint.open_pairing(LOCAL, TTL).unwrap();
+    let addr = server_addr(&offer);
+    let fingerprint = fp_bytes(&offer.fingerprint);
+
+    // One wrong QR proof uses one attempt.
+    let mut guess = Phone::connect(addr, Some(fingerprint)).await.unwrap();
+    guess
+        .send(&pair_message(&[0; 32], &fingerprint, PROTOCOL, "Guess"))
+        .await;
+    assert_eq!(guess.recv().await, None);
+
+    // Two challenges that wait for their confirmation hold the other two.
+    let mut waiting = Vec::new();
+    for _ in 0..2 {
+        let mut phone = Phone::connect(addr, None).await.unwrap();
+        assert!(phone.start_code(&offer.code, PROTOCOL).await.1.is_some());
+        waiting.push(phone);
+    }
+    let mut refused = Phone::connect(addr, None).await.unwrap();
+    assert!(refused.start_code(&offer.code, PROTOCOL).await.1.is_none());
+    assert!(endpoint.pairing_is_open());
+
+    // When the two end without a confirmation the budget is used up, and even the right
+    // QR secret is silent.
+    drop(waiting);
+    tokio::time::timeout(Duration::from_secs(5), endpoint.wait_pairing_over())
+        .await
+        .unwrap();
+    assert!(!endpoint.pairing_is_open());
+    let mut late = Phone::connect(addr, Some(fingerprint)).await.unwrap();
+    late.send(&pair_message(
+        &qr_secret(&offer),
+        &fingerprint,
+        PROTOCOL,
+        "Late",
+    ))
+    .await;
+    assert_eq!(late.recv().await, None);
+    assert_eq!(endpoint.paired_count(), 0);
 }
 
 #[tokio::test]
@@ -339,7 +526,7 @@ async fn a_proof_for_another_certificate_is_refused_and_three_wrong_proofs_close
     for _ in 0..2 {
         let mut guess = Phone::connect(addr, Some(fingerprint)).await.unwrap();
         guess
-            .send(&pair_message(b"00000000", &fingerprint, PROTOCOL, "Guess"))
+            .send(&pair_message(&[0; 32], &fingerprint, PROTOCOL, "Guess"))
             .await;
         assert_eq!(guess.recv().await, None);
     }
@@ -411,6 +598,10 @@ async fn a_phone_that_is_too_old_is_told_to_update_and_only_when_it_proved_itsel
     let reply = old.recv().await.unwrap();
     assert_eq!(reply["error"], "update needed");
     assert_eq!(reply["min_version"], 1);
+    assert_eq!(
+        reply["agent_proof"],
+        proof(&qr_secret(&offer), Role::Agent, &fingerprint)
+    );
     assert_eq!(endpoint.paired_count(), 0);
     let token = pair(addr, &offer).await;
 
@@ -571,30 +762,6 @@ async fn the_payload_matches_the_certificate_the_handshake_shows() {
     assert!(fields[2].starts_with("s="));
 }
 
-#[test]
-fn the_proofs_match_fixed_values_and_the_roles_differ() {
-    // Values made apart from this code with Python's hmac and hashlib: HMAC-SHA-256 over
-    // "construct-pair", a zero byte, the role and the fingerprint, keyed with the secret.
-    let fingerprint: [u8; 32] = std::array::from_fn(|i| u8::try_from(i).unwrap());
-    let secret: Vec<u8> = (100u8..132).collect();
-    assert_eq!(
-        proof(&secret, Role::Phone, &fingerprint),
-        "24d3b6880809f7fa38564b20d0442b7ae18ca931a8537eaccea4becc7ed751b5"
-    );
-    assert_eq!(
-        proof(&secret, Role::Agent, &fingerprint),
-        "3645785c711cf914b4148588aa38471121bb4e332d8de0bbd21c9940e56aaaf5"
-    );
-    assert_eq!(
-        proof(b"12345678", Role::Phone, &fingerprint),
-        "e796d48586c680dfbd473309ad46c67498734e9488d8185029845ee28a9842f8"
-    );
-    assert_eq!(
-        proof(b"12345678", Role::Agent, &fingerprint),
-        "d0d5bf0ca45e43b037c10fb54993dfd3492e92c32881423173b6510dcc5d1885"
-    );
-}
-
 #[tokio::test]
 async fn two_wrong_proofs_leave_the_pairing_open() {
     let dir = Dir::new();
@@ -605,7 +772,7 @@ async fn two_wrong_proofs_leave_the_pairing_open() {
     for _ in 0..2 {
         let mut guess = Phone::connect(addr, Some(fingerprint)).await.unwrap();
         guess
-            .send(&pair_message(b"00000000", &fingerprint, PROTOCOL, "Guess"))
+            .send(&pair_message(&[0; 32], &fingerprint, PROTOCOL, "Guess"))
             .await;
         assert_eq!(guess.recv().await, None);
     }
@@ -797,7 +964,7 @@ async fn a_pairing_that_is_closed_or_runs_out_leaves_no_port_when_no_phone_paire
             .unwrap();
         let seen = phone.seen;
         phone
-            .send(&pair_message(b"wrong", &seen, PROTOCOL, "Intruder"))
+            .send(&pair_message(&[0; 32], &seen, PROTOCOL, "Intruder"))
             .await;
         assert_eq!(phone.recv().await, None);
     }
@@ -881,6 +1048,60 @@ async fn the_last_unpair_closes_the_port_and_drops_an_open_channel() {
 }
 
 #[tokio::test]
+async fn a_watching_phone_gets_a_final_revocation_on_last_unpair() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let offer = phones.open_pairing(TTL).await.unwrap();
+    let addr = server_addr(&offer);
+    let fingerprint = fp_bytes(&offer.fingerprint);
+    let token = pair(addr, &offer).await;
+
+    let mut phone = Phone::connect(addr, Some(fingerprint)).await.unwrap();
+    phone
+        .send(&json!({"v": PROTOCOL, "token": token, "watch_revocation": true}))
+        .await;
+    assert_eq!(phone.recv().await.unwrap()["ok"], true);
+    assert!(phones.unpair(&phones.phones()[0].id).await.unwrap());
+
+    assert_eq!(phone.recv().await, Some(json!({"revoked": true})));
+    assert_eq!(phone.recv().await, None);
+    assert!(closes(port).await);
+}
+
+#[tokio::test]
+async fn the_next_ping_reads_the_final_revocation_instead_of_an_answer() {
+    let dir = Dir::new();
+    let port = free_port();
+    let phones = service(&dir, port).await;
+    let offer = phones.open_pairing(TTL).await.unwrap();
+    let addr = server_addr(&offer);
+    let token = pair(addr, &offer).await;
+    let mut phone = Phone::connect(addr, Some(fp_bytes(&offer.fingerprint)))
+        .await
+        .unwrap();
+    phone
+        .send(&json!({"v": PROTOCOL, "token": token, "watch_revocation": true}))
+        .await;
+    assert_eq!(phone.recv().await.unwrap()["ok"], true);
+    phone.send(&json!({"cmd": "ping"})).await;
+    assert_eq!(phone.recv().await.unwrap()["ok"], true);
+
+    assert!(phones.unpair(&phones.phones()[0].id).await.unwrap());
+    // A delayed foreground phone may go longer than its usual five-second poll interval.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    phone
+        .writer
+        .write_all(b"{\"cmd\":\"ping\"}\n")
+        .await
+        .unwrap();
+    phone.writer.flush().await.unwrap();
+    assert_eq!(phone.recv().await, Some(json!({"revoked": true})));
+    assert_eq!(phone.recv().await, None);
+    assert!(closes(port).await);
+}
+
+#[tokio::test]
 async fn an_unpaired_phone_gets_no_answer_while_the_port_is_open_for_another_pairing() {
     let dir = Dir::new();
     let port = free_port();
@@ -896,6 +1117,11 @@ async fn an_unpaired_phone_gets_no_answer_while_the_port_is_open_for_another_pai
     // A pairing is open, so the port is; the old token still gets nothing.
     assert!(is_open(port).await);
     assert!(ping(addr, fingerprint, &token).await.is_none());
+    let mut offline = Phone::connect(addr, Some(fingerprint)).await.unwrap();
+    offline
+        .send(&json!({"v": PROTOCOL, "token": token, "watch_revocation": true}))
+        .await;
+    assert!(offline.recv().await.is_none());
 }
 
 fn mode_of(path: &std::path::Path) -> u32 {

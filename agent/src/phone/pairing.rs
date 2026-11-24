@@ -1,56 +1,23 @@
 //! The one-time secret of a pairing.
 //!
 //! A pairing has two forms of one secret: a long random one for the QR code and a short numeric
-//! one to type. Either opens the pairing, once; the first use closes it. Neither is ever sent:
-//! the phone sends a proof, a keyed hash of the certificate fingerprint it saw, so a computer
-//! that is not this one (a different certificate) cannot pass, and the agent answers with a
-//! proof of its own, so the phone knows the agent had the secret too. After three wrong proofs,
-//! or when the time is up, the pairing closes and the agent must open a new one.
+//! one to type. The QR proof binds the long secret to the certificate fingerprint. The typed
+//! code uses OPAQUE bound to the TLS connection. The first successful redemption closes the
+//! offer. Three failed attempts or expiry also close it.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
+use phone_pairing::{CodeConfirmation, CodeOffer, Role, qr_proof, verify_qr};
 use tokio::sync::Notify;
 
 use super::{Error, Version};
 
-/// The digits of the short code.
-pub const CODE_DIGITS: usize = 8;
-/// The wrong proofs a pairing takes before it closes.
+pub use phone_pairing::CODE_DIGITS;
+/// The failed attempts a pairing takes before it closes: wrong QR proofs, and typed challenges
+/// that end without a verified confirmation.
 pub const MAX_FAILURES: u8 = 3;
-
-type HmacSha256 = Hmac<Sha256>;
-
-/// Who made a proof; the two proofs of a pairing differ so one cannot be replayed as the other.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    Phone,
-    Agent,
-}
-
-fn mac(secret: &[u8], role: Role, fingerprint: &[u8; 32]) -> HmacSha256 {
-    // An HMAC takes a key of any length, so this never fails.
-    let mut mac = HmacSha256::new_from_slice(secret).unwrap_or_else(|_| unreachable!());
-    mac.update(b"construct-pair\0");
-    mac.update(match role {
-        Role::Phone => b"phone",
-        Role::Agent => b"agent",
-    });
-    mac.update(fingerprint);
-    mac
-}
-
-/// The proof of `role`: the hex of an HMAC-SHA-256 keyed with the secret over the fixed text
-/// `construct-pair`, a zero byte, the role (`phone` or `agent`) and the 32 bytes of the SHA-256
-/// fingerprint of the agent's certificate as the phone sees it. For the long secret the key is
-/// its 32 bytes; for the short code it is the digits as ASCII.
-#[must_use]
-pub fn proof(secret: &[u8], role: Role, fingerprint: &[u8; 32]) -> String {
-    hex::encode(mac(secret, role, fingerprint).finalize().into_bytes())
-}
 
 /// A pairing that is open.
 pub struct Offer {
@@ -66,16 +33,76 @@ pub enum Redeem {
     /// The proof is right: the pairing is used up. The agent's own proof is attached.
     Granted(String),
     /// The proof is right but the versions do not fit; the pairing stays open.
-    Version(Version),
+    Version(Version, String),
     /// No open pairing, or the proof is wrong.
     Refused,
 }
 
 struct Open {
     secret: [u8; 32],
-    code: String,
+    code: Arc<CodeOffer>,
     expires: Instant,
+    /// The wrong QR proofs and the typed challenges that ended without a verified confirmation.
     failures: u8,
+    /// The typed challenges handed out and not yet confirmed or dropped. Each holds one of the
+    /// `MAX_FAILURES` attempts, so a pairing never hands out more guesses than it allows.
+    pending: u8,
+}
+
+pub(super) struct CodeAttempt<'a> {
+    pairing: &'a Pairing,
+    offer: Arc<CodeOffer>,
+    confirmation: Option<CodeConfirmation>,
+    settled: bool,
+}
+
+impl CodeAttempt<'_> {
+    pub(super) fn finish(mut self, confirmation: &[u8], version: Version) -> bool {
+        if !self
+            .confirmation
+            .take()
+            .is_some_and(|state| state.verify(confirmation))
+        {
+            return false;
+        }
+        let mut guard = self.pairing.lock();
+        let Some(open) = guard
+            .as_mut()
+            .filter(|open| Arc::ptr_eq(&open.code, &self.offer))
+        else {
+            return false;
+        };
+        if open.expires <= Instant::now() {
+            return false;
+        }
+        open.pending -= 1;
+        if version == Version::Ok {
+            *guard = None;
+            self.pairing.ended.notify_waiters();
+        }
+        self.settled = true;
+        true
+    }
+}
+
+impl Drop for CodeAttempt<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        let mut guard = self.pairing.lock();
+        if let Some(open) = guard
+            .as_mut()
+            .filter(|open| Arc::ptr_eq(&open.code, &self.offer))
+        {
+            open.pending -= 1;
+            open.failures += 1;
+            if open.failures == MAX_FAILURES {
+                *guard = None;
+                self.pairing.ended.notify_waiters();
+            }
+        }
+    }
 }
 
 /// The pairing the agent has open, if any.
@@ -124,15 +151,17 @@ impl Pairing {
         let mut secret = [0u8; 32];
         getrandom::fill(&mut secret).map_err(|_| Error::Random)?;
         let code = random_code()?;
+        let registration = CodeOffer::new(code.as_bytes()).ok_or(Error::Random)?;
         let offer = Offer {
             secret: hex::encode(secret),
-            code: code.clone(),
+            code,
         };
         *self.lock() = Some(Open {
             secret,
-            code,
+            code: Arc::new(registration),
             expires: Instant::now() + ttl,
             failures: 0,
+            pending: 0,
         });
         Ok(offer)
     }
@@ -201,26 +230,53 @@ impl Pairing {
             return Redeem::Refused;
         }
         let given = hex::decode(proof_hex).unwrap_or_default();
-        let candidates: [&[u8]; 2] = [&open.secret, open.code.as_bytes()];
-        let matched = candidates.into_iter().find(|key| {
-            mac(key, Role::Phone, fingerprint)
-                .verify_slice(&given)
-                .is_ok()
-        });
-        let Some(key) = matched else {
-            open.failures += 1;
-            if open.failures >= MAX_FAILURES {
-                *guard = None;
-                self.ended.notify_waiters();
+        if !verify_qr(&open.secret, Role::Phone, fingerprint, &given) {
+            // A wrong proof counts only while an attempt is free. When waiting challenges hold the
+            // rest of the budget, they settle it as they end and the pairing closes then; counting
+            // here too would pass `MAX_FAILURES` and miss the exact value that closes it. The QR
+            // secret is 256 bits, so an uncounted wrong proof gives no useful guess.
+            if open.failures + open.pending < MAX_FAILURES {
+                open.failures += 1;
+                if open.failures == MAX_FAILURES {
+                    *guard = None;
+                    self.ended.notify_waiters();
+                }
             }
             return Redeem::Refused;
-        };
-        if version != Version::Ok {
-            return Redeem::Version(version);
         }
-        let agent_proof = proof(key, Role::Agent, fingerprint);
+        let agent_proof = hex::encode(qr_proof(&open.secret, Role::Agent, fingerprint).as_ref());
+        if version != Version::Ok {
+            return Redeem::Version(version, agent_proof);
+        }
         *guard = None;
         self.ended.notify_waiters();
         Redeem::Granted(agent_proof)
+    }
+
+    pub(super) fn start_code(
+        &self,
+        request: &[u8],
+        binding: &[u8; phone_pairing::BINDING_LEN],
+        version: u64,
+    ) -> Option<(CodeAttempt<'_>, Vec<u8>)> {
+        let offer = {
+            let mut guard = self.lock();
+            let open = guard.as_mut()?;
+            if open.expires <= Instant::now() || open.failures + open.pending >= MAX_FAILURES {
+                return None;
+            }
+            open.pending += 1;
+            Arc::clone(&open.code)
+        };
+        // Receiving a challenge permits a guess even if the phone sends no confirmation.
+        let mut attempt = CodeAttempt {
+            pairing: self,
+            offer,
+            confirmation: None,
+            settled: false,
+        };
+        let (confirmation, challenge) = attempt.offer.challenge(request, binding, version)?;
+        attempt.confirmation = Some(confirmation);
+        Some((attempt, challenge))
     }
 }
