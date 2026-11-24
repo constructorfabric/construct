@@ -173,12 +173,15 @@ fn run() -> std::io::Result<()> {
             dashboard: sync_dashboard,
             numbers: sync_numbers,
         };
-        rt.block_on(phones.set_sync(std::sync::Arc::new(
-            construct_agent::phone::sync::Engine::new(
-                std::sync::Arc::new(live),
-                construct_agent::phone::sync::local_calendar(),
-            ),
-        )));
+        let mut engine = construct_agent::phone::sync::Engine::new(
+            std::sync::Arc::new(live),
+            construct_agent::phone::sync::local_calendar(),
+        );
+        if let Some(manage) = &manage {
+            let manage = manage.clone();
+            engine = engine.with_erasing(std::sync::Arc::new(move || manage.erasing()));
+        }
+        rt.block_on(phones.set_sync(std::sync::Arc::new(engine)));
     }
     // The screen samples: the sampler runs on a thread of its own and takes none until the person
     // switches them on. Only a Mac gives the signals yet; any other computer reads as unsupported.
@@ -215,6 +218,14 @@ fn run() -> std::io::Result<()> {
             screen.as_ref(),
             rt.handle(),
         ));
+    }
+    if let (Some(manage), Some(phones)) = (&manage, &phones) {
+        let phones = phones.clone();
+        manage.set_phone_reset(std::sync::Arc::new(move || {
+            phones
+                .reset_phones()
+                .map_err(|_| "the paired phones could not be told".to_owned())
+        }));
     }
     eprintln!(
         "construct-agent {} listening on {}",

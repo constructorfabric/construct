@@ -235,6 +235,14 @@ impl Endpoint {
         *crate::sync::lock(&self.state.sync) = engine;
     }
 
+    /// Tell every paired phone that everything was erased (see [`paired::Paired::renew_reset`]).
+    ///
+    /// # Errors
+    /// Fails when the phones' file cannot be written.
+    pub fn reset_phones(&self) -> Result<(), Error> {
+        self.state.paired.renew_reset()
+    }
+
     /// How many phones have paired.
     #[must_use]
     pub fn paired_count(&self) -> usize {
@@ -534,8 +542,13 @@ where
                 "agent_version": env!("CARGO_PKG_VERSION"),
             }),
             Some(command) if sync::handles(command) => {
+                // Read before the answer: a check that spans an erase then carries the old marker, and the
+                // new one shows at the next check; never the new marker with the old data's tokens.
+                let marker = (command == "sync-check")
+                    .then(|| paired.reset_marker())
+                    .flatten();
                 let engine = crate::sync::lock(&state.sync).clone();
-                match engine {
+                let mut reply = match engine {
                     // Counting takes seconds: not on a thread of the runtime.
                     Some(engine) => {
                         let request = request.clone();
@@ -544,7 +557,13 @@ where
                             .unwrap_or_else(|_| json!({"error": "sync unavailable"}))
                     }
                     None => json!({"error": "sync unavailable"}),
+                };
+                if let (Some(marker), Some(object)) = (marker, reply.as_object_mut())
+                    && object.get("ok") == Some(&Value::Bool(true))
+                {
+                    object.insert("reset".to_owned(), Value::String(marker));
                 }
+                reply
             }
             _ => json!({"error": "unknown command"}),
         };

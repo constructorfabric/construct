@@ -21,6 +21,10 @@ interface Agent {
   chatDeleteError: string | null;
   /** The answer to `chat-list` when it is not the list. */
   listError: string | null;
+  /** The phones the agent lists as paired. */
+  phones: { id: string; name: string; paired_at: number }[];
+  /** The answer to `phone-list` when it is not the list. */
+  phonesError: string | null;
   readonly lines: string[];
 }
 
@@ -49,6 +53,8 @@ function newAgent(): Agent {
     eraseLeavesGearErasing: false,
     chatDeleteError: null,
     listError: null,
+    phones: [],
+    phonesError: null,
     lines: [],
   };
 }
@@ -70,6 +76,12 @@ function reply(agent: Agent, host: Host, line: string): string {
         time: '2026-11-18T10:30:00Z',
       })),
     });
+  }
+  if (line.startsWith('phone-list ')) {
+    if (agent.phonesError !== null) {
+      return JSON.stringify({ error: agent.phonesError });
+    }
+    return JSON.stringify({ phones: agent.phones, next: null });
   }
   if (line === 'chat-delete all') {
     if (agent.chatDeleteError !== null) {
@@ -567,5 +579,45 @@ test('the agent’s reason survives a failed look at the gear and a visit, and a
     host.erasing = false;
     await expect(page.locator('#erase-done')).toBeVisible();
     await expect(page.locator('#erase-error')).toHaveCount(0);
+  });
+});
+
+test('the confirmation of Delete everything says the paired phones are emptied too, only when one is paired', async ({
+  session,
+}) => {
+  const host = newHost(session);
+  const agent = newAgent();
+  agent.phones = [{ id: 'first', name: "Anna's phone", paired_at: 1735718400 }];
+  await inYourData(session, agent, host, async (page) => {
+    await openSettings(page, 'Your data');
+    await page.locator('#erase-everything').click();
+    await expect(page.getByRole('alertdialog', { name: 'Delete everything?' })).toBeVisible();
+    await expect(page.locator('#erase-everything-phones')).toHaveText(
+      'The phones paired with this computer are emptied too, the next time each of them connects.',
+    );
+    await screenshotBothThemes(page, 'delete-everything-with-a-phone');
+    await page.locator('#erase-everything-cancel').click();
+    await expect(page.locator('#erase-everything-body')).toHaveCount(0);
+
+    // The last phone is unpaired: the next confirmation has no such line.
+    agent.phones = [];
+    await page.locator('#erase-everything').click();
+    await expect(page.locator('#erase-everything-body')).toBeVisible();
+    await expect(page.locator('#erase-everything-phones')).toHaveCount(0);
+    await screenshotBothThemes(page, 'delete-everything-with-no-phone');
+  });
+});
+
+test('the confirmation leaves the phones line out when the agent cannot list the phones', async ({
+  session,
+}) => {
+  const agent = newAgent();
+  agent.phones = [{ id: 'first', name: "Anna's phone", paired_at: 1735718400 }];
+  agent.phonesError = 'no phones';
+  await inYourData(session, agent, newHost(session), async (page) => {
+    await openSettings(page, 'Your data');
+    await page.locator('#erase-everything').click();
+    await expect(page.locator('#erase-everything-body')).toBeVisible();
+    await expect(page.locator('#erase-everything-phones')).toHaveCount(0);
   });
 });

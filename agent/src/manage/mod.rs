@@ -206,7 +206,12 @@ struct Inner {
     erased: Mutex<HashSet<u64>>,
     /// The agent's own stores, erased with the person (see `erase`); set once at start.
     own: OnceLock<OwnStores>,
+    /// Tells the paired phones that everything was erased; set once at start (see `erase`).
+    phones: OnceLock<PhoneReset>,
 }
+
+/// What `memory-erase` calls to tell the paired phones. An error is a fixed plain reason.
+pub type PhoneReset = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 /// The journal of the sent prompts as a store the person can have erased.
 struct JournalStore(Arc<Mutex<Journal>>);
@@ -266,6 +271,7 @@ impl Manager {
                 person: Mutex::new(()),
                 erased: Mutex::new(HashSet::new()),
                 own: OnceLock::new(),
+                phones: OnceLock::new(),
             }),
         })
     }
@@ -280,6 +286,30 @@ impl Manager {
     /// ignored.
     pub fn set_own_stores(&self, stores: OwnStores) {
         let _ = self.inner.own.set(stores);
+    }
+
+    /// How `memory-erase` tells the paired phones. Set once; a second call is ignored.
+    pub fn set_phone_reset(&self, reset: PhoneReset) {
+        let _ = self.inner.phones.set(reset);
+    }
+
+    /// Whether everything about the person is being erased now: `memory-erase` is running, or
+    /// the host is still erasing. Nothing is read from the agent's own stores meanwhile. When
+    /// the host cannot be asked (not linked yet, a failed or slow read), it is not known to be erasing:
+    /// the facts come from the same host and are unavailable then, and the chats were emptied
+    /// before the host was asked.
+    #[must_use]
+    pub fn erasing(&self) -> bool {
+        let _held = match self.inner.person.try_lock() {
+            Err(std::sync::TryLockError::WouldBlock) => return true,
+            Ok(held) => held,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        self.inner
+            .link
+            .get()
+            .and_then(|connection| person::read(&connection).ok())
+            .is_some_and(|gear| gear.erasure_in_progress)
     }
 
     /// What a record store calls with every new user turn (the log readers' and the chat's): a
@@ -338,6 +368,15 @@ impl Manager {
         // Off first: from here on nothing new is sent to the host, whatever happens next.
         if self.set_collection(false).is_err() {
             return error_response("the settings file could not be written, so nothing was erased");
+        }
+        // The phones are told from here, before anything is deleted: whatever happens next, each
+        // of them empties itself. Their checks are refused while the erasure runs (see `erasing`).
+        if let Some(reset) = self.inner.phones.get()
+            && reset().is_err()
+        {
+            return error_response(
+                "collection is off, but the paired phones could not be told, so nothing was erased",
+            );
         }
         // What was typed before and not yet sent must not come back after a switch-on.
         self.inner.forget_unsent();

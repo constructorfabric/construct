@@ -129,6 +129,10 @@ directory by default) and `--minutes` how long the pairing stays open (5 by defa
 - **What a paired phone copies.** The facts, the chats and the dashboard numbers, with a token for each that
   changes when the part changes. The commands and the format of the items are described in the header of
   `agent/src/phone/sync.rs`.
+- **When everything is deleted.** `sync-check` also answers `reset`, a text kept with the paired phones that changes
+  each time `memory-erase` runs. A phone that sees a `reset` other than the one it saw last empties itself and keeps the
+  new one; a phone that has none yet keeps the current one and empties nothing. While an erasure runs every sync
+  command answers the error `erasing`, and the phone asks again later.
 
 To serve made-up facts, chats and numbers instead of the real ones, give the example a file with `--data FILE`
 (its shape is in the header of `agent/examples/phone_pairing.rs`). The example reads the file again at every

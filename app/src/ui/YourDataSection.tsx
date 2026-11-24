@@ -12,7 +12,7 @@ import {
   Button,
   Spinner,
 } from '@gears-frontx/ui-kit';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { t } from '../translation';
 import { reasonText } from './chat-reasons';
@@ -36,6 +36,16 @@ export function YourDataSection({
   readonly erasure: Erasing;
 }): ReactNode {
   const [chatsError, setChatsError] = useState<string | null>(null);
+  // Whether a phone is paired: the confirmation says the phones are emptied too. When the agent
+  // cannot say, the line is left out rather than guessed.
+  const [phonePaired, setPhonePaired] = useState(false);
+  const readPhones = useCallback((): void => {
+    void window.constructAgent.listPhones(null).then(
+      (result) => setPhonePaired(result.ok && result.phones.length > 0),
+      () => setPhonePaired(false),
+    );
+  }, []);
+  useEffect(readPhones, [readPhones]);
   const busy = erasure.state.kind === 'asking' || erasure.state.kind === 'waiting';
   const { conversations } = chat.state;
 
@@ -118,7 +128,11 @@ export function YourDataSection({
         label={t('YourData.Everything')}
         description={t('YourData.EverythingHint')}
       >
-        <AlertDialog>
+        <AlertDialog
+          onOpenChange={(open) => {
+            if (open) readPhones();
+          }}
+        >
           <AlertDialogTrigger
             render={
               <Button
@@ -137,6 +151,11 @@ export function YourDataSection({
               <AlertDialogDescription id="erase-everything-body">
                 {t('YourData.EverythingConfirmBody')}
               </AlertDialogDescription>
+              {phonePaired ? (
+                <AlertDialogDescription id="erase-everything-phones">
+                  {t('YourData.EverythingConfirmPhones')}
+                </AlertDialogDescription>
+              ) : null}
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel id="erase-everything-cancel">

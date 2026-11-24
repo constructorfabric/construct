@@ -349,6 +349,163 @@ fn an_erasure_the_host_refuses_leaves_collection_off_and_says_so() {
     assert!(!stand.collecting());
 }
 
+/// Counts how often the paired phones were told.
+fn count_phone_resets(stand: &Stand) -> std::sync::Arc<AtomicUsize> {
+    let told = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&told);
+    stand.manage.set_phone_reset(std::sync::Arc::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }));
+    told
+}
+
+#[test]
+fn an_erase_that_starts_tells_the_paired_phones_once_and_one_that_changes_nothing_does_not() {
+    let stand = Stand::new();
+    let told = count_phone_resets(&stand);
+
+    // The host is not ready: nothing was erased, the phones are not told.
+    assert!(reply(&stand.manage.erase())["error"].is_string());
+    assert_eq!(told.load(Ordering::SeqCst), 0);
+
+    let host = FakeHost::start();
+    stand.link.set(host.connection());
+    host.answer(200, SETTINGS_ON);
+    host.answer(202, ERASING);
+    assert_eq!(reply(&stand.manage.erase())["erasure"], "started");
+    assert_eq!(told.load(Ordering::SeqCst), 1);
+
+    // A request while an erasure runs changes nothing, the marker too.
+    host.answer(200, ERASING);
+    assert_eq!(reply(&stand.manage.erase())["erasure"], "running");
+    assert_eq!(told.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_erasure_the_host_refuses_still_tells_the_phones_because_the_agent_erased_its_own() {
+    let stand = Stand::new();
+    let told = count_phone_resets(&stand);
+    let host = FakeHost::start();
+    stand.link.set(host.connection());
+    host.answer(200, SETTINGS_ON);
+    host.answer(501, "{}");
+    assert!(reply(&stand.manage.erase())["error"].is_string());
+    assert_eq!(told.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn when_the_phones_cannot_be_told_nothing_is_erased() {
+    let stand = Stand::new();
+    stand
+        .manage
+        .set_phone_reset(std::sync::Arc::new(|| Err("no".to_owned())));
+    let host = FakeHost::start();
+    stand.link.set(host.connection());
+    host.answer(200, SETTINGS_ON);
+    let answer = reply(&stand.manage.erase());
+    assert_eq!(
+        answer["error"],
+        "collection is off, but the paired phones could not be told, so nothing was erased"
+    );
+    assert!(
+        calls(&host).iter().all(|(method, _)| method != "POST"),
+        "the host was asked to erase"
+    );
+}
+
+#[test]
+fn the_manager_says_it_is_erasing_while_the_host_erases_and_not_otherwise() {
+    let stand = Stand::new();
+    // No host yet: not known to be erasing.
+    assert!(!stand.manage.erasing());
+    let host = FakeHost::start();
+    stand.link.set(host.connection());
+    host.answer(200, ERASING);
+    assert!(stand.manage.erasing());
+    host.answer(200, SETTINGS_OFF);
+    assert!(!stand.manage.erasing());
+}
+
+/// Made-up data for an engine that only has to answer a check.
+struct Nothing;
+
+impl construct_agent::phone::sync::Data for Nothing {
+    fn facts(&self) -> Result<construct_agent::phone::sync::FactsRead, &'static str> {
+        Ok(construct_agent::phone::sync::FactsRead::default())
+    }
+    fn chats(&self) -> Result<Vec<construct_agent::phone::sync::ChatRead>, &'static str> {
+        Ok(Vec::new())
+    }
+    fn document(&self) -> Result<Option<Value>, &'static str> {
+        Ok(None)
+    }
+    fn activity(
+        &self,
+        _: construct_agent::dashboard::Source,
+    ) -> Result<construct_agent::dashboard_numbers::Data, &'static str> {
+        Ok(Vec::new().into())
+    }
+}
+
+#[test]
+fn the_manager_changes_the_marker_the_phones_see_and_makes_their_checks_wait_for_the_erasure() {
+    use construct_agent::phone::paired::Paired;
+    use construct_agent::phone::sync::{Engine, local_calendar};
+    use std::sync::Arc;
+
+    let stand = Stand::new();
+    std::fs::create_dir_all(stand.root.join("phones")).unwrap();
+    let paired = Arc::new(Paired::load(&stand.root.join("phones")).unwrap());
+    paired.add("phone").unwrap();
+    let before = paired.reset_marker().unwrap();
+    // The same two closures that `main` gives the manager and the engine.
+    let marker = Arc::clone(&paired);
+    stand.manage.set_phone_reset(Arc::new(move || {
+        marker.renew_reset().map_err(|_| "no".to_owned())
+    }));
+    let manage = stand.manage.clone();
+    let engine = Engine::new(Arc::new(Nothing), local_calendar())
+        .with_erasing(Arc::new(move || manage.erasing()));
+    let host = FakeHost::start();
+    stand.link.set(host.connection());
+
+    host.answer(200, SETTINGS_OFF);
+    assert_eq!(engine.answer(&json!({"cmd": "sync-check"}))["ok"], true);
+
+    host.answer(200, SETTINGS_ON);
+    host.answer(202, ERASING);
+    assert_eq!(reply(&stand.manage.erase())["erasure"], "started");
+    assert_ne!(paired.reset_marker().unwrap(), before);
+
+    // The host still erases: a check waits. When it has ended, the check answers again.
+    host.answer(200, ERASING);
+    assert_eq!(
+        engine.answer(&json!({"cmd": "sync-check"})),
+        json!({"error": "erasing"})
+    );
+    host.answer(200, SETTINGS_OFF);
+    assert_eq!(engine.answer(&json!({"cmd": "sync-check"}))["ok"], true);
+}
+
+#[test]
+fn the_manager_is_erasing_while_the_erase_command_runs() {
+    let stand = std::sync::Arc::new(Stand::new());
+    let host = FakeHost::start();
+    stand.link.set(host.connection());
+    host.answer(200, SETTINGS_ON);
+    host.answer(202, ERASING);
+    *host.delay.lock().unwrap() = Duration::from_millis(500);
+    let erasing = {
+        let stand = std::sync::Arc::clone(&stand);
+        thread::spawn(move || stand.manage.erase())
+    };
+    wait_for("the erase command to ask the host", || host.count() >= 1);
+    // No call to the host is needed to know: the command holds the lock.
+    assert!(stand.manage.erasing());
+    assert_eq!(reply(&erasing.join().unwrap())["erasure"], "started");
+}
+
 /// The commands over the agent's socket, the way the app sends them.
 struct Socket {
     path: PathBuf,
