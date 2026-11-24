@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["agent", "chat-bridge", "chat-core", "connectors"]
+members = ["agent", "chat-bridge", "chat-core", "connectors", "phone-pairing"]
 
 [workspace.package]
 license = "Apache-2.0"
