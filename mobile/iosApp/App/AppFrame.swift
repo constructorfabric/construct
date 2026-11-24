@@ -4,8 +4,8 @@ import SwiftUI
 /// title and the connection line under it. `content` draws one page.
 struct AppFrame<Content: View>: View {
     let connection: ConnectionState
+    @Binding var selected: Page
     @ViewBuilder let content: (Page) -> Content
-    @State private var selected = Page.chat
 
     var body: some View {
         TabView(selection: $selected) {
