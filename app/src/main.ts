@@ -18,6 +18,7 @@ import {
 } from './agent-settings';
 import { readAgentStatus } from './agent-socket';
 import { NEEDS_MOVE_CHANNEL, STATUS_CHANNEL } from './agent-status';
+import { applyChromiumFeatures } from './chromium-features';
 import { createChatHandlers } from './chat-calls';
 import type { ChatHandlers } from './chat-calls';
 import {
@@ -344,6 +345,9 @@ function startApp(): void {
     });
   });
 }
+
+// A Chromium switch counts only before the app is ready.
+applyChromiumFeatures(app.commandLine, process.platform);
 
 // Squirrel runs the app only to create or remove shortcuts on Windows; it must not start a window.
 if (started || !app.requestSingleInstanceLock()) {
