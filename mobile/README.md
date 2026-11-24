@@ -279,11 +279,13 @@ storage.
 the authenticated channel. A revocation received on that channel clears the pairing; a lost route or
 a computer that does not answer keeps the pairing and shows the last contact.
 
-On Android, Settings opens the Computer page: scan the QR code with the camera, or type the address
-and the code. The scanner uses CameraX and the ZXing core QR reader, which decode frames on the phone
-without an account or a network call. Android asks for camera access when the scanner opens, and for
-local network access on a phone that has that permission. Unpair removes the pairing and the
-computer's copied chats and facts, and keeps the chats started on the phone.
+On both phones, Settings opens the Computer page: scan the QR code with the camera, or type the
+address and the code. Android's scanner uses CameraX and the ZXing core QR reader, the iPhone's uses
+`AVFoundation`; both decode frames on the phone without an account or a network call. Each asks for
+camera access when the scanner opens. Android asks for local network access on a phone that has that
+permission. The iPhone cannot ask for it, so the app reads a refusal from the failed connection and
+sends the person to Settings. Unpair removes the pairing and the computer's copied chats and facts,
+and keeps the chats started on the phone.
 
 Run the page on a disposable emulator against the test program of the computer's endpoint. The test
 slows the app's checks of the computer to two minutes, so that only the Try again button can bring a
@@ -297,6 +299,26 @@ python3 scripts/test-phone-pairing.py --device <serial> \
   --agent <path to the phone_pairing example> --screenshots <folder>
 python3 -I scripts/test_phone_pairing_checks.py   # the script's check of the device log
 ```
+
+The iPhone page runs the same way in a Simulator that the script creates and deletes itself. Build
+the app and its tests once, then give the script the folder of that build:
+
+```sh
+cargo build --locked -p construct-agent --example phone_pairing
+cd iosApp && xcodegen generate && cd ..
+xcodebuild -project iosApp/Construct.xcodeproj -scheme Construct -derivedDataPath <build folder> \
+  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+  build-for-testing
+python3 scripts/test-phone-pairing.py --agent <path to the phone_pairing example> \
+  --ios-build <build folder> --ios-device-type <simctl device type> --ios-runtime <simctl runtime> \
+  --ios-theme light --screenshots <folder>
+```
+
+The build is signed ad hoc for this run (`CODE_SIGN_IDENTITY=-`, no account needed): a Simulator app
+without an application identifier is refused every Keychain call by the Simulator of iOS 27, and the
+page would show a storage error. The script stops with a message when the build is not signed.
+`--ios-theme dark` runs the same test in the dark appearance. The test asks the script for each step
+over a port on the loopback address, so no pairing secret is passed as a launch argument.
 
 ## Run the iPhone app
 

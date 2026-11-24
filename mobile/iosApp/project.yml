@@ -59,6 +59,8 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
         INFOPLIST_KEY_CFBundleDisplayName: Construct
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
+        INFOPLIST_KEY_NSCameraUsageDescription: Construct uses the camera to scan the pairing QR code on your computer.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Construct uses your local network to connect to your paired computer.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.1.1"

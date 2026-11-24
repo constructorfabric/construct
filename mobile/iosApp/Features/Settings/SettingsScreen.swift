@@ -9,9 +9,11 @@ struct SettingsActions {
     let reload: () -> Void
 }
 
-struct SettingsScreen: View {
+struct SettingsScreen<Computer: View>: View {
     @ObservedObject var state: FlowState<SettingsState>
     let actions: SettingsActions
+    let status: ComputerStatus
+    let computer: Computer
     @FocusState private var focus: SettingsField?
 
     var body: some View {
@@ -19,7 +21,7 @@ struct SettingsScreen: View {
             if state.value.loading {
                 ProgressView("Loading the settings")
             } else {
-                ScrollView {
+                List {
                     VStack(alignment: .leading, spacing: ConstructTheme.Space.large) {
                         if let reason = state.value.unavailable {
                             InlineNotice(
@@ -31,8 +33,19 @@ struct SettingsScreen: View {
                             form
                         }
                     }
-                    .padding(ConstructTheme.Space.large)
+                    .padding(.vertical, ConstructTheme.Space.medium)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(ConstructTheme.color(.background))
+                    NavigationLink {
+                        computer
+                    } label: {
+                        ComputerSettingsRow(status: status)
+                    }
+                    .accessibilityIdentifier("open-computer")
+                    .listRowBackground(ConstructTheme.color(.background))
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
             }
         }
