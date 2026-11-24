@@ -11,7 +11,17 @@ Electron window you open and close, and a Rust agent that keeps working in the b
 data it collects and the settings stay on your machine. The only service the agent calls is the model you
 configure yourself.
 
-> **Status:** early. The app is not released yet, and there are no downloads.
+> **Status:** early development.
+
+## Download
+
+Get the Linux x86_64 `.deb` from [GitHub Releases](https://github.com/constructorfabric/construct/releases).
+Each release includes `SHA256SUMS` so you can verify the download.
+Open a terminal in the download directory and install the package.
+
+```bash
+sudo apt install ./construct-browser_*.deb
+```
 
 ## What it does today
 

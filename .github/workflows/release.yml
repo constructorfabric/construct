@@ -1,0 +1,157 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./app/package.json").version')
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match app/package.json version ($version)"
+              exit 1
+            fi
+            tag="$GITHUB_REF_NAME"
+            prerelease=false
+          else
+            tag="snapshot-${GITHUB_SHA:0:7}"
+            prerelease=true
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-22.04
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fakeroot protobuf-compiler libprotobuf-dev
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '25.8'
+          repo-token: ${{ github.token }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the release agent
+        run: cargo build --release --locked -p construct-agent --bin construct-agent
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Package the app
+        working-directory: app
+        run: |
+          npm ci
+          node node_modules/electron/install.js
+          npm run make
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.platform }}-deb
+          path: app/out/make/deb/x64/*.deb
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-x64-deb
+          path: dist
+      - name: Install the Debian package
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends xvfb xauth "$PWD"/dist/*.deb
+      - name: Check the installed agent and app
+        run: scripts/smoke-linux.sh
+
+  publish:
+    if: >-
+      github.repository == 'constructorfabric/construct' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref_type == 'tag'))
+    needs: [version, build, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          pattern: '*-deb'
+          merge-multiple: true
+      - name: Publish the package and checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum -- *.deb > SHA256SUMS
+          if existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'); then
+            # Keep checksums immutable for consumers that pin them.
+            for file in *.deb; do
+              if ! grep -Fxq -- "$file" <<< "$existing"; then
+                gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$file"
+                echo "::warning::$TAG lacked $file; the existing SHA256SUMS was left as published"
+              fi
+            done
+            exit 0
+          fi
+
+          flags=(--repo "$GITHUB_REPOSITORY" --title "Construct Browser $VERSION" --target "$GITHUB_SHA")
+          if [[ "$PRERELEASE" == true ]]; then
+            flags+=(--prerelease --notes "Snapshot build from $GITHUB_SHA.")
+          else
+            flags+=(--latest --verify-tag --generate-notes)
+          fi
+          gh release create "$TAG" "${flags[@]}" *.deb SHA256SUMS
