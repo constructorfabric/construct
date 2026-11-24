@@ -9,7 +9,9 @@
 //! `--bind` is the address to listen on (`0.0.0.0:0`, any free port, by default), `--host` is the
 //! address to put in the QR payload (this computer's address on its network by default) and
 //! `--minutes` is how long the pairing stays open (5 by default). With `--control`, send
-//! `unpair` on stdin to remove the paired phones, or `stop` to stop the endpoint.
+//! `unpair` on stdin to remove the paired phones, `erase` to act as if everything about the
+//! person was just erased (the paired phones see a new reset marker at their next check), or
+//! `stop` to stop the endpoint.
 //!
 //! With `--data FILE` the endpoint also answers the sync commands (facts, chats and dashboard
 //! numbers) from a JSON file of made-up data. The file is read again at every command, so a test
@@ -242,6 +244,11 @@ mod unix {
                         removed &= service.unpair(&phone.id).await == Ok(true);
                     }
                     println!("{}", if removed { "unpaired" } else { "unpair failed" });
+                    let _ = std::io::stdout().flush();
+                }
+                "erase" => {
+                    let told = service.reset_phones().is_ok();
+                    println!("{}", if told { "erased" } else { "erase failed" });
                     let _ = std::io::stdout().flush();
                 }
                 "stop" => break,

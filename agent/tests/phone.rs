@@ -1154,6 +1154,94 @@ async fn a_file_with_no_phones_starts_and_one_this_agent_does_not_know_is_refuse
     }
 }
 
+/// A phone as the file keeps it, for a file written before the reset marker existed.
+const OLD_PHONE: &str = r#"{"id":"a","name":"x","token_hash":"b","paired_at":1}"#;
+
+#[test]
+fn the_reset_marker_is_made_with_the_first_phone_changes_on_demand_and_goes_with_the_last() {
+    use construct_agent::phone::paired::Paired;
+    let dir = Dir::new();
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let file = dir.0.join("phones.json");
+
+    let paired = Paired::load(&dir.0).unwrap();
+    assert_eq!(paired.reset_marker(), None);
+    // Nobody to tell: nothing changes and nothing is written.
+    paired.renew_reset().unwrap();
+    assert_eq!(paired.reset_marker(), None);
+    assert!(!file.exists());
+
+    paired.add("one").unwrap();
+    paired.add("two").unwrap();
+    let first = paired.reset_marker().unwrap();
+    assert!(!first.is_empty());
+    // A second phone takes the marker that is current.
+    assert_eq!(paired.reset_marker().as_deref(), Some(first.as_str()));
+
+    paired.renew_reset().unwrap();
+    let second = paired.reset_marker().unwrap();
+    assert_ne!(first, second);
+
+    // It survives a restart.
+    let paired = Paired::load(&dir.0).unwrap();
+    assert_eq!(paired.reset_marker().as_deref(), Some(second.as_str()));
+
+    let ids: Vec<String> = paired.list().into_iter().map(|p| p.id).collect();
+    assert!(paired.remove(&ids[0]).unwrap());
+    assert_eq!(paired.reset_marker().as_deref(), Some(second.as_str()));
+    assert!(paired.remove(&ids[1]).unwrap());
+    assert_eq!(paired.reset_marker(), None);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("reset"), "{text}");
+    assert_eq!(Paired::load(&dir.0).unwrap().reset_marker(), None);
+
+    // A phone that pairs after that starts with a marker of its own.
+    paired.add("three").unwrap();
+    assert_ne!(paired.reset_marker().unwrap(), second);
+}
+
+#[test]
+fn a_marker_that_cannot_be_written_stays_as_it_was() {
+    use construct_agent::phone::paired::Paired;
+    let dir = Dir::new();
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let paired = Paired::load(&dir.0).unwrap();
+    paired.add("one").unwrap();
+    let before = paired.reset_marker().unwrap();
+
+    std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // A user that may write there anyway (root) cannot show a failed write.
+    let can_write = std::fs::write(dir.0.join("probe"), "").is_ok();
+    let result = paired.renew_reset();
+    std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if !can_write {
+        assert!(result.is_err());
+        assert_eq!(paired.reset_marker().as_deref(), Some(before.as_str()));
+    }
+}
+
+#[test]
+fn a_file_from_before_the_marker_is_read_and_gets_one_that_stays_the_same() {
+    use construct_agent::phone::paired::Paired;
+    let dir = Dir::new();
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let file = dir.0.join("phones.json");
+    std::fs::write(&file, format!(r#"{{"version":1,"phones":[{OLD_PHONE}]}}"#)).unwrap();
+
+    let paired = Paired::load(&dir.0).unwrap();
+    assert_eq!(paired.len(), 1);
+    let marker = paired.reset_marker().unwrap();
+    assert!(std::fs::read_to_string(&file).unwrap().contains(&marker));
+    assert_eq!(
+        Paired::load(&dir.0).unwrap().reset_marker().as_deref(),
+        Some(marker.as_str())
+    );
+
+    // A marker in a file that has no phone is dropped, not kept for the next one.
+    std::fs::write(&file, r#"{"version":1,"phones":[],"reset":"old"}"#).unwrap();
+    assert_eq!(Paired::load(&dir.0).unwrap().reset_marker(), None);
+}
+
 #[tokio::test]
 async fn an_unpaired_phone_stays_unpaired_after_a_restart_and_the_file_stays_user_only() {
     let dir = Dir::new();
@@ -2236,6 +2324,74 @@ mod sync {
         assert_eq!(chat.started, "2026-11-01T10:00:00Z");
         assert_eq!(chat.items.len(), 2);
         assert!(chat_read("c2".into(), &[], &|_, _| String::new()).is_none());
+    }
+
+    /// The `reset` of a check, over a new connection of the phone with this token.
+    async fn reset_seen(rig: &Rig, token: &str) -> String {
+        let mut phone = Phone::connect(rig.addr, Some(rig.fingerprint))
+            .await
+            .unwrap();
+        phone.send(&json!({"v": PROTOCOL, "token": token})).await;
+        assert_eq!(phone.recv().await.unwrap()["ok"], true);
+        phone.send(&json!({"cmd": "sync-check"})).await;
+        let answer = phone.recv().await.unwrap();
+        assert_eq!(answer["ok"], true, "{answer}");
+        answer["reset"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_was_away_for_the_erase_sees_a_new_marker_and_one_that_pairs_later_the_current()
+     {
+        let rig = rig().await;
+        let before = reset_seen(&rig, &rig.token).await;
+        // Nothing erased: the marker does not move between checks.
+        assert_eq!(reset_seen(&rig, &rig.token).await, before);
+
+        // The person erases while the phone is away: the data goes, the marker changes.
+        rig.fake.change(|d| {
+            d.facts.clear();
+            d.chats.clear();
+        });
+        rig.endpoint.reset_phones().unwrap();
+
+        let after = reset_seen(&rig, &rig.token).await;
+        assert_ne!(after, before);
+        // The checks give no facts and no chats now.
+        let mut phone = rig.phone().await;
+        let (facts, _) = pull(&mut phone, json!({"cmd": "sync-facts"})).await;
+        assert!(facts.is_empty());
+        let (chats, _) = pull(&mut phone, json!({"cmd": "sync-chats"})).await;
+        assert!(chats.is_empty());
+
+        // A phone that pairs after the erase takes the current marker.
+        let offer = rig.endpoint.open_pairing(LOCAL, TTL).unwrap();
+        let later = pair(server_addr(&offer), &offer).await;
+        assert_eq!(reset_seen(&rig, &later).await, after);
+    }
+
+    #[tokio::test]
+    async fn every_command_is_refused_while_an_erasure_runs_and_answers_again_after() {
+        let rig = rig().await;
+        let erasing = Arc::new(AtomicBool::new(true));
+        let flag = Arc::clone(&erasing);
+        rig.endpoint.set_sync(Some(Arc::new(
+            Engine::new(
+                Arc::clone(&rig.fake) as Arc<dyn Data>,
+                Arc::new(Zone(chrono_tz::Europe::Berlin, "Europe/Berlin".into())),
+            )
+            .with_erasing(Arc::new(move || flag.load(Ordering::SeqCst))),
+        )));
+        let mut phone = rig.phone().await;
+        for command in ["sync-check", "sync-facts", "sync-chats", "sync-dashboard"] {
+            phone.send(&json!({"cmd": command})).await;
+            let answer = phone.recv().await.unwrap();
+            assert_eq!(answer, json!({"error": "erasing"}), "{command}");
+        }
+        erasing.store(false, Ordering::SeqCst);
+        phone.send(&json!({"cmd": "sync-check"})).await;
+        let answer = phone.recv().await.unwrap();
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert!(answer["reset"].is_string());
     }
 
     /// The first copy of a history of about 140,000 prompts in 30 days, timed. Run it with

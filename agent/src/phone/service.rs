@@ -162,6 +162,15 @@ impl Service {
         Ok(removed)
     }
 
+    /// Tell every paired phone that everything was erased: the next check of each shows a new
+    /// reset marker. Nothing changes when no phone is paired.
+    ///
+    /// # Errors
+    /// Fails when the phones' file cannot be written; then the marker stays as it was.
+    pub fn reset_phones(&self) -> Result<(), Error> {
+        self.0.paired.renew_reset()
+    }
+
     /// Stop listening, whatever the phones.
     pub async fn stop(&self) {
         if let Some(endpoint) = self.0.endpoint.lock().await.take() {

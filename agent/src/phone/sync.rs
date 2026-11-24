@@ -10,7 +10,11 @@
 //!
 //! **Commands**, each one JSON line, after the phone's token (see the module above):
 //!
-//! * `sync-check` answers `{"ok": true, "format": 1, "tokens": {"facts", "chats", "dashboard"}}`.
+//! * `sync-check` answers `{"ok": true, "format": 1, "tokens": {"facts", "chats", "dashboard"},
+//!   "reset": "..."}`. `reset` is added by the endpoint (see `paired`): it is the same text until
+//!   everything about the person is erased on the computer, and then it is another. A phone that
+//!   sees a `reset` other than the one it saw last empties itself and keeps the new one; a phone
+//!   that has none yet keeps this one and empties nothing.
 //!   A token is an opaque text that changes when its part changes; a part that cannot be read now
 //!   has `null`. Nothing is copied by a check, and the numbers are not counted.
 //! * `sync-facts`: the facts, as `fact` items with `id`, `entity_kind`, `property`, `value`,
@@ -41,6 +45,9 @@
 //! projects, the document), so a check that finds nothing new counts nothing. A page counts for
 //! at most [`PAGE_TIME`] and answers what it has counted; the phone asks again with `next`. The
 //! newest days come first.
+//!
+//! While everything about the person is being erased on the computer, every command answers the
+//! error `erasing`: a half-erased state is not given out as the truth. The phone asks again later.
 //!
 //! No fact, text of a chat or number is in a log or in an error: failures are fixed words.
 
@@ -602,6 +609,8 @@ pub struct Engine {
     data: Arc<dyn Data>,
     calendar: Arc<dyn Calendar>,
     cache: Mutex<HashMap<String, (String, Value)>>,
+    /// Says whether an erasure of the person is running; while it does, a command is refused.
+    erasing: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     counted: std::sync::atomic::AtomicUsize,
     page_time: Duration,
 }
@@ -613,6 +622,7 @@ impl Engine {
             data,
             calendar,
             cache: Mutex::new(HashMap::new()),
+            erasing: None,
             counted: std::sync::atomic::AtomicUsize::new(0),
             page_time: PAGE_TIME,
         }
@@ -623,6 +633,15 @@ impl Engine {
     #[must_use]
     pub fn with_page_time(mut self, time: Duration) -> Self {
         self.page_time = time;
+        self
+    }
+
+    /// Refuse a command with the error `erasing` when `erasing` says, as the command starts, that
+    /// an erasure is running. A command already reading when the erasure begins finishes: the
+    /// marker has changed by then, so the phone empties itself and copies again at its next check.
+    #[must_use]
+    pub fn with_erasing(mut self, erasing: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.erasing = Some(erasing);
         self
     }
 
@@ -642,6 +661,9 @@ impl Engine {
         let Some(ask) = read_ask(request) else {
             return failure("invalid sync request");
         };
+        if self.erasing.as_ref().is_some_and(|erasing| erasing()) {
+            return failure("erasing");
+        }
         let reply = match command {
             "sync-check" if ask.after == 0 && ask.id.is_none() && ask.token.is_none() => {
                 self.check()

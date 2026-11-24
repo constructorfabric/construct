@@ -5,6 +5,12 @@
 //! know is refused, not read as version 1 and rewritten without the field. It is user-only and
 //! replaced in one step by `host::write_private`.
 //!
+//! **The reset marker.** While a phone is paired the file also keeps `reset`, a text that
+//! changes each time everything about the person is erased (see `sync`). It is made with the
+//! first phone and dropped with the last, and the erasure changes it instead of removing it. A
+//! file from before it existed is read as before and gets one; a file with no phones has no
+//! `reset`, so an older agent still reads it, but it refuses one that has the field.
+//!
 //! The phones live in this file, next to the certificate, and not in `settings.json`: the settings
 //! file is read and rewritten by the app's settings commands and holds the model key, while this
 //! one holds what proves a phone, and only the pairing code writes it.
@@ -43,6 +49,7 @@ struct Phone {
 struct Content {
     version: u32,
     phones: Vec<Phone>,
+    reset: Option<String>,
 }
 
 impl Default for Content {
@@ -50,6 +57,7 @@ impl Default for Content {
         Self {
             version: VERSION,
             phones: Vec::new(),
+            reset: None,
         }
     }
 }
@@ -76,9 +84,20 @@ impl From<&Phone> for PhoneInfo {
 /// The paired phones, in memory and in the file.
 pub struct Paired {
     path: PathBuf,
-    phones: Mutex<Vec<Phone>>,
+    phones: Mutex<Kept>,
     /// The id of each phone that was unpaired, for the channels it has open.
     revoked: broadcast::Sender<String>,
+}
+
+/// What the file holds.
+#[derive(Clone, Default)]
+struct Kept {
+    phones: Vec<Phone>,
+    reset: Option<String>,
+}
+
+fn new_marker() -> Result<String, Error> {
+    crate::host::generate_token().map_err(|_| Error::Random)
 }
 
 fn new_id() -> Result<String, Error> {
@@ -87,8 +106,12 @@ fn new_id() -> Result<String, Error> {
     Ok(hex::encode(bytes))
 }
 
-fn write_phones(path: &Path, phones: &[Phone]) -> Result<(), Error> {
-    let content = serde_json::json!({"version": VERSION, "phones": phones});
+fn write_phones(path: &Path, kept: &Kept) -> Result<(), Error> {
+    let mut content = serde_json::json!({"version": VERSION, "phones": kept.phones});
+    // With no phone there is no marker, and the file stays as an older agent writes it.
+    if let (Some(reset), false) = (&kept.reset, kept.phones.is_empty()) {
+        content["reset"] = serde_json::Value::String(reset.clone());
+    }
     let data = serde_json::to_vec(&content).map_err(|_| Error::Storage)?;
     write_private(path, &data).map_err(|_| Error::Storage)
 }
@@ -115,7 +138,7 @@ impl Paired {
     /// with an empty list over a file it could not read, nor over one of a newer format.
     pub fn load(dir: &Path) -> Result<Self, Error> {
         let path = dir.join(FILE_NAME);
-        let phones = match fs::read(&path) {
+        let mut kept = match fs::read(&path) {
             Ok(bytes) => {
                 let content =
                     serde_json::from_slice::<Content>(&bytes).map_err(|_| Error::Storage)?;
@@ -123,19 +146,30 @@ impl Paired {
                 if content.version != VERSION {
                     return Err(Error::Storage);
                 }
-                content.phones
+                Kept {
+                    phones: content.phones,
+                    reset: content.reset,
+                }
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Kept::default(),
             Err(_) => return Err(Error::Storage),
         };
+        if kept.phones.is_empty() {
+            kept.reset = None;
+        } else if kept.reset.is_none() {
+            // A file from before the marker: the phones get one now, and the same one after a
+            // restart. When it cannot be written the phones simply see a new one at the next start.
+            kept.reset = Some(new_marker()?);
+            let _ = write_phones(&path, &kept);
+        }
         Ok(Self {
             path,
-            phones: Mutex::new(phones),
+            phones: Mutex::new(kept),
             revoked: broadcast::channel(16).0,
         })
     }
 
-    fn lock(&self) -> MutexGuard<'_, Vec<Phone>> {
+    fn lock(&self) -> MutexGuard<'_, Kept> {
         self.phones.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -153,24 +187,28 @@ impl Paired {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
         };
-        let mut phones = self.lock();
-        let mut next = phones.clone();
-        next.push(phone);
+        let mut kept = self.lock();
+        let mut next = kept.clone();
+        next.phones.push(phone);
+        if next.reset.is_none() {
+            next.reset = Some(new_marker()?);
+        }
         write_phones(&self.path, &next)?;
-        *phones = next;
+        *kept = next;
         Ok(token)
     }
 
     /// The paired phones, oldest first.
     #[must_use]
     pub fn list(&self) -> Vec<PhoneInfo> {
-        self.lock().iter().map(PhoneInfo::from).collect()
+        self.lock().phones.iter().map(PhoneInfo::from).collect()
     }
 
     /// A page in stable id order. Deleting a phone cannot change the cursor for the next page.
     pub(super) fn page(&self, after: Option<&str>, limit: usize) -> Vec<PhoneInfo> {
-        let phones = self.lock();
-        let mut matching: Vec<_> = phones
+        let kept = self.lock();
+        let mut matching: Vec<_> = kept
+            .phones
             .iter()
             .filter(|phone| after.is_none_or(|id| phone.id.as_str() > id))
             .collect();
@@ -187,6 +225,7 @@ impl Paired {
     pub fn id_of(&self, token: &str) -> Option<String> {
         let hash = hash_token(token);
         self.lock()
+            .phones
             .iter()
             .find(|p| p.token_hash == hash)
             .map(|p| p.id.clone())
@@ -195,7 +234,7 @@ impl Paired {
     /// Whether the phone with this id is still paired.
     #[must_use]
     pub fn has_id(&self, id: &str) -> bool {
-        self.lock().iter().any(|p| p.id == id)
+        self.lock().phones.iter().any(|p| p.id == id)
     }
 
     /// Hear the id of every phone that is unpaired from now on.
@@ -209,23 +248,49 @@ impl Paired {
     /// # Errors
     /// Fails when the file cannot be written; then the phone stays paired.
     pub fn remove(&self, id: &str) -> Result<bool, Error> {
-        let mut phones = self.lock();
-        let Some(at) = phones.iter().position(|p| p.id == id) else {
+        let mut kept = self.lock();
+        let Some(at) = kept.phones.iter().position(|p| p.id == id) else {
             return Ok(false);
         };
-        let mut next = phones.clone();
-        next.remove(at);
+        let mut next = kept.clone();
+        next.phones.remove(at);
+        if next.phones.is_empty() {
+            next.reset = None;
+        }
         write_phones(&self.path, &next)?;
-        *phones = next;
+        *kept = next;
         // No receiver is fine: the phone has no channel open.
         let _ = self.revoked.send(id.to_owned());
         Ok(true)
     }
 
+    /// The reset marker the phones see; `None` when no phone is paired.
+    #[must_use]
+    pub fn reset_marker(&self) -> Option<String> {
+        self.lock().reset.clone()
+    }
+
+    /// Give the phones a new reset marker, which tells each of them to empty itself. With no
+    /// phone paired there is nothing to tell and nothing changes.
+    ///
+    /// # Errors
+    /// Fails when the marker cannot be made or the file cannot be written; then the marker stays.
+    pub fn renew_reset(&self) -> Result<(), Error> {
+        let mut kept = self.lock();
+        if kept.phones.is_empty() {
+            return Ok(());
+        }
+        let mut next = kept.clone();
+        next.reset = Some(new_marker()?);
+        write_phones(&self.path, &next)?;
+        *kept = next;
+        Ok(())
+    }
+
     /// How many phones are paired.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.lock().len()
+        self.lock().phones.len()
     }
 
     #[must_use]

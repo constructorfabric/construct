@@ -112,6 +112,7 @@
   "YourData.EverythingHint": "Removes your facts, the sessions Construct collected, your activity time and all your chats, and switches collection off. The model and the settings stay.",
   "YourData.EverythingConfirmTitle": "Delete everything?",
   "YourData.EverythingConfirmBody": "This deletes your facts, the sessions Construct collected, your activity time and all your chats. The model and the settings stay. This cannot be undone.",
+  "YourData.EverythingConfirmPhones": "The phones paired with this computer are emptied too, the next time each of them connects.",
   "YourData.EverythingConfirmYes": "Yes, delete everything",
   "YourData.Cancel": "Cancel",
   "YourData.Erasing": "Deleting everything",
