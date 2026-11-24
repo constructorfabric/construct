@@ -15,6 +15,8 @@ data class ControlSizes(
     val iconLarge: Dp = 40.dp,
     /** The dot before the connection state. */
     val dot: Dp = 8.dp,
+    val noticeIcon: Dp = 16.dp,
+    val outlinedButton: Dp = 44.dp,
 )
 
 val LocalControlSizes = staticCompositionLocalOf { ControlSizes() }

@@ -49,6 +49,23 @@ class DatabaseConstructTest {
     private val construct = DatabaseConstruct(store, Dispatchers.Unconfined)
 
     @Test
+    fun removingTheComputerCopyKeepsPhoneMessagesAndRecords() {
+        store.seedWithSampleData()
+        val message = ChatMessage(ChatRole.USER, "A phone message")
+        store.appendPhoneRecord(PhoneRecord("phone", "2026-01-02T03:04:05Z", message), 0, "phone record")
+        val copiedChat = store.conversations().first { it.id != "phone" }
+
+        repeat(2) { store.removeComputerCopy() }
+
+        assertEquals(listOf("phone"), store.conversations().map { it.id })
+        assertEquals(listOf(message), store.messages("phone"))
+        assertEquals(listOf("phone record"), store.chatRecords("phone"))
+        assertNull(store.messages(copiedChat.id))
+        assertEquals(MemoryFacts(emptyList(), null), store.facts())
+        assertEquals(DocumentState(null, null), store.document())
+    }
+
+    @Test
     fun sendingFailsBecauseNothingAnswersYet() =
         runTest {
             assertEquals(Outcome.Failed("not available yet"), construct.sendMessage(ChatInput("c1", "Hi")))

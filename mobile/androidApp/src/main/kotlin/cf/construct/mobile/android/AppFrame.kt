@@ -1,12 +1,16 @@
 package cf.construct.mobile.android
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -16,6 +20,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -35,25 +43,51 @@ fun AppFrame(
     onSelect: (Page) -> Unit,
     modifier: Modifier = Modifier,
     pageActions: @Composable RowScope.() -> Unit = {},
-    content: @Composable (Page) -> Unit,
+    computerContent: @Composable (ComputerPage, (ComputerPage) -> Unit) -> Unit,
+    content: @Composable (Page, () -> Unit) -> Unit,
 ) {
+    var computer by rememberSaveable { mutableStateOf<ComputerPage?>(null) }
+    val detail = computer
+    val goBack = { computer = if (detail == ComputerPage.Overview) null else ComputerPage.Overview }
+    BackHandler(enabled = detail != null, onBack = goBack)
     Scaffold(
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text(stringResource(selected.title)) },
-                    actions = pageActions,
+                    title = { Text(detail?.title ?: stringResource(selected.title)) },
+                    actions = { if (detail == null) pageActions() },
+                    navigationIcon = {
+                        if (detail != null) {
+                            IconButton(onClick = goBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            }
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
                 )
-                ConnectionLine(connection, onTryAgain, LocalControlSizes.current.dot)
+                if (detail == null) ConnectionLine(connection, onTryAgain, LocalControlSizes.current.dot)
             }
         },
-        bottomBar = { PageBar(selected, onSelect) },
+        bottomBar = { if (detail == null) PageBar(selected, onSelect) },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) { content(selected) }
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            if (detail == null) {
+                content(selected) { computer = ComputerPage.Overview }
+            } else {
+                computerContent(detail) { computer = it }
+            }
+        }
     }
+}
+
+enum class ComputerPage(
+    val title: String,
+) {
+    Overview("Computer"),
+    Manual("Pair with a computer"),
+    Scan("Scan QR code"),
 }
 
 @Composable

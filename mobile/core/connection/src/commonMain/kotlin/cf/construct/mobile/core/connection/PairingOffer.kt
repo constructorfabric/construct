@@ -8,6 +8,9 @@ internal data class ComputerAddress(
     val host: String,
     val port: Int,
 ) {
+    val endpoint: String
+        get() = if (':' in host) "[$host]:$port" else "$host:$port"
+
     companion object {
         fun parse(
             input: String,

@@ -24,6 +24,7 @@ CONTROL_TIMEOUT = 10
 AGENT_START_TIMEOUT = 30
 ANDROID_PATH = f"files/{FIXTURE}"
 ANDROID_TEST = "cf.construct.mobile.android.PhonePairingTest"
+ANDROID_COMPUTER_TEST = "cf.construct.mobile.android.ComputerPageTest"
 IOS_TEST = "ConstructTests/PhonePairingTests"
 IOS_FRAME_TEST = "ConstructUITests/PhonePairingFrameTests"
 CANARY = "c3" * 32
@@ -36,11 +37,13 @@ def read(*args):
 class Android:
     host = "10.0.2.2"
     bind = "127.0.0.1:0"
+    SCREENSHOTS = ("not-paired", "manual", "connected", "unreachable", "confirm-unpair")
 
-    def __init__(self, device):
+    def __init__(self, device, screenshots=None):
         if not device.startswith("emulator-"):
             raise ValueError("Use a disposable Android emulator.")
         self.adb = ("adb", "-s", device)
+        self.screenshots = Path(screenshots) if screenshots else None
         properties = (MOBILE / "gradle.properties").read_text().splitlines()
         self.app = next(line.split("=", 1)[1] for line in properties if line.startswith("constructApplicationId="))
         self.storage = (*self.adb, "shell", "run-as", self.app)
@@ -65,8 +68,19 @@ class Android:
 
     def command(self, method):
         subprocess.run((*self.adb, "shell", "am", "force-stop", self.app), check=True)
-        return (*self.adb, "shell", "am", "instrument", "-w", "-e", "computerPairingFixture", "enabled",
-                "-e", "class", f"{ANDROID_TEST}#{method}", f"{self.app}.test/androidx.test.runner.AndroidJUnitRunner")
+        screenshots = ("-e", "computerScreenshots", "enabled") if self.screenshots else ()
+        suite = ANDROID_COMPUTER_TEST if method == "computerPage" else ANDROID_TEST
+        return (*self.adb, "shell", "am", "instrument", "-w", "-e", "computerPairingFixture", "enabled", *screenshots,
+                "-e", "class", f"{suite}#{method}", f"{self.app}.test/androidx.test.runner.AndroidJUnitRunner")
+
+    def collect_screenshots(self):
+        if self.screenshots is None:
+            return
+        self.screenshots.mkdir(parents=True, exist_ok=True)
+        for name in self.SCREENSHOTS:
+            with (self.screenshots / f"{name}.png").open("wb") as image:
+                subprocess.run((*self.adb, "exec-out", "run-as", self.app, "cat", f"{ANDROID_PATH}/{name}.png"),
+                               stdout=image, check=True, timeout=30)
 
     def logs(self):
         return read(*self.adb, "logcat", "-d", "-T", self.since)
@@ -345,15 +359,43 @@ def verify(args, device):
                         send(second, "stop")
                         second.wait(timeout=CONTROL_TIMEOUT)
                 verify_frame(args, device, path / "second", later, protected, digests)
-            # No raw log or key material is emitted, including on failure.
-            device_log = device.logs()
-            canary_digest = hashlib.sha256(CANARY.encode()).hexdigest()
-            if not contains_pairing_material(device_log, set(), {canary_digest}):
-                raise RuntimeError("The device collector or scanner missed its planted log marker.")
-            print("The device collector captured the planted log marker")
-            if contains_pairing_material(device_log, protected, digests):
-                raise RuntimeError("The app log contains protected pairing material.")
-            print("No pairing material in the device log")
+            verify_device_logs(device, protected, digests)
+    finally:
+        device.clear()
+
+
+def verify_device_logs(device, protected, digests):
+    # No raw log or key material is emitted, including on failure.
+    device_log = device.logs()
+    canary_digest = hashlib.sha256(CANARY.encode()).hexdigest()
+    if not contains_pairing_material(device_log, set(), {canary_digest}):
+        raise RuntimeError("The device collector or scanner missed its planted log marker.")
+    print("The device collector captured the planted log marker")
+    if contains_pairing_material(device_log, protected, digests):
+        raise RuntimeError("The app log contains protected pairing material.")
+    print("No pairing material in the device log")
+
+
+def verify_computer_page(args, device):
+    protected = set()
+    digests = set()
+    try:
+        with tempfile.TemporaryDirectory(prefix="construct-computer-test-") as temporary:
+            directory = Path(temporary)
+            with agent(args.agent, device, directory, protected) as (first, _, offer):
+                write_offer(device, "offer", offer)
+                with test(device, "computerPage", protected, digests) as app:
+                    wait_for(device, "computer-stop", app)
+                    confirm_credential(device, "computer", directory, digests)
+                    send(first, "stop")
+                    first.wait(timeout=CONTROL_TIMEOUT)
+                    wait_for(device, "computer-retry", app)
+                    port = int(offer["address"].rsplit(":", 1)[1])
+                    with agent(args.agent, device, directory, protected, f"127.0.0.1:{port}"):
+                        if app.wait(timeout=RUNNER_TIMEOUT) != 0:
+                            raise RuntimeError("The Computer page test did not complete.")
+            verify_device_logs(device, protected, digests)
+            device.collect_screenshots()
     finally:
         device.clear()
 
@@ -404,17 +446,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("platform", choices=("android", "ios"))
     parser.add_argument("--agent", required=True, help="path to the compiled phone_pairing example")
-    parser.add_argument("--previous-agent", required=True, help="phone_pairing example built from the previous agent")
+    parser.add_argument("--previous-agent", help="phone_pairing example built from the previous agent")
     parser.add_argument("--device", help="serial of a disposable Android emulator")
     parser.add_argument("--ios-build", help="iOS build-for-testing DerivedData path")
     parser.add_argument("--ios-device-type", help="simctl device type identifier")
     parser.add_argument("--ios-runtime", help="simctl runtime identifier")
+    parser.add_argument("--computer-page", action="store_true", help="run the Android Computer page fixture")
+    parser.add_argument("--screenshots", help="optional directory for Android Computer page screenshots")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
+    if args.computer_page and args.platform != "android":
+        parser.error("the Computer page fixture requires Android")
+    if args.screenshots and not args.computer_page:
+        parser.error("screenshots require --computer-page")
+    if not args.computer_page and not args.previous_agent:
+        parser.error("the pairing compatibility fixture requires --previous-agent")
     if args.platform == "android":
         if not args.device:
             parser.error("Android needs --device")
-        verify(args, Android(args.device))
+        device = Android(args.device, args.screenshots)
+        if args.computer_page:
+            verify_computer_page(args, device)
+        else:
+            verify(args, device)
     else:
         if not (args.ios_build and args.ios_device_type and args.ios_runtime) or args.device:
             parser.error("iOS creates its own Simulator and needs --ios-build, --ios-device-type and --ios-runtime")

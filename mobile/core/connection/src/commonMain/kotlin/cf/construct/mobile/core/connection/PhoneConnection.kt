@@ -33,10 +33,11 @@ enum class ComputerLink {
     StorageError,
 }
 
-/** Safe to publish. The address, certificate pin and credential are kept in the connection. */
+/** The endpoint identifies the paired computer without exposing the certificate pin or credential. */
 data class LinkSnapshot(
     val link: ComputerLink,
     val lastContactMillis: Long,
+    val endpoint: String? = null,
 )
 
 class PhoneConnection internal constructor(
@@ -71,6 +72,18 @@ class PhoneConnection internal constructor(
         val offer = PairingOffer.qr(payload, transport::isNumericAddress) ?: return PairResult.InvalidQr
         return pair(offer, name)
     }
+
+    /** Removes the local copy and pairing together as far as the connection monitor is concerned. */
+    suspend fun unpair(removeComputerCopy: () -> Unit) =
+        withContext(dispatcher + NonCancellable) {
+            pairing.withLock {
+                storage.withLock {
+                    removeComputerCopy()
+                    store.clear()
+                    revision.value++
+                }
+            }
+        }
 
     private suspend fun pair(
         offer: PairingOffer,
@@ -129,12 +142,14 @@ class PhoneConnection internal constructor(
                 currentCoroutineContext().ensureActive()
                 contact.flush()
                 val state =
-                    when (result) {
-                        Probe.PhoneUpdate -> ComputerLink.PhoneUpdate
-                        Probe.ComputerUpdate -> ComputerLink.ComputerUpdate
-                        else -> unavailableReason()
+                    when {
+                        result == Probe.PhoneUpdate -> ComputerLink.PhoneUpdate
+                        result == Probe.ComputerUpdate -> ComputerLink.ComputerUpdate
+                        !networkAvailable() -> ComputerLink.NoNetwork
+                        !localAccess() -> ComputerLink.NetworkPermission
+                        else -> ComputerLink.Unreachable
                     }
-                publish(LinkSnapshot(state, contact.latest))
+                publish(contact.snapshot(state))
                 delay(pollInterval)
             }
         } finally {
@@ -150,13 +165,6 @@ class PhoneConnection internal constructor(
             }
         }
     }
-
-    private fun unavailableReason() =
-        when {
-            !networkAvailable() -> ComputerLink.NoNetwork
-            !localAccess() -> ComputerLink.NetworkPermission
-            else -> ComputerLink.Unreachable
-        }
 
     private suspend fun checkConnection(
         saved: StoredPairing,
@@ -180,7 +188,7 @@ class PhoneConnection internal constructor(
             contact.latest = maxOf(contact.latest, now())
             currentCoroutineContext().ensureActive()
             if (contact.latest - contact.savedAt >= SAVE_INTERVAL.inWholeMilliseconds) contact.flush()
-            publish(LinkSnapshot(ComputerLink.Connected, contact.latest))
+            publish(contact.snapshot(ComputerLink.Connected))
             delay(pollInterval)
             result = protocol.ping(channel)
         }
@@ -194,6 +202,8 @@ class PhoneConnection internal constructor(
         var latest = pairing.lastContactMillis
         var savedAt = latest
             private set
+
+        fun snapshot(link: ComputerLink) = LinkSnapshot(link, latest, pairing.address.endpoint)
 
         suspend fun flush() {
             if (latest == savedAt) return

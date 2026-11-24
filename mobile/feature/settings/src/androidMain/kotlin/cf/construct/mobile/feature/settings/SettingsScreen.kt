@@ -38,16 +38,18 @@ fun SettingsScreen(
     state: SettingsState,
     actions: SettingsActions,
     modifier: Modifier = Modifier,
+    computerRow: @Composable () -> Unit = {},
 ) {
     when {
         state.unavailable != null -> {
-            Column(modifier.fillMaxSize().padding(Spacing.L.dp)) {
+            Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(Spacing.L.dp)) {
                 MessageLine(
                     MessageKind.Error,
                     "The settings are not available: ${state.unavailable}",
                     Modifier.testTag("settings-unavailable"),
                 )
                 TextButton(onClick = actions.onTryAgain) { Text("Try again", fontWeight = FontWeight.Bold) }
+                computerRow()
             }
         }
 
@@ -63,7 +65,7 @@ fun SettingsScreen(
         }
 
         else -> {
-            ModelSetup(state, actions, modifier)
+            ModelSetup(state, actions, modifier, computerRow)
         }
     }
 }
@@ -73,6 +75,7 @@ private fun ModelSetup(
     state: SettingsState,
     actions: SettingsActions,
     modifier: Modifier,
+    computerRow: @Composable () -> Unit,
 ) {
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(Spacing.L.dp),
@@ -112,6 +115,7 @@ private fun ModelSetup(
         )
         ActionRow(state, actions)
         Notices(state)
+        computerRow()
     }
 }
 

@@ -7,7 +7,8 @@ import cf.construct.mobile.core.chat.initChatCore
 /** Holds the app's one [cf.construct.mobile.core.construct.Construct], so a new screen reuses its open copy. */
 class ConstructApp : Application() {
     val modelSettings by lazy { createModelSettingsStore(this) }
-    val construct by lazy { createConstruct(this, modelSettings) }
+    internal val copy by lazy { createCopy(this) }
+    val construct by lazy { createConstruct(copy, modelSettings) }
     val chatCore by lazy { createChatCore() }
     val phoneConnection by lazy { createPhoneConnection(this) }
 

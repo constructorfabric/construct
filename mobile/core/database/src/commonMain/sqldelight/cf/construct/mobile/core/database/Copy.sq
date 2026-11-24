@@ -69,6 +69,9 @@ UPDATE conversation SET origin = ? WHERE id = ?;
 phoneConversations:
 SELECT id FROM conversation WHERE origin = 'phone';
 
+computerConversations:
+SELECT id FROM conversation WHERE origin = 'computer';
+
 updateConversationTime:
 UPDATE conversation SET time = ? WHERE id = ?;
 
