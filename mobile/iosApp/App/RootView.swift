@@ -2,8 +2,7 @@ import Combine
 import ConstructShared
 import SwiftUI
 
-/// The shell: the frame and the page each tab shows. A page with a feature is a folder under
-/// `Features/`; one without is a `PlaceholderPage` until its feature takes it over.
+/// The shell: the frame and the page each tab shows. A page is a folder under `Features/`.
 struct RootView: View {
     let composition: Composition
     @Environment(\.scenePhase) private var scenePhase
@@ -81,6 +80,12 @@ struct RootView: View {
                     openSettings: { selected = .settings }
                 )
             case .memory: MemoryPage(construct: composition.construct)
+            case .dashboard:
+                DashboardPage(
+                    construct: composition.construct,
+                    copy: composition.copy,
+                    lastSynced: sync.state.value.lastSyncedAt
+                )
             case .glasshouse: GlasshousePage(model: glasshouse)
             case .settings:
                 SettingsPage(
@@ -101,7 +106,6 @@ struct RootView: View {
                         )
                     }
                 )
-            default: PlaceholderPage(page: page)
             }
         }
     }

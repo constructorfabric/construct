@@ -12,6 +12,7 @@ activityCompose = "1.13.0"
 cameraX = "1.6.2"
 zxing = "3.5.4"
 serializationJson = "1.9.0"
+datetime = "0.8.0"
 sqldelight = "2.4.1"
 skie = "0.10.16"
 # Android loads the Rust library through JNA, whose AAR carries the native dispatcher.
@@ -26,6 +27,7 @@ androidCompileSdkMinor = "2"
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serializationJson" }
+datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "datetime" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin" }
 sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions", version.ref = "sqldelight" }

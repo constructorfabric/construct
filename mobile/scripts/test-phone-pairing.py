@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Runs the Computer page test of the app, and with --sync the iPhone sync test, against the phone_pairing example on
-a disposable Android emulator or on the shared iPhone Simulator (see shared_simulator.py)."""
+"""Runs the Computer page test of the app, and with --sync the iPhone sync test or with --dashboard the iPhone Dashboard
+test, against the phone_pairing example on a disposable Android emulator or on the shared iPhone Simulator (see
+shared_simulator.py)."""
 
 import argparse
+from collections import defaultdict
 import contextlib
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -17,6 +20,7 @@ import sys
 import tempfile
 from threading import Thread
 import time
+from zoneinfo import ZoneInfo
 
 # The checks of this script load it with `python3 -I`, which has no folder of the script on the path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -31,6 +35,9 @@ ANDROID_PATH = f"files/{FIXTURE}"
 ANDROID_COMPUTER_TEST = "cf.construct.mobile.android.ComputerPageTest"
 IOS_COMPUTER_TEST = "ConstructUITests/ComputerPageTests/testComputerPage"
 IOS_SYNC_TEST = "ConstructUITests/SyncTests/testSync"
+IOS_DASHBOARD_TEST = "ConstructUITests/DashboardTests/testDashboard"
+# The time zone of the computer in the data file: the days of the Dashboard page are its days.
+COMPUTER_ZONE = "Europe/Berlin"
 # The sync test waits for a loading screen that is slowed on purpose, then for checks, so it runs longer.
 SYNC_TIMEOUT = 600
 # The test logs this value; the log check must find it, or it is not reading the device log.
@@ -380,17 +387,77 @@ def sync_facts(properties):
              "stored_at": "2026-11-01T10:00:00Z"} for number, (name, value) in enumerate(properties, 1)]
 
 
-def write_sync_data(path, chats, facts=None):
-    """Made-up facts and chats for the computer's test program, which reads the file again at every command."""
+def write_sync_data(path, chats, facts=None, sessions=None, hidden=()):
+    """Made-up facts, chats and sessions for the computer's test program, which reads the file again at every command.
+    The dashboard is the program's default one, a total, bars per day, two tables and the summary of a day, unless
+    `hidden` names projects the person hides on the computer."""
     facts = facts or sync_facts([(f"Skill {number}", f"Level {number}") for number in range(1, 13)])
-    path.write_text(json.dumps({"zone": "Europe/Berlin", "facts": {"version": 1, "items": facts},
-                                "chats": chats, "document": None, "sessions": []}))
+    path.write_text(json.dumps({"zone": COMPUTER_ZONE, "facts": {"version": 1, "items": facts},
+                                "chats": chats, "document": activity_document(hidden) if hidden else None,
+                                "sessions": sessions or []}))
 
 
-def verify_ios_sync(args, device):
-    """The sync test: the program serves the data file, and the test asks the script to add a chat, stop and restart."""
+def activity_document(hidden):
+    """The default dashboard of the computer (`default_activity` in the agent), with `hidden` projects hidden."""
+    def widget(name, kind, place, group_by=None):
+        column, row, width, height = place
+        item = {"id": name, "kind": kind, "position": {"column": column, "row": row, "width": width, "height": height}}
+        return {**item, "group_by": group_by} if group_by else item
+
+    return {"type": "gts.cf.construct.core.dashboard.v1~cf.construct.dashboard.activity.v2~", "title": "Activity",
+            "payload": {"period": "this_week", "sessions": "own", "hidden_projects": list(hidden), "project_names": {},
+                        "widgets": [widget("total", "total", (0, 0, 12, 2)),
+                                    widget("per-day", "bars_per_day", (0, 2, 12, 4)),
+                                    widget("by-project", "table", (0, 6, 6, 5), "project"),
+                                    widget("by-ticket", "table", (6, 6, 6, 5), "ticket"),
+                                    widget("end-of-day", "day_summary", (0, 11, 12, 3))]}}
+
+
+def dashboard_sessions(now=None):
+    """Sessions on four days counted from today in the computer's zone, and what the page must show for them.
+
+    Returns the sessions for the data file and `key=value` lines for the test: the days it looks at (today,
+    yesterday, and a day of the week before the one of yesterday) and the minutes and sessions of each, and of the
+    weeks. Today holds two sessions, so that every table has two rows."""
+    zone = ZoneInfo(COMPUTER_ZONE)
+    today = (now or datetime.now(zone)).astimezone(zone).date()
+    monday = today - timedelta(days=today.weekday())
+    picked = monday - timedelta(days=5)
+    plan = [(today, "s1", "/w/app", "APP-1", 10, 45), (today, "s2", "/w/site", "WEB-2", 14, 20),
+            (today - timedelta(days=1), "s3", "/w/app", "APP-1", 9, 30),
+            (picked, "s4", "/w/app", "APP-3", 11, 50),
+            (monday - timedelta(days=4), "s5", "/w/site", "WEB-4", 11, 25)]
+    sessions = []
+    minutes, count = defaultdict(int), defaultdict(int)
+    for date, name, project, ticket, hour, length in plan:
+        start = datetime(date.year, date.month, date.day, hour, tzinfo=zone)
+        stamps = [(start + timedelta(minutes=step)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z")
+                  for step in range(length)]
+        sessions.append({"tool": "claude", "session": name, "project": project, "ticket": ticket, "minutes": stamps})
+        minutes[date] += length
+        count[date] += 1
+
+    def week(date):
+        first = date - timedelta(days=date.weekday())
+        return sum(minutes[first + timedelta(days=step)] for step in range(7))
+
+    yesterday = today - timedelta(days=1)
+    # What today comes to when the project of the second session is hidden on the computer.
+    kept = sum(length for date, _, project, _, _, length in plan if date == today and project != "/w/site")
+    facts = {"today": today.isoformat(), "yesterday": yesterday.isoformat(), "picked": picked.isoformat(),
+             "today.minutes": minutes[today], "today.sessions": count[today],
+             "yesterday.minutes": minutes[yesterday], "yesterday.sessions": count[yesterday],
+             "yesterday.week.minutes": week(yesterday), "before.week.minutes": week(yesterday - timedelta(days=7)),
+             "picked.minutes": minutes[picked], "picked.sessions": count[picked], "hidden.today.minutes": kept}
+    return sessions, "\n".join(f"{key}={value}" for key, value in facts.items())
+
+
+def verify_ios_sync(args, device, dashboard=False):
+    """The sync test: the program serves the data file, and the test asks the script to add a chat, stop and restart.
+    With `dashboard` the file holds sessions too, and the test asks what the page must show for them (`expect`)."""
     protected = set()
     digests = set()
+    sessions, expectation = dashboard_sessions() if dashboard else ([], "")
     chats = [sync_chat("c1", "Plan the trip"), sync_chat("c2", "Tea notes"), sync_chat("c3", "Garden ideas"),
              sync_chat("c4", "Reading list")]
     with tempfile.TemporaryDirectory(prefix="construct-sync-test-") as temporary:
@@ -398,7 +465,7 @@ def verify_ios_sync(args, device):
         directory = root / "agent"
         directory.mkdir()
         data = root / "data.json"
-        write_sync_data(data, chats)
+        write_sync_data(data, chats, sessions=sessions)
         with socket.create_server(("127.0.0.1", 0)) as listener, contextlib.ExitStack() as running:
             process, _, offer = running.enter_context(agent(args.agent, device, directory, protected, data=data))
             current = [process]
@@ -408,7 +475,12 @@ def verify_ios_sync(args, device):
                     return offer["address"] + "\n" + offer["code"]
                 if command == "chat":
                     chats.append(sync_chat("c5", "A chat from the computer"))
-                    write_sync_data(data, chats)
+                    write_sync_data(data, chats, sessions=sessions)
+                    return "ready"
+                if command == "expect" and dashboard:
+                    return expectation
+                if command == "hide" and dashboard:
+                    write_sync_data(data, chats, sessions=sessions, hidden=("/w/site",))
                     return "ready"
                 if command == "stop":
                     digests.add(credential_digest(directory))
@@ -422,7 +494,8 @@ def verify_ios_sync(args, device):
                     return "ready"
                 raise RuntimeError(f"The Simulator asked for {command}.")
 
-            with test(device, protected, digests, listener.getsockname()[1], "sync", SYNC_TIMEOUT) as app:
+            name = "dashboard" if dashboard else "sync"
+            with test(device, protected, digests, listener.getsockname()[1], name, SYNC_TIMEOUT) as app:
                 deadline = time.monotonic() + SYNC_TIMEOUT
                 listener.settimeout(1)
                 while app.poll() is None and time.monotonic() < deadline:
@@ -464,6 +537,7 @@ def main():
     parser.add_argument("--ios-runtime", help="simctl runtime identifier")
     parser.add_argument("--ios-theme", choices=("light", "dark"), help="Simulator appearance")
     parser.add_argument("--sync", action="store_true", help="run the iPhone sync test instead of the Computer page test")
+    parser.add_argument("--dashboard", action="store_true", help="run the iPhone Dashboard test instead")
     parser.add_argument("--screenshots", help="optional directory for the screenshots of the test")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
@@ -475,7 +549,9 @@ def main():
     if not (args.ios_device_type and args.ios_runtime):
         parser.error("the iPhone Simulator is created from --ios-device-type and --ios-runtime, and needs both")
     with test_simulator(args.ios_device_type, args.ios_runtime, args.ios_build, args.ios_theme) as device:
-        if args.sync:
+        if args.dashboard:
+            verify_ios_sync(args, Ios(device, args.ios_build, args.screenshots, IOS_DASHBOARD_TEST, "Dashboard"), True)
+        elif args.sync:
             verify_ios_sync(args, Ios(device, args.ios_build, args.screenshots, IOS_SYNC_TEST, "Sync"))
         else:
             verify_ios_computer_page(args, Ios(device, args.ios_build, args.screenshots))
