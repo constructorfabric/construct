@@ -11,12 +11,23 @@ struct InlineNotice: View {
     var icon = "NoticeInfo"
     var error = false
     var emphasized = false
+    /// Shows a spinner in place of the icon, for a notice about something still going on.
+    var busy = false
     var actions: [Action] = []
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: ConstructTheme.Space.small) {
-            FeatureIcon(error ? "NoticeAlert" : icon, size: ConstructTheme.ControlSize.smallIcon)
-                .foregroundStyle(ConstructTheme.color(error ? .destructive : .mutedForeground))
+            if busy {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: ConstructTheme.ControlSize.smallIcon, height: ConstructTheme.ControlSize.smallIcon)
+                    // A spinner has a baseline of its own: sit it on the text's line like the icons do.
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] }
+                    .accessibilityHidden(true)
+            } else {
+                FeatureIcon(error ? "NoticeAlert" : icon, size: ConstructTheme.ControlSize.smallIcon)
+                    .foregroundStyle(ConstructTheme.color(error ? .destructive : .mutedForeground))
+            }
             VStack(alignment: .leading, spacing: 0) {
                 Text(text)
                     .font(.system(size: ConstructTheme.TextSize.secondary, weight: emphasized ? .semibold : .regular))

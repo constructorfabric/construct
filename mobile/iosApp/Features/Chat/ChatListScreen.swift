@@ -22,17 +22,19 @@ struct ChatListScreen: View {
     var body: some View {
         Group {
             if state.listFailed && state.conversations.isEmpty {
-                InlineNotice(
-                    text: "The conversations cannot be shown.",
-                    error: true,
-                    actions: [.init(title: "Try again", run: actions.refresh)]
-                )
-                .padding(ConstructTheme.Space.large)
-                .frame(maxHeight: .infinity, alignment: .top)
+                SyncNoticePage {
+                    InlineNotice(
+                        text: "The conversations cannot be shown.",
+                        error: true,
+                        actions: [.init(title: "Try again", run: actions.refresh)]
+                    )
+                    .padding(ConstructTheme.Space.large)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                }
             } else if state.listLoading && state.conversations.isEmpty {
-                ProgressView("Loading conversations")
+                SyncNoticePage { ProgressView("Loading conversations") }
             } else if state.conversations.isEmpty {
-                empty
+                SyncNoticePage { empty }
             } else {
                 list
             }
@@ -67,6 +69,7 @@ struct ChatListScreen: View {
 
     private var list: some View {
         List {
+            SyncNoticeRow()
             if state.listFailed {
                 InlineNotice(
                     text: "The conversations could not be refreshed.",

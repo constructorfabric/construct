@@ -2,8 +2,6 @@ import XCTest
 
 final class MovingBetweenPagesTests: XCTestCase {
     private let titles = ["Chat", "Memory", "Dashboard", "Glasshouse", "Settings"]
-    /// The Glasshouse page is a browser: its address bar takes the place of the title and of the connection line.
-    private let titledPages = ["Chat", "Memory", "Dashboard", "Settings"]
     private let app = XCUIApplication()
 
     override func setUp() {
@@ -28,10 +26,19 @@ final class MovingBetweenPagesTests: XCTestCase {
         }
     }
 
-    func testTheConnectionStateShowsOnEveryPageButTheBrowser() {
-        for title in titledPages {
+    /// A phone that is not paired has no computer to sync with, so no page tells anything about one, and no page has a
+    /// line for the connection: the Settings page only has its Computer row.
+    func testNoPageTellsAboutTheComputerWhenThePhoneIsNotPaired() {
+        for title in titles {
             app.tabBars.buttons[title].tap()
-            XCTAssertTrue(app.staticTexts["Not paired"].waitForExistence(timeout: 5), "no connection line on \(title)")
+            let page = title == "Glasshouse" ? app.buttons["glasshouse-host"] : app.navigationBars[title]
+            XCTAssertTrue(page.waitForExistence(timeout: 5), "\(title) did not open")
+            XCTAssertFalse(app.staticTexts["Syncing with your computer."].exists, "a sync notice on \(title)")
+            let unreachable = NSPredicate(format: "label BEGINSWITH %@", "The computer is not reachable")
+            XCTAssertFalse(app.staticTexts.matching(unreachable).firstMatch.exists, "a notice on \(title)")
+            if title != "Settings" {
+                XCTAssertFalse(app.staticTexts["Not paired"].exists, "a connection line on \(title)")
+            }
         }
     }
 

@@ -19,9 +19,9 @@ enum Page: CaseIterable, Identifiable {
         }
     }
 
-    /// Whether the connection line sits under the page's title. The Glasshouse page has no title bar and nothing to
-    /// sync: its address bar is the top of the page.
-    var showsConnectionLine: Bool { self != .glasshouse }
+    /// Whether the sync's notice shows at the top of the page. The Glasshouse page has nothing to sync: its address
+    /// bar is the top of the page.
+    var showsSyncNotice: Bool { self != .glasshouse }
 
     /// The name of the page's icon in the asset catalog.
     var icon: String {

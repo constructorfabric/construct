@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * How far the first copy from a computer has come: the three steps in the order they are made. It exists while
@@ -74,6 +74,17 @@ class SyncHolder(
     private val justSyncedTime: Duration = JUST_SYNCED_TIME,
     private val storageDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
+    /**
+     * For Swift, which cannot pass a [Duration]: the period of the checks and the time "Synced just now" shows,
+     * in milliseconds. [SYNC_INTERVAL_MILLIS] and [JUST_SYNCED_MILLIS] are what the apps use.
+     */
+    constructor(
+        syncer: Syncer,
+        scope: CoroutineScope,
+        intervalMillis: Long,
+        justSyncedMillis: Long,
+    ) : this(syncer, scope, intervalMillis.milliseconds, justSyncedMillis.milliseconds)
+
     private val mutable = MutableStateFlow(SyncState())
     val state: StateFlow<SyncState> = mutable.asStateFlow()
     private var ticker: Job? = null
@@ -184,11 +195,10 @@ class SyncHolder(
             }
 
             is SyncResult.Missed -> {
-                val unreachable = result.link == ComputerLink.Unreachable || result.link == ComputerLink.NoNetwork
                 mutable.update {
                     it.copy(
                         firstCopy = it.firstCopy?.copy(running = false),
-                        notice = noticeAfterMiss(it, unreachable),
+                        notice = noticeAfterMiss(it, result.link),
                     )
                 }
             }
@@ -201,15 +211,16 @@ class SyncHolder(
 
     /**
      * "Not reachable" shows when a sync misses the computer, and stays until a sync works, so the checks that follow
-     * do not show it again. A miss for another reason ends "syncing" and shows nothing: the Computer page says why.
+     * do not show it again. A phone that is no longer paired has no computer to miss, so it shows nothing. A miss for
+     * another reason ends "syncing" and shows nothing: the Computer page says why.
      */
     private fun noticeAfterMiss(
         current: SyncState,
-        unreachable: Boolean,
+        link: ComputerLink,
     ): SyncNotice =
         when {
-            unreachable -> SyncNotice.NotReachable
-            current.notice == SyncNotice.Syncing -> SyncNotice.None
+            link == ComputerLink.Unreachable || link == ComputerLink.NoNetwork -> SyncNotice.NotReachable
+            link == ComputerLink.NotPaired || current.notice == SyncNotice.Syncing -> SyncNotice.None
             else -> current.notice
         }
 
@@ -225,7 +236,13 @@ class SyncHolder(
     }
 
     private companion object {
-        val DEFAULT_INTERVAL = 60.seconds
-        val JUST_SYNCED_TIME = 3.seconds
+        val DEFAULT_INTERVAL = SYNC_INTERVAL_MILLIS.milliseconds
+        val JUST_SYNCED_TIME = JUST_SYNCED_MILLIS.milliseconds
     }
 }
+
+/** How often the app checks the computer while it is in front of the person. */
+const val SYNC_INTERVAL_MILLIS = 60_000L
+
+/** How long "Up to date. Synced just now." shows. */
+const val JUST_SYNCED_MILLIS = 3_000L

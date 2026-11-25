@@ -21,7 +21,7 @@ Multiplatform. This folder holds the shared Gradle project.
 | `feature/glasshouse` | What both phones share about the Glasshouse page, the page that opens a web address as on the computer: the state, its state holder, the rule for a typed address, the kinds of problem and the User-Agent. Android adds the address bar, the screen and `GlasshouseWebView`, the phone's web view set up for the page; the iPhone's web view comes with its page. See "The Glasshouse page".                                                                                                                                                                                                                                                                                                                                                       |
 | `shared`             | The one Kotlin framework the iPhone app links (`ConstructShared`): it re-exports the modules above, adds `UiScope` (a main-thread scope Swift can create and close) and uses SKIE, which shows Kotlin flows to Swift as `AsyncSequence`. Its analytics upload is off.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `androidApp`         | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. `AppFrame.kt` is the frame of every page (top bar with the title, a connection line, the navigation bar); a page without a feature is a `PlaceholderPage` until a feature module takes it over.                                                                                                                                                                           |
-| `iosApp`             | The iPhone app in SwiftUI. `project.yml` generates the Xcode project (not committed); Swift files under `App/`, `Core/` and `Features/` are picked up by folder. `Composition.swift` is the one place its objects are built, `Core/FlowState.swift` is the one adapter every feature uses to watch a state holder, `Core/ConstructTheme.swift` maps the shared colours to SwiftUI and holds the iPhone text sizes, radii and control sizes. `App/AppFrame.swift` is the frame of every page (the tab bar, a navigation bar with the inline title, a connection line); a page without a feature is a `PlaceholderPage` until a feature folder takes it over. The tab icons are Lucide, in the asset catalog. |
+| `iosApp`             | The iPhone app in SwiftUI. `project.yml` generates the Xcode project (not committed); Swift files under `App/`, `Core/` and `Features/` are picked up by folder. `Composition.swift` is the one place its objects are built, `Core/FlowState.swift` is the one adapter every feature uses to watch a state holder, `Core/ConstructTheme.swift` maps the shared colours to SwiftUI and holds the iPhone text sizes, radii and control sizes. `App/AppFrame.swift` is the frame of every page (the tab bar and a navigation bar with the inline title; the sync's notice is the first row of a page, see "Sync the copy from the computer"); a page without a feature is a `PlaceholderPage` until a feature folder takes it over. The tab icons are Lucide, in the asset catalog. |
 
 The Memory holder watches the stream `Construct.memoryFacts`, so a fact changed in the copy shows by itself, and `refresh()` starts the watch again. The Chat holder also reads its list again when a sync changes the chats (`Construct.conversationChanges`). The other state holders wrap the one-shot reads of `Construct`: a change shows after `refresh()`, not by itself. A read or a watch that is still running is dropped when a new one starts. A `Construct` reports a failed read as `Outcome.Failed` and does not throw (the stream gives it as an item and goes on); run a holder's scope and call `refresh()` on the main thread.
 
@@ -442,7 +442,13 @@ python3 scripts/test-phone-pairing.py --agent <path to the phone_pairing example
 The build is signed ad hoc for this run (`CODE_SIGN_IDENTITY=-`, no account needed): a Simulator app
 without an application identifier is refused every Keychain call by the Simulator of iOS 27, and the
 page would show a storage error. The script stops with a message when the build is not signed.
-`--ios-theme dark` runs the same test in the dark appearance. The test asks the script for each step
+`--ios-theme dark` runs the same test in the dark appearance. `--sync` runs the iPhone sync test
+(`UITests/SyncTests`) the same way: the script starts the program with a file of made-up facts and chats, adds a chat
+to the file and stops and starts the program when the test asks, and the test follows the first copy (its steps and
+counts), the notices, the checks that say nothing, a new chat in the open list, "Sync now" and a computer that does not
+answer. The app runs with `--sync-test`, a debug Simulator hook like `--computer-page-test`: it checks every 6 seconds
+and waits before each sync and after each report of progress, so a test can see "Syncing" and the counts rise. A
+release build has neither. The test asks the script for each step
 over a port on the loopback address, so no pairing secret is passed as a launch argument.
 
 ## Sync the copy from the computer
@@ -469,9 +475,15 @@ the sync still removes what the computer no longer has, but the chats started on
 started on the phone are removed only when a paired computer tells the phone, after that first sync, that
 everything about the person was erased. Nothing goes to the computer.
 
-`SyncHolder` in `feature/status` is the state the pages will show, and neither app builds it yet: the
-screens that use it come in the next changes. What the apps do today is record the computer in the copy
-when a pairing completes. The holder runs a sync when the app comes to the front, every minute while it
+`SyncHolder` in `feature/status` is the state the pages show. The iPhone app builds it (`App/SyncModel.swift`) and
+shows it in three places. The loading screen of the first copy (`Features/Status/FirstCopyScreen.swift`) lies over
+the tabs while a first copy runs and the computer answers, so the page the person was on is still there when it
+ends: three steps with their counts, a bar filled a third for each step, no time left. The notice at the top of a
+page (`Core/SyncNoticeRow.swift`) is the first row of the Chat, Memory and Settings pages, so it goes away with the
+page when they scroll; the frame gives it to every page but the Glasshouse page, which has nothing to sync, and
+nothing shows while all is fine. "Sync now" and the time of the last sync are on the Computer page. A pairing that
+completes starts the first copy at once. The Android app does not build the holder yet. The holder runs a sync when
+the app comes to the front, every minute while it
 stays there, and when a person asks for one. It says "syncing" and "just synced" only for a sync the person
 waits for, and "not reachable" once when the computer stops answering. A sync that is cut shows no notice and
 leaves "last synced" where it was. The other link states (not paired, no network permission, a pairing that

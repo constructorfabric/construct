@@ -7,17 +7,22 @@ import UIKit
 struct ComputerPage: View {
     @StateObject private var model: ComputerModel
     @State private var pairing: PairingMethod?
+    private let syncNow: () -> Void
 
     init(
         status: AnyPublisher<ComputerStatus, Never>,
         connection: PhoneConnection,
         copy: CopyStore,
         activity: @escaping (PairResult) -> ComputerActivity,
-        retry: @escaping () -> Void
+        retry: @escaping () -> Void,
+        syncNow: @escaping () -> Void,
+        afterPairing: @escaping () -> Void
     ) {
         _model = StateObject(wrappedValue: ComputerModel(
-            status: status, connection: connection, copy: copy, activity: activity, retry: retry
+            status: status, connection: connection, copy: copy, activity: activity, retry: retry,
+            afterPairing: afterPairing
         ))
+        self.syncNow = syncNow
     }
 
     var body: some View {
@@ -29,6 +34,7 @@ struct ComputerPage: View {
                 pairing = method
             },
             retry: model.retry,
+            syncNow: syncNow,
             unpair: model.unpair
         )
         .navigationTitle("Computer")
@@ -110,6 +116,7 @@ private final class ComputerModel: ObservableObject {
     private let connection: PhoneConnection
     private let copy: CopyStore
     private let activity: (PairResult) -> ComputerActivity
+    private let afterPairing: () -> Void
     private var observer: AnyCancellable?
 
     init(
@@ -117,12 +124,14 @@ private final class ComputerModel: ObservableObject {
         connection: PhoneConnection,
         copy: CopyStore,
         activity: @escaping (PairResult) -> ComputerActivity,
-        retry: @escaping () -> Void
+        retry: @escaping () -> Void,
+        afterPairing: @escaping () -> Void
     ) {
         self.connection = connection
         self.copy = copy
         self.activity = activity
         self.retry = retry
+        self.afterPairing = afterPairing
         observer = status.sink { [weak self] in self?.status = $0 }
     }
 
@@ -150,6 +159,8 @@ private final class ComputerModel: ObservableObject {
                 }
                 operation = outcome
                 paired = outcome.paired
+                // The first copy starts as soon as the phone is paired, not at the next check.
+                if outcome.paired { afterPairing() }
             } catch {
                 // The shared code reports every failure as a PairResult, so only a cancelled task lands here.
                 // Swift still needs the catch, because every Kotlin suspend function is `async throws`.

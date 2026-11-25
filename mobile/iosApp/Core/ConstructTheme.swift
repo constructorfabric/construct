@@ -81,8 +81,10 @@ enum ConstructTheme {
         static let rowGap: CGFloat = 2
         /// The icon in the middle of an empty page.
         static let iconLarge: CGFloat = 40
-        /// The dot of the connection line.
+        /// The dot beside a status word.
         static let dot: CGFloat = 8
+        /// The bar of the first copy.
+        static let bar: CGFloat = 8
     }
 
     /// The loading line of a web page, along the bottom of the address bar, and the look of a control that has

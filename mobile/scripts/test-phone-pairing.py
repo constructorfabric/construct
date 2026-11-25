@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Runs the Computer page test of the app against the phone_pairing example on a disposable emulator or Simulator."""
+"""Runs the Computer page test of the app, and with --sync the iPhone sync test, against the phone_pairing example on
+a disposable emulator or Simulator."""
 
 import argparse
 import contextlib
@@ -27,6 +28,9 @@ SIMULATOR_ANSWER_TIMEOUT = 60
 ANDROID_PATH = f"files/{FIXTURE}"
 ANDROID_COMPUTER_TEST = "cf.construct.mobile.android.ComputerPageTest"
 IOS_COMPUTER_TEST = "ConstructUITests/ComputerPageTests/testComputerPage"
+IOS_SYNC_TEST = "ConstructUITests/SyncTests/testSync"
+# The sync test waits for a loading screen that is slowed on purpose, then for checks, so it runs longer.
+SYNC_TIMEOUT = 600
 # The test logs this value; the log check must find it, or it is not reading the device log.
 CANARY = "c3" * 32
 
@@ -100,24 +104,25 @@ class Ios:
     host = "127.0.0.1"
     bind = "127.0.0.1:0"
 
-    def __init__(self, device, build, screenshots=None):
+    def __init__(self, device, build, screenshots=None, only_testing=IOS_COMPUTER_TEST, name="ComputerPage"):
         self.device = device
+        self.only_testing = only_testing
         manifests = list((Path(build) / "Build" / "Products").glob("Construct_iphonesimulator*.xctestrun"))
         if len(manifests) != 1:
             raise ValueError("Use a fresh build-for-testing directory with one Simulator test run.")
         self.manifest = str(manifests[0])
         self.screenshots = Path(screenshots).resolve() if screenshots else None
-        self.result = self.screenshots / "ComputerPage.xcresult" if self.screenshots else None
+        self.result = self.screenshots / f"{name}.xcresult" if self.screenshots else None
         if self.result:
             if self.result.exists():
-                raise ValueError("Use a screenshot directory without an earlier ComputerPage.xcresult.")
+                raise ValueError(f"Use a screenshot directory without an earlier {name}.xcresult.")
             self.screenshots.mkdir(parents=True, exist_ok=True)
         self.since = time.strftime("%Y-%m-%d %H:%M:%S")
 
     def command(self):
         result = ("-resultBundlePath", str(self.result)) if self.result else ()
         return ("xcodebuild", "-xctestrun", self.manifest, "-destination", f"id={self.device}",
-                "-parallel-testing-enabled", "NO", *result, f"-only-testing:{IOS_COMPUTER_TEST}",
+                "-parallel-testing-enabled", "NO", *result, f"-only-testing:{self.only_testing}",
                 "test-without-building")
 
     def environment(self, readiness_port):
@@ -195,10 +200,11 @@ def agent_line(lines, deadline):
 
 
 @contextlib.contextmanager
-def agent(binary, device, directory, protected, bind=None):
+def agent(binary, device, directory, protected, bind=None, data=None):
+    data_arguments = ("--data", str(data)) if data else ()
     with subprocess.Popen((binary, "--control", "--host", device.host, "--bind", bind or device.bind,
-                           "--dir", str(directory)), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL, text=True) as process:
+                           "--dir", str(directory), *data_arguments), stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) as process:
         lines = Queue()
         reader = Thread(target=read_agent_output, args=(process.stdout, lines), daemon=True)
         reader.start()
@@ -221,7 +227,7 @@ def agent(binary, device, directory, protected, bind=None):
 
 
 @contextlib.contextmanager
-def test(device, protected, digests, readiness_port=None):
+def test(device, protected, digests, readiness_port=None, name="computerPage", timeout=RUNNER_TIMEOUT):
     with tempfile.TemporaryFile(mode="w+") as output:
         env = device.environment(readiness_port)
         with subprocess.Popen(device.command(), stdout=output, stderr=subprocess.STDOUT, env=env) as process:
@@ -229,7 +235,7 @@ def test(device, protected, digests, readiness_port=None):
             code = 1
             try:
                 yield process
-                code = process.wait(timeout=RUNNER_TIMEOUT)
+                code = process.wait(timeout=timeout)
             except (RuntimeError, subprocess.TimeoutExpired) as error:
                 failure = str(error) if isinstance(error, RuntimeError) else "The test runner timed out."
             finally:
@@ -242,10 +248,10 @@ def test(device, protected, digests, readiness_port=None):
             if failure or code != 0 or not passed:
                 reason = failure or "The test runner did not report a passing test."
                 # The log was checked for pairing material above, so its tail can say what failed.
-                raise RuntimeError(f"computerPage: {reason} Exit code: {code}.\n{log[-3000:]}")
+                raise RuntimeError(f"{name}: {reason} Exit code: {code}.\n{log[-3000:]}")
             if contains_pairing_material(log, protected, digests):
                 raise RuntimeError("An app test exposed a pairing credential.")
-            print("computerPage passed")
+            print(f"{name} passed")
 
 
 def wait_for(device, name, test_process):
@@ -331,9 +337,15 @@ def verify_ios_computer_page(args, device):
     protected = set()
     digests = set()
     with tempfile.TemporaryDirectory(prefix="construct-computer-test-") as temporary:
-        directory = Path(temporary)
+        directory = Path(temporary) / "agent"
+        directory.mkdir()
+        # The program answers the sync commands as the real one does: the app syncs after pairing and on Try again.
+        # It serves what the app shows before pairing, so what the sync copies is what the test looks for.
+        data = Path(temporary) / "data.json"
+        write_sync_data(data, [sync_chat("c1", "Plan my week")],
+                        sync_facts([("name", "Alex Example"), ("title", "Mobile developer")]))
         with socket.create_server(("127.0.0.1", 0)) as listener:
-            with agent(args.agent, device, directory, protected) as (first, _, offer):
+            with agent(args.agent, device, directory, protected, data=data) as (first, _, offer):
                 with test(device, protected, digests, listener.getsockname()[1]) as app:
                     with fixture_request(listener, app, "offer") as client:
                         client.sendall((offer["address"] + "\n" + offer["code"]).encode())
@@ -346,11 +358,80 @@ def verify_ios_computer_page(args, device):
                     # closes first, and the restarted agent keeps running until the test ends.
                     with contextlib.ExitStack() as restarted:
                         with fixture_request(listener, app, "restart") as client:
-                            restarted.enter_context(agent(args.agent, device, directory, protected, offer["address"]))
+                            restarted.enter_context(agent(args.agent, device, directory, protected, offer["address"], data))
                             client.sendall(b"ready")
                         if app.wait(timeout=RUNNER_TIMEOUT) != 0:
                             raise RuntimeError("The Computer page test did not complete.")
         verify_device_logs(device, protected, digests, marker="Computer page fixture started")
+        device.collect_screenshots()
+
+
+def sync_chat(chat_id, title):
+    started = "2026-11-01T10:00:00Z"
+    return {"id": chat_id, "title": title, "started": started,
+            "items": [{"kind": "message", "role": "user", "time": started, "text": "Hello"}]}
+
+
+def sync_facts(properties):
+    """Facts for the data file: `properties` is a list of (property, value) pairs."""
+    return [{"fact_id": f"f{number}", "entity_kind": "skill", "property": name, "value": value,
+             "stored_at": "2026-11-01T10:00:00Z"} for number, (name, value) in enumerate(properties, 1)]
+
+
+def write_sync_data(path, chats, facts=None):
+    """Made-up facts and chats for the computer's test program, which reads the file again at every command."""
+    facts = facts or sync_facts([(f"Skill {number}", f"Level {number}") for number in range(1, 13)])
+    path.write_text(json.dumps({"zone": "Europe/Berlin", "facts": {"version": 1, "items": facts},
+                                "chats": chats, "document": None, "sessions": []}))
+
+
+def verify_ios_sync(args, device):
+    """The sync test: the program serves the data file, and the test asks the script to add a chat, stop and restart."""
+    protected = set()
+    digests = set()
+    chats = [sync_chat("c1", "Plan the trip"), sync_chat("c2", "Tea notes"), sync_chat("c3", "Garden ideas"),
+             sync_chat("c4", "Reading list")]
+    with tempfile.TemporaryDirectory(prefix="construct-sync-test-") as temporary:
+        root = Path(temporary)
+        directory = root / "agent"
+        directory.mkdir()
+        data = root / "data.json"
+        write_sync_data(data, chats)
+        with socket.create_server(("127.0.0.1", 0)) as listener, contextlib.ExitStack() as running:
+            process, _, offer = running.enter_context(agent(args.agent, device, directory, protected, data=data))
+            current = [process]
+
+            def answer(command):
+                if command == "offer":
+                    return offer["address"] + "\n" + offer["code"]
+                if command == "chat":
+                    chats.append(sync_chat("c5", "A chat from the computer"))
+                    write_sync_data(data, chats)
+                    return "ready"
+                if command == "stop":
+                    digests.add(credential_digest(directory))
+                    send(current[0], "stop")
+                    current[0].wait(timeout=CONTROL_TIMEOUT)
+                    return "ready"
+                if command == "restart":
+                    current[0] = running.enter_context(
+                        agent(args.agent, device, directory, protected, offer["address"], data)
+                    )[0]
+                    return "ready"
+                raise RuntimeError(f"The Simulator asked for {command}.")
+
+            with test(device, protected, digests, listener.getsockname()[1], "sync", SYNC_TIMEOUT) as app:
+                deadline = time.monotonic() + SYNC_TIMEOUT
+                listener.settimeout(1)
+                while app.poll() is None and time.monotonic() < deadline:
+                    try:
+                        client, _ = listener.accept()
+                    except TimeoutError:
+                        continue
+                    with client, client.makefile("rb") as request:
+                        client.settimeout(CONTROL_TIMEOUT)
+                        client.sendall(answer(request.readline(32).decode().strip()).encode())
+        verify_device_logs(device, protected, digests, marker="Sync fixture started")
         device.collect_screenshots()
 
 
@@ -414,6 +495,7 @@ def main():
     parser.add_argument("--ios-device-type", help="simctl device type identifier")
     parser.add_argument("--ios-runtime", help="simctl runtime identifier")
     parser.add_argument("--ios-theme", choices=("light", "dark"), help="Simulator appearance")
+    parser.add_argument("--sync", action="store_true", help="run the iPhone sync test instead of the Computer page test")
     parser.add_argument("--screenshots", help="optional directory for the screenshots of the test")
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
@@ -425,7 +507,10 @@ def main():
     if not (args.ios_device_type and args.ios_runtime):
         parser.error("the iPhone creates its own Simulator and needs --ios-device-type and --ios-runtime")
     with disposable_simulator(args.ios_device_type, args.ios_runtime, args.ios_build, args.ios_theme) as device:
-        verify_ios_computer_page(args, Ios(device, args.ios_build, args.screenshots))
+        if args.sync:
+            verify_ios_sync(args, Ios(device, args.ios_build, args.screenshots, IOS_SYNC_TEST, "Sync"))
+        else:
+            verify_ios_computer_page(args, Ios(device, args.ios_build, args.screenshots))
 
 
 if __name__ == "__main__":
