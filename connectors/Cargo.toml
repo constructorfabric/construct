@@ -3,15 +3,19 @@ name = "connectors"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
-description = "Readers of the session logs of coding tools: record types and the tool trait"
+description = "Readers of the sessions of AI tools: session logs, the Claude app's cache, record types and the tool trait"
 license.workspace = true
 publish = false
 
-# Plain std, serde and serde_json only: no agent, no async runtime, nothing specific to one
-# operating system, so the crate can move to its own repository.
+# No agent and no async runtime, so the crate can move to its own repository. Besides serde, it
+# reads LevelDB files (leveldb-core, and crc32c for the checksums of the manifest) and
+# Snappy-compressed values (snap) for the Claude app's cache.
 [dependencies]
+crc32c = "=0.6.9"
+leveldb-core = "=0.1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.154"
+snap = "=1.1.2"
 
 [lints]
 workspace = true
