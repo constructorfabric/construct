@@ -13,6 +13,10 @@ enum Message {
     static let other = "The page cannot open."
     static let noStart = "No start address is set. Type an address above to open a page."
     static let onlyWeb = "Only http and https addresses open here."
+    static let screenshot = "A screenshot of this page cannot be blocked on this iPhone."
+    static let downloadBlocked = "Download is blocked in restricted mode."
+    static let printBlocked = "Print is blocked in restricted mode."
+    static let shareBlocked = "Share is blocked in restricted mode."
 }
 
 /// What the Glasshouse page tests share: the app, the test server of the Mac that runs them
@@ -34,9 +38,13 @@ class GlasshouseTestCase: XCTestCase {
         post(TestSite.onlineNotification)
     }
 
-    func launch(startAddress: String? = nil, forgetData: Bool = true) {
+    /// Starts the app. [pasteboardText] is put on the pasteboard by the app itself as it starts.
+    func launch(startAddress: String? = nil, forgetData: Bool = true, pasteboardText: String? = nil) {
         app.launchArguments = forgetData ? ["--glasshouse-forget-data"] : []
         app.launchEnvironment["CONSTRUCT_GLASSHOUSE_START_ADDRESS"] = startAddress ?? ""
+        if let pasteboardText {
+            app.launchEnvironment["CONSTRUCT_GLASSHOUSE_TEST_PASTEBOARD"] = pasteboardText
+        }
         app.launch()
     }
 
