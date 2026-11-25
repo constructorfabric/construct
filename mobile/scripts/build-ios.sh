@@ -40,6 +40,13 @@ prop() {
   sed -n "s/^ *$1: *//p" "$spec" | head -n 1 | tr -d '"'
 }
 
+# The address the Glasshouse page opens first is part of the build, and the committed spec leaves it empty.
+# To build for an environment of your own, give it in the environment: GLASSHOUSE_START_ADDRESS=https://...
+start_address=()
+if [ -n "${GLASSHOUSE_START_ADDRESS:-}" ]; then
+  start_address=("GLASSHOUSE_START_ADDRESS=$GLASSHOUSE_START_ADDRESS")
+fi
+
 bundle_id=$(prop APP_BUNDLE_ID)
 is_final=$(prop APP_BUNDLE_ID_IS_FINAL)
 [ -n "$bundle_id" ] || fail "APP_BUNDLE_ID is not set in $spec"
@@ -114,7 +121,7 @@ archive() {
   echo "Archive: $version ($build)"
   xcodebuild -project iosApp/Construct.xcodeproj -scheme Construct -configuration Release \
     -destination generic/platform=iOS -derivedDataPath build/ios-device \
-    -archivePath "$out/Construct.xcarchive" "$@" -quiet archive
+    -archivePath "$out/Construct.xcarchive" "$@" ${start_address[@]+"${start_address[@]}"} -quiet archive
   verify_archive "$out"
 }
 
@@ -218,7 +225,7 @@ xcrun simctl bootstatus "$udid" -b >/dev/null
 (cd iosApp && xcodegen generate --quiet)
 derived=build/ios
 xcodebuild -project iosApp/Construct.xcodeproj -scheme Construct \
-  -destination "id=$udid" -derivedDataPath "$derived" -quiet build
+  -destination "id=$udid" -derivedDataPath "$derived" ${start_address[@]+"${start_address[@]}"} -quiet build
 app="$derived/Build/Products/Debug-iphonesimulator/Construct.app"
 [ -d "$app" ] || fail "the build made no app"
 

@@ -63,9 +63,6 @@ export const GLASSHOUSE_STATE_CHANNEL = 'glasshouse:state';
 /** The environment variable that replaces the built-in start address. */
 export const START_ADDRESS_VARIABLE = 'CONSTRUCT_GLASSHOUSE_URL';
 
-/** The address the page opens when the environment says nothing. */
-export const builtInStartAddress = 'http://constructorfabric.com/';
-
 /** The session of the page: its own storage, kept on disk, apart from the app's. */
 export const GLASSHOUSE_PARTITION = 'persist:glasshouse';
 
@@ -96,6 +93,29 @@ export function typedAddress(raw: unknown): string | null {
   // The one gate on web addresses is the one the system browser's link uses.
   return url.hostname === '' ? null : webAddress(url.href);
 }
+
+const publicStartAddress = 'http://constructorfabric.com/';
+
+/**
+ * The address the page opens when the environment says nothing: the one given when the app was
+ * packaged, else the public one. A packaged value that is not a web address is ignored.
+ */
+export function packagedStartAddress(packaged: unknown): string {
+  return typeof packaged === 'string' && typedAddress(packaged) !== null
+    ? packaged
+    : publicStartAddress;
+}
+
+// Put in by `vite.main.config.mts` from `CONSTRUCT_GLASSHOUSE_URL` in the environment of the build.
+// It is not defined in the unit tests, nor in the bundles that do not use the address.
+declare const __GLASSHOUSE_PACKAGED_START_ADDRESS__: string | undefined;
+
+/** The address the page opens when the environment says nothing. */
+export const builtInStartAddress: string = packagedStartAddress(
+  typeof __GLASSHOUSE_PACKAGED_START_ADDRESS__ === 'undefined'
+    ? undefined
+    : __GLASSHOUSE_PACKAGED_START_ADDRESS__,
+);
 
 /**
  * The start address: the environment's when it is a web address; none (`null`) when the variable

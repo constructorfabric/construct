@@ -8,6 +8,7 @@ import {
   withSandbox,
   builtInStartAddress,
   glasshouseUserAgent,
+  packagedStartAddress,
   problemOf,
   START_ADDRESS_VARIABLE,
   startAddress,
@@ -74,6 +75,22 @@ describe('the start address', () => {
   it('is the built-in address, a web address, when the environment says nothing', () => {
     expect(builtInStartAddress).toBe('http://constructorfabric.com/');
     expect(startAddress({})).toBe('http://constructorfabric.com/');
+  });
+});
+
+describe('the start address given when the app is packaged', () => {
+  it('is used when it is a web address', () => {
+    expect(packagedStartAddress('https://environment.example/')).toBe(
+      'https://environment.example/',
+    );
+  });
+
+  it('gives way to the public address when it is empty or not a web address', () => {
+    for (const packaged of [undefined, '', '   ', 'file:///x', 'two words', 5]) {
+      expect(packagedStartAddress(packaged), String(packaged)).toBe(
+        'http://constructorfabric.com/',
+      );
+    }
   });
 });
 
