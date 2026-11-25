@@ -186,8 +186,10 @@ its address bar takes their place.
 - **Start address.** `GLASSHOUSE_START_ADDRESS` in `iosApp/project.yml` puts it into the build: the Info.plist key
   `ConstructGlasshouseStartAddress`, which `iosApp/GlasshouseInfo.plist` adds to the generated Info.plist (Xcode adds only
   the keys it knows by itself). It is empty, so the page says there is none and the person types an address. It is not a
-  setting of the app. A debug build takes `CONSTRUCT_GLASSHOUSE_START_ADDRESS` from its environment instead, for the
-  tests.
+  setting of the app. To build for an environment of your own without changing the file, give
+  `GLASSHOUSE_START_ADDRESS=https://...` in the environment of `scripts/build-ios.sh`: it is passed to Xcode as a build
+  setting, for the Simulator build and for the archive. A debug build takes `CONSTRUCT_GLASSHOUSE_START_ADDRESS` from its
+  environment instead, for the tests.
 - **User-Agent.** `applicationNameForUserAgent` is `Construct/<version>`, where `<version>` is the app's
   `CFBundleShortVersionString`, so the web view adds it last to its own User-Agent for the page and for everything the page
   asks for, from the first request on.
