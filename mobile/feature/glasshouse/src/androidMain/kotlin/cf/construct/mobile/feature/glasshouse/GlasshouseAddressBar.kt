@@ -54,10 +54,8 @@ private const val ADDRESS_HINT = "Address"
 private const val MIN_PROGRESS = 0.05f
 private const val PERCENT = 100f
 
-/** The tag of the address field, for tests. */
+// The tags the tests find the bar's parts by.
 const val ADDRESS_TAG = "glasshouse-address"
-
-/** The tag of the Reload button of the address bar, for tests. */
 const val BAR_RELOAD_TAG = "glasshouse-bar-reload"
 
 /**

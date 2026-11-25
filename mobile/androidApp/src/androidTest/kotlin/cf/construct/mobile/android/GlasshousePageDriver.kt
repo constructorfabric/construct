@@ -90,10 +90,18 @@ internal class TestServer(
     }
 
     companion object {
-        /** The server of this run, or null when the run did not start one. */
+        /**
+         * The server of this run, or null when the run did not start one (a plain `connectedCheck`, whose tests then
+         * skip themselves). The runner marks its runs with `glasshouseRunner`: such a run with no server is an error,
+         * not a run of skipped tests that reports OK.
+         */
         fun fromArguments(): TestServer? {
             val arguments = InstrumentationRegistry.getArguments()
-            val trusted = arguments.getString("glasshouseTrusted") ?: return null
+            val trusted = arguments.getString("glasshouseTrusted")
+            if (trusted == null) {
+                check(arguments.getString("glasshouseRunner") == null) { "the runner gave no test server" }
+                return null
+            }
             return TestServer(
                 trusted,
                 arguments.getString("glasshouseUntrusted").orEmpty(),
@@ -139,7 +147,7 @@ internal class PageDriver(
     /** Taps the address bar and waits for the text field that appears under the tap to take the focus. */
     fun startTyping() {
         compose.onNodeWithTag(ADDRESS_TAG).performClick()
-        compose.waitUntil(FOCUS_WAIT_MS) { typing() }
+        waitUntil(FOCUS_WAIT_MS, "the address field to take the focus") { typing() }
     }
 
     /** Taps the address bar, types [address] into it and presses Go. */
@@ -177,9 +185,15 @@ internal class PageDriver(
         return total
     }
 
-    /** What the page's script says [script] is; the page's own text, JSON-decoded. */
-    fun evaluate(script: String): String {
-        val web = checkNotNull(webView()) { "the page has no web view yet" }
+    /**
+     * What the page's script says [script] is; the page's own text, JSON-decoded. It asks the page on the screen, or
+     * the web view [on] when the page is not on the screen (the person is on another page of the app).
+     */
+    fun evaluate(
+        script: String,
+        on: WebView? = webView(),
+    ): String {
+        val web = checkNotNull(on) { "the page has no web view yet" }
         val done = CountDownLatch(1)
         var result = ""
         compose.runOnUiThread {
@@ -195,8 +209,8 @@ internal class PageDriver(
     private var lastFailure: Throwable? = null
 
     /** The text of the page, or an empty text while there is none. */
-    fun pageText(): String =
-        runCatching { evaluate("document.body ? document.body.innerText : ''") }
+    fun pageText(on: WebView? = webView()): String =
+        runCatching { evaluate("document.body ? document.body.innerText : ''", on) }
             .onFailure { lastFailure = it }
             .getOrDefault("")
 

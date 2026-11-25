@@ -1,6 +1,5 @@
 package cf.construct.mobile.android
 
-import android.graphics.Bitmap
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTextReplacement
@@ -9,7 +8,6 @@ import cf.construct.mobile.feature.glasshouse.ADDRESS_TAG
 import org.junit.Assume.assumeNotNull
 import org.junit.Rule
 import org.junit.Test
-import java.io.File
 
 /**
  * Takes a screenshot of the page in each of its states, for the pull request. The runner sets the theme, passes its
@@ -19,7 +17,6 @@ class GlasshouseShotsTest {
     @get:Rule
     val compose = createAndroidComposeRule<MainActivity>()
 
-    private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val theme = InstrumentationRegistry.getArguments().getString("glasshouseTheme")
     private val server = TestServer.fromArguments()
 
@@ -35,15 +32,7 @@ class GlasshouseShotsTest {
         compose.waitForIdle()
         // The emulator draws slowly: let the frame that shows this state reach the screen.
         Thread.sleep(FRAME_PAUSE_MS)
-        val folder =
-            File(
-                checkNotNull(instrumentation.targetContext.getExternalFilesDir(null)),
-                "glasshouse-shots",
-            ).apply {
-                mkdirs()
-            }
-        val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
-        File(folder, "$theme-$state.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        page.snapshot("$theme-$state")
     }
 
     @Test

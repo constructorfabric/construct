@@ -36,6 +36,7 @@ import sys
 import threading
 import time
 import zlib
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -166,7 +167,7 @@ def make_handler(site, state, context):
                 )
                 return self.send(200, page("Signed in", "<h1>Signed in</h1><p>Welcome back, Sam.</p>"), headers=headers)
             if path == "/account":
-                jar = dict(part.strip().split("=", 1) for part in cookie.split(";") if "=" in part)
+                jar = {name: morsel.value for name, morsel in SimpleCookie(cookie).items()}
                 signed = jar.get("session") == "garden-session"
                 remembered = jar.get("remember") == "garden-remember"
                 text = "Signed in as Sam" if signed else "Signed out"

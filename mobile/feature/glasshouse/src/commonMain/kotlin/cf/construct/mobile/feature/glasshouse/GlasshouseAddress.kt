@@ -28,6 +28,12 @@ object GlasshouseAddress {
     fun isWeb(address: String): Boolean = parse(clean(address)) != null
 
     /**
+     * The host of a web [address] with its port and without its login, as the rest of this object reads the host
+     * (`https://user@example.com:8443/a?b#c` gives `example.com:8443`), or null when it is not a web address.
+     */
+    fun host(address: String): String? = parse(clean(address))?.let { hostOf(it.substringAfter("://")) }
+
+    /**
      * The start address out of what the app's build configuration holds: [typed] of it, or null when it
      * is missing, empty or not a web address. There is no built-in address to fall back to.
      */
@@ -55,7 +61,9 @@ private fun parse(text: String): String? {
 }
 
 /** The host is what stands between the login (up to the last `@`) and the path, query or fragment. */
+private fun hostOf(rest: String): String = rest.takeWhile { it !in "/\\?#" }.substringAfterLast('@')
+
 private fun hasHost(rest: String): Boolean {
-    val host = rest.takeWhile { it !in "/\\?#" }.substringAfterLast('@')
+    val host = hostOf(rest)
     return host.isNotEmpty() && !host.startsWith(":") && host.none { it.isISOControl() || it.isWhitespace() }
 }

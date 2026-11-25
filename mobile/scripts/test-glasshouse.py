@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -29,7 +30,7 @@ CERTIFICATES = MOBILE / "androidApp/build/generated/glasshouseTest/server"
 SERVER = Path(__file__).resolve().parent / "glasshouse_test_server.py"
 PACKAGE = "cf.construct.mobile.android"
 RUNNER = "cf.construct.mobile.test/androidx.test.runner.AndroidJUnitRunner"
-RUN_TIMEOUT = 1200
+RUN_TIMEOUT = 2400
 STATES = ("nostart", "refused", "ready", "typing", "loading", "notfound", "certificate", "connection-refused",
           "stopped", "offline")
 
@@ -55,7 +56,9 @@ class Emulator:
                           check=False, timeout=RUN_TIMEOUT)
         print(result.stdout)
         print(result.stderr, end="")
-        return result.returncode == 0 and "OK (" in result.stdout and "FAILURES" not in result.stdout
+        # A test that skips itself still counts as run, so say what the run has to hold: tests, and no failure.
+        ran = re.search(r"^OK \((\d+) tests?\)", result.stdout, re.MULTILINE)
+        return result.returncode == 0 and ran is not None and int(ran.group(1)) > 0 and "FAILURES" not in result.stdout
 
     def theme(self, name):
         self.run("shell", "cmd", "uimode", "night", "yes" if name == "dark" else "no")
@@ -88,7 +91,8 @@ def main():
     assert server.stdin is not None and server.stdout is not None
     try:
         sites = json.loads(server.stdout.readline())
-        arguments = {"glasshouseTrusted": sites["trusted"], "glasshouseUntrusted": sites["untrusted"],
+        # `glasshouseRunner` makes a test that finds no server fail, where on its own it would skip and print OK.
+        arguments = {"glasshouseRunner": "1", "glasshouseTrusted": sites["trusted"], "glasshouseUntrusted": sites["untrusted"],
                      "glasshousePlain": sites["plain"], "glasshouseFlaky": sites["flaky"]}
         emulator.run("install", "-r", "-t", str(APK))
         emulator.run("install", "-r", "-t", str(TEST_APK))

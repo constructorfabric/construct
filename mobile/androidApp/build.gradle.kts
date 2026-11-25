@@ -37,7 +37,11 @@ android {
                 .get()
                 .toInt()
         versionCode = providers.gradleProperty("constructVersionCode").get().toInt()
-        versionName = providers.gradleProperty("constructVersionName").get()
+        versionName =
+            providers.gradleProperty("constructVersionName").get().also {
+                // The Glasshouse page sends the name as a User-Agent token, which is one word.
+                require(it.isNotEmpty() && it.none(Char::isWhitespace)) { "constructVersionName must be one word" }
+            }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The chat core is built for these two only; this keeps the 32-bit libraries of the JNA AAR out, so
         // a device of another ABI cannot install an app whose core would not load.
@@ -197,11 +201,8 @@ tasks.configureEach {
     }
 }
 
-// The page tests open pages from a test server over https. Two certificates are made here with the JDK's keytool for
-// each build folder and are not stored: `trusted` is the one the debug build, and only the debug build, accepts (the
-// `debug-overrides` of src/debug/res/xml/network_security_config.xml are read only by an app that is debuggable, and
-// the file is added to the debug variant alone); `untrusted` is for the site whose certificate nothing trusts. The
-// test server reads both from `server` in the output folder (scripts/test-glasshouse.py).
+// The certificates of the page tests' server, made for each build and not stored; the README's "The Glasshouse page
+// on Android" says what trusts which. The test server reads them from `server` in the output folder.
 abstract class GlasshouseTestCertificates : DefaultTask() {
     @get:OutputDirectory
     abstract val resDir: DirectoryProperty
