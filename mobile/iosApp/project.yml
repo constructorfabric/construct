@@ -14,6 +14,10 @@ settings:
     # Whether that id is the final one. scripts/build-ios.sh always builds for the Simulator and takes
     # the screenshots; when it is "YES", it also sends the build to TestFlight.
     APP_BUNDLE_ID_IS_FINAL: "YES"
+    # The address the Glasshouse page opens first, put into the app's Info.plist (GlasshouseInfo.plist). Empty means
+    # none: the page says so and the person types an address. There is no built-in one, because the phone blocks plain http and the
+    # computer's address is plain http.
+    GLASSHOUSE_START_ADDRESS: ""
     # The shared Kotlin framework, built by the Gradle project one folder up: the debug framework
     # for the Simulator, the release iosArm64 framework for a device.
     KOTLIN_FRAMEWORK_DIR: $(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework
@@ -61,11 +65,14 @@ targets:
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
         INFOPLIST_KEY_NSCameraUsageDescription: Construct uses the camera to scan the pairing QR code on your computer.
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Construct uses your local network to connect to your paired computer.
+        # Xcode puts only the keys it knows into the generated Info.plist, so the start address of the Glasshouse page
+        # (a key of this app) comes from this file, which Xcode merges into it.
+        INFOPLIST_FILE: GlasshouseInfo.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.1.1"
         # <YYMMDD>.<count of the day> in UTC for TestFlight builds.
-        CURRENT_PROJECT_VERSION: "261124.2"
+        CURRENT_PROJECT_VERSION: "261125.1"
   ConstructTests:
     type: bundle.unit-test
     platform: iOS

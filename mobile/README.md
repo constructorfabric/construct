@@ -171,6 +171,65 @@ It uses a separate Android app ID or a disposable iOS Simulator.
   system cannot (the iPhone's `URL(string:)` gives nil), encode it for the system, and when that fails too
   report `pageFailed` with `Other`.
 
+### The Glasshouse page on iPhone
+
+`RootView` makes one `GlasshouseModel` (`iosApp/Features/Glasshouse`) when the app starts and keeps it, so a page that
+SwiftUI draws again shows the same web view. The model holds the `GlasshouseHolder` and the one `WKWebView`, which it
+makes when the person first opens the page. The page, what was typed in it and its history stay while the person is on
+another page of the app, and a page that was loading keeps loading. The page has no title bar and no connection line:
+its address bar takes their place.
+
+- **Address bar and toolbar.** One rounded bar under the status area with the lock (only for an `https` page that
+  opened), the host and reload. Tapped, it shows the whole address selected, with "Cancel" beside it, and the keyboard's
+  Go key opens it. A refused address stays in the bar and the message is under it. Back and forward are above the tab
+  bar, and a swipe from the edge of the screen goes back and forward too.
+- **Start address.** `GLASSHOUSE_START_ADDRESS` in `iosApp/project.yml` puts it into the build: the Info.plist key
+  `ConstructGlasshouseStartAddress`, which `iosApp/GlasshouseInfo.plist` adds to the generated Info.plist (Xcode adds only
+  the keys it knows by itself). It is empty, so the page says there is none and the person types an address. It is not a
+  setting of the app. A debug build takes `CONSTRUCT_GLASSHOUSE_START_ADDRESS` from its environment instead, for the
+  tests.
+- **User-Agent.** `applicationNameForUserAgent` is `Construct/<version>`, where `<version>` is the app's
+  `CFBundleShortVersionString`, so the web view adds it last to its own User-Agent for the page and for everything the page
+  asks for, from the first request on.
+- **Cookies.** The web view uses `WKWebsiteDataStore.default()`: the app's own persistent store, one set for every page,
+  and not the phone's browser's. A cookie that has an end date is still there after the app restarts; one with none
+  (a session cookie) is the page's to lose when the app ends, as in the phone's own browser.
+- **What opens.** Only web addresses: a link, a redirect or a new window to any other kind of address does nothing and
+  starts no other app, and a window a page asks for opens in the same page. A file the web view cannot show is not
+  downloaded. The app never answers a certificate challenge, so a certificate the system does not trust is never
+  accepted. Plain `http` is the phone's own default: a site with a name is refused (App Transport Security, and the
+  Info.plist has no exception), and the page says it cannot open. An address that is an IP address or a name with no dot
+  is not covered by that rule, as in the phone's own browser.
+- **Permissions.** A page that asks for the camera or the microphone is refused in code, with no prompt, and so is the
+  motion and orientation request. A request for the location has no call to refuse it in (the system asks only when the
+  app has a usage text, and it has none, so the request would wait for ever): `GlasshouseRefusals` is a script that runs
+  first in every frame and answers it with "permission denied". The app has no usage text for the microphone, the
+  location or the photos, so the system never asks for them; the camera and local network texts are there for pairing
+  with a computer.
+- **Problems.** The system's error codes become the kinds of problem in `GlasshouseProblems`: a name that does not
+  resolve is "not found", a connection that fails is "refused", a certificate the system does not trust is
+  "certificate", and a page asked for with no network is "offline" at once: the app asks the system whether there is a
+  network before it opens or reloads a page. A web view whose process stopped says "stopped working", and Reload makes it
+  start a new one. A page that fails before it shows leaves the page before it in the web view, so back returns to that
+  page.
+
+The page tests (`UITests/GlasshouseTests`) open real pages from a test server on the Mac over `https`. The app has no
+way to trust a certificate and no code for the tests but two debug Simulator hooks (`GlasshouseReachability`, which
+lets a test say the phone has no network, and `--glasshouse-forget-data`, which starts a test with no cookies); a
+release build has neither. `scripts/test-glasshouse-ios.py` makes two certificates with `openssl`, puts the first one into the
+trust store of a Simulator it creates and deletes (`simctl keychain add-root-cert`), starts
+`scripts/glasshouse_test_server.py` with both, runs the tests, and takes a screenshot of each state in both themes. The
+second certificate is trusted by nothing and stands for a site that cannot be trusted.
+
+```sh
+cd iosApp && xcodegen generate && cd ..
+xcodebuild -project iosApp/Construct.xcodeproj -scheme Construct -derivedDataPath <build folder> \
+ -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
+python3 scripts/test-glasshouse-ios.py --ios-build <build folder> \
+ --ios-device-type com.apple.CoreSimulator.SimDeviceType.iPhone-17 \
+ --ios-runtime com.apple.CoreSimulator.SimRuntime.iOS-27-2 --screenshots <folder>
+```
+
 ## Rules
 
 Data flows one way: the store, the state holder, the screen. A screen shows a state and passes on
