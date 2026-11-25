@@ -9,10 +9,16 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var selected = Page.chat
     @StateObject private var connection: ConnectionModel
+    @StateObject private var glasshouse: GlasshouseModel
 
     init(composition: Composition) {
         self.composition = composition
         _connection = StateObject(wrappedValue: ConnectionModel(connection: composition.phoneConnection))
+        // The shell keeps the Glasshouse page, so its web view is not made again when another page is shown.
+        _glasshouse = StateObject(wrappedValue: GlasshouseModel(
+            startAddress: GlasshouseStartAddress.configured(),
+            version: GlasshouseStartAddress.appVersion()
+        ))
         ConstructTheme.styleBars()
     }
 
@@ -32,6 +38,7 @@ struct RootView: View {
                     openSettings: { selected = .settings }
                 )
             case .memory: MemoryPage(construct: composition.construct)
+            case .glasshouse: GlasshousePage(model: glasshouse)
             case .settings:
                 let status = connection.state.value.computerStatus
                 SettingsPage(

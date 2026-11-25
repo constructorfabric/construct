@@ -2,6 +2,8 @@ import XCTest
 
 final class MovingBetweenPagesTests: XCTestCase {
     private let titles = ["Chat", "Memory", "Dashboard", "Glasshouse", "Settings"]
+    /// The Glasshouse page is a browser: its address bar takes the place of the title and of the connection line.
+    private let titledPages = ["Chat", "Memory", "Dashboard", "Settings"]
     private let app = XCUIApplication()
 
     override func setUp() {
@@ -17,12 +19,17 @@ final class MovingBetweenPagesTests: XCTestCase {
         for title in titles {
             app.tabBars.buttons[title].tap()
             XCTAssertTrue(app.tabBars.buttons[title].isSelected, "\(title) is not selected")
-            XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 5), "no navigation bar titled \(title)")
+            if title == "Glasshouse" {
+                XCTAssertTrue(app.buttons["glasshouse-host"].waitForExistence(timeout: 5), "no address bar")
+            } else {
+                let bar = app.navigationBars[title]
+                XCTAssertTrue(bar.waitForExistence(timeout: 5), "no navigation bar titled \(title)")
+            }
         }
     }
 
-    func testTheConnectionStateShowsOnEveryPage() {
-        for title in titles {
+    func testTheConnectionStateShowsOnEveryPageButTheBrowser() {
+        for title in titledPages {
             app.tabBars.buttons[title].tap()
             XCTAssertTrue(app.staticTexts["Not paired"].waitForExistence(timeout: 5), "no connection line on \(title)")
         }

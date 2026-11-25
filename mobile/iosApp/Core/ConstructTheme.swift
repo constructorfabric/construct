@@ -85,6 +85,16 @@ enum ConstructTheme {
         static let dot: CGFloat = 8
     }
 
+    /// The loading line of a web page, along the bottom of the address bar, and the look of a control that has
+    /// nothing to do.
+    enum Loading {
+        static let height: CGFloat = 3
+        /// The share of the line shown as soon as a page starts, so a start is seen before the first progress.
+        static let firstShare: CGFloat = 0.1
+        static let step: Double = 0.2
+        static let dimmed: Double = 0.45
+    }
+
     /// The spacing steps of the shared tokens, in points.
     enum Space {
         static let none: CGFloat = 0

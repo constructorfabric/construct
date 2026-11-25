@@ -15,7 +15,9 @@ struct AppFrame<Content: View>: View {
                 NavigationStack {
                     content(page)
                         .safeAreaInset(edge: .top, spacing: 0) {
-                            ConnectionLine(state: connection, onTryAgain: onTryAgain)
+                            if page.showsConnectionLine {
+                                ConnectionLine(state: connection, onTryAgain: onTryAgain)
+                            }
                         }
                         .navigationTitle(page.title)
                         .navigationBarTitleDisplayMode(.inline)
