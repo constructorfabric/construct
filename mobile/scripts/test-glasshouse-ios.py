@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs the Glasshouse page tests of the iPhone app in a disposable Simulator, against the test server on this Mac.
+"""Runs the Glasshouse page tests of the iPhone app in the shared Simulator, against the test server on this Mac.
 
 Build the app and its tests once, signed ad hoc (the Simulator of iOS 27 refuses an unsigned app its Keychain):
 
@@ -13,10 +13,11 @@ then run:
         --ios-device-type com.apple.CoreSimulator.SimDeviceType.iPhone-17 \\
         --ios-runtime com.apple.CoreSimulator.SimRuntime.iOS-27-2 [--screenshots <folder>]
 
-The script makes two certificates with `openssl` and a Simulator of its own. It puts the first certificate into that
-Simulator's trust store (`simctl keychain add-root-cert`), so the page tests load pages over https from this Mac;
-the second is trusted by nothing and stands for a site that cannot be trusted. Nothing about the certificates is in
-the app, and the Simulator is deleted at the end. The script starts `glasshouse_test_server.py`, runs the page tests
+The script makes two certificates with `openssl`. It uses the Simulator named "Construct Test" (shared_simulator.py):
+it resets the Simulator's Keychain, installs the app again, puts the first certificate into the Simulator's trust
+store (`simctl keychain add-root-cert`), so the page tests load pages over https from this Mac, and shuts the Simulator
+down at the end. The second certificate is trusted by nothing and stands for a site that cannot be trusted. Nothing
+about the certificates is in the app. The script starts `glasshouse_test_server.py`, runs the page tests
 (`ConstructUITests/GlasshouseTests`) and, with --screenshots, runs the screenshot test in the light and the dark
 theme and saves a picture of each state of the page. It also answers the test's one request that only a Mac can do:
 stopping the web process of the page. The exit status is 0 when every test passed.
@@ -33,15 +34,16 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shared_simulator  # noqa: E402
 
 MOBILE = Path(__file__).resolve().parents[1]
 SERVER = Path(__file__).resolve().parent / "glasshouse_test_server.py"
 TESTS = "ConstructUITests/GlasshouseTests"
 SHOTS_TEST = "ConstructUITests/GlasshouseShotsTests/testEveryStateForTheScreenshots"
 RUN_TIMEOUT = 1800
-SIMULATOR_READY_TIMEOUT = 600
 STATES = ("nostart", "ready", "refused", "typing", "loading", "notfound", "certificate", "connection-refused", "stopped",
           "offline")
 
@@ -71,33 +73,14 @@ def make_certificates(folder):
 
 
 @contextlib.contextmanager
-def disposable_simulator(device_type, runtime, build, certificate):
+def test_simulator(device_type, runtime, build, certificate):
     apps = list((Path(build) / "Build" / "Products").glob("*-iphonesimulator/Construct.app"))
     if len(apps) != 1:
         raise RuntimeError("Use a build-for-testing folder with one Construct Simulator app.")
     if "__entitlements" not in read("otool", "-l", str(apps[0] / "Construct")):
         raise RuntimeError("Build the app with CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- (see --help).")
-    simctl = ("xcrun", "simctl")
-    device = read(*simctl, "create", "Glasshouse Page Test", device_type, runtime)
-    try:
-        subprocess.run((*simctl, "bootstatus", device, "-b"), check=True, timeout=300)
-        deadline = time.monotonic() + SIMULATOR_READY_TIMEOUT
-        while True:
-            try:
-                subprocess.run((*simctl, "spawn", device, "launchctl", "list"), stdout=subprocess.DEVNULL, check=True,
-                               timeout=60)
-                subprocess.run((*simctl, "install", device, str(apps[0])), check=True, timeout=SIMULATOR_READY_TIMEOUT)
-                break
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                if time.monotonic() > deadline:
-                    raise
-                time.sleep(5)
-        subprocess.run((*simctl, "keychain", device, "add-root-cert", str(certificate)), check=True, timeout=60)
+    with shared_simulator.shared_simulator(device_type, runtime, app=apps[0], certificate=certificate) as device:
         yield device
-    finally:
-        with contextlib.suppress(Exception):
-            subprocess.run((*simctl, "shutdown", device), stderr=subprocess.DEVNULL, timeout=60)
-        subprocess.run((*simctl, "delete", device), check=False, timeout=120)
 
 
 def stop_web_processes(device):
@@ -205,8 +188,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="glasshouse-test-") as temporary:
         folder = Path(temporary)
         make_certificates(folder)
-        with disposable_simulator(args.ios_device_type, args.ios_runtime, args.ios_build,
-                                  folder / "trusted.pem") as device:
+        with test_simulator(args.ios_device_type, args.ios_runtime, args.ios_build, folder / "trusted.pem") as device:
             server = subprocess.Popen([sys.executable, str(SERVER), "--certificates", str(folder), "--host", "127.0.0.1"],
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
             assert server.stdin is not None and server.stdout is not None

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Runs the Computer page test of the app, and with --sync the iPhone sync test, against the phone_pairing example on
-a disposable emulator or Simulator."""
+a disposable Android emulator or on the shared iPhone Simulator (see shared_simulator.py)."""
 
 import argparse
 import contextlib
@@ -18,13 +18,15 @@ import tempfile
 from threading import Thread
 import time
 
+# The checks of this script load it with `python3 -I`, which has no folder of the script on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shared_simulator  # noqa: E402
+
 MOBILE = Path(__file__).resolve().parents[1]
 FIXTURE = "computer-pairing-test"
 RUNNER_TIMEOUT = 240
 CONTROL_TIMEOUT = 10
 AGENT_START_TIMEOUT = 30
-SIMULATOR_READY_TIMEOUT = 300
-SIMULATOR_ANSWER_TIMEOUT = 60
 ANDROID_PATH = f"files/{FIXTURE}"
 ANDROID_COMPUTER_TEST = "cf.construct.mobile.android.ComputerPageTest"
 IOS_COMPUTER_TEST = "ConstructUITests/ComputerPageTests/testComputerPage"
@@ -436,7 +438,7 @@ def verify_ios_sync(args, device):
 
 
 @contextlib.contextmanager
-def disposable_simulator(device_type, runtime, build, theme):
+def test_simulator(device_type, runtime, build, theme):
     apps = list((Path(build) / "Build" / "Products").glob("*-iphonesimulator/Construct.app"))
     if len(apps) != 1:
         raise RuntimeError("Use a build-for-testing directory with one Construct Simulator app.")
@@ -445,42 +447,8 @@ def disposable_simulator(device_type, runtime, build, theme):
     # puts the entitlements, with the application identifier, into an `__entitlements` section of the binary.
     if "__entitlements" not in read("otool", "-l", str(apps[0] / "Construct")):
         raise RuntimeError("Build the app with CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- (see the README).")
-    simctl = ("xcrun", "simctl")
-    device = read(*simctl, "create", "Construct Pairing Fixture", device_type, runtime)
-    failed = False
-    try:
-        subprocess.run((*simctl, "bootstatus", device, "-b"), check=True, timeout=300)
-        # A booted Simulator can take minutes to answer on a busy Mac: ask until it does, then install.
-        deadline = time.monotonic() + SIMULATOR_READY_TIMEOUT
-        while True:
-            try:
-                subprocess.run((*simctl, "spawn", device, "launchctl", "list"),
-                               stdout=subprocess.DEVNULL, check=True, timeout=SIMULATOR_ANSWER_TIMEOUT)
-                subprocess.run((*simctl, "install", device, str(apps[0])), check=True,
-                               timeout=SIMULATOR_READY_TIMEOUT)
-                break
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                if time.monotonic() > deadline:
-                    raise
-                time.sleep(5)
-        if theme:
-            subprocess.run((*simctl, "ui", device, "appearance", theme), check=True, timeout=30)
+    with shared_simulator.shared_simulator(device_type, runtime, app=apps[0], theme=theme or "light") as device:
         yield device
-    except BaseException:
-        failed = True
-        raise
-    finally:
-        try:
-            try:
-                subprocess.run((*simctl, "shutdown", device), stderr=subprocess.DEVNULL, timeout=30)
-            except subprocess.TimeoutExpired:
-                pass
-            finally:
-                subprocess.run((*simctl, "delete", device), check=True, timeout=60)
-        except (OSError, subprocess.SubprocessError) as error:
-            if not failed:
-                raise
-            print(f"The disposable Simulator could not be deleted: {error}", file=sys.stderr)
 
 
 def interrupted(number, _frame):
@@ -505,8 +473,8 @@ def main():
         verify_computer_page(args, Android(args.device, args.screenshots))
         return
     if not (args.ios_device_type and args.ios_runtime):
-        parser.error("the iPhone creates its own Simulator and needs --ios-device-type and --ios-runtime")
-    with disposable_simulator(args.ios_device_type, args.ios_runtime, args.ios_build, args.ios_theme) as device:
+        parser.error("the iPhone Simulator is created from --ios-device-type and --ios-runtime, and needs both")
+    with test_simulator(args.ios_device_type, args.ios_runtime, args.ios_build, args.ios_theme) as device:
         if args.sync:
             verify_ios_sync(args, Ios(device, args.ios_build, args.screenshots, IOS_SYNC_TEST, "Sync"))
         else:

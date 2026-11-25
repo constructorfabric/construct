@@ -4,6 +4,9 @@
 #   scripts/check-key-not-leaked.sh android   needs a running emulator or device (one only)
 #   scripts/check-key-not-leaked.sh ios       needs Xcode, an iOS Simulator runtime, and xcodegen
 #
+# The iPhone check runs in the Simulator named "Construct Test", which the iPhone test scripts share
+# (scripts/shared_simulator.py): it is made the first time, reset before the run, and shut down at the end.
+#
 # The key is made up and is not a credential. The script first plants it on purpose in a
 # file of its own and checks that the search finds it there, so a search that finds nothing is not a
 # broken search. It then fails when the key is in any file of the app or in the log, and says where.
@@ -65,32 +68,29 @@ search_android() (
   echo "android: the key is in no file of the app and not in the log"
 )
 
-search_ios() (
-  local bundle_id device_type runtime run_log key
+# Runs inside the shared Simulator, which is booted and as new; its id is in SIMULATOR_UDID.
+search_ios_in_simulator() (
+  local bundle_id run_log key leak_build run_started
   # Passing a key in the test runner's environment causes the simulator to log it.
   key="sk-ios-leak-search-0123456789-do-not-use"
+  [ -n "${SIMULATOR_UDID:-}" ] || fail "run this through 'check-key-not-leaked.sh ios'"
   run_log=$(mktemp)
   bundle_id=$(sed -n 's/^ *APP_BUNDLE_ID: *//p' iosApp/project.yml | head -n 1)
   [ -n "$bundle_id" ] || fail "APP_BUNDLE_ID is missing"
-  device_type=$(xcrun simctl list -j devicetypes | jq -er --arg name "${SIMULATOR_NAME:-iPhone 17}" \
-    '.devicetypes[] | select(.name == $name) | .identifier')
-  runtime=$(xcrun simctl list -j runtimes | jq -er \
-    '[.runtimes[] | select(.isAvailable and (.identifier | contains(".iOS-"))) | .identifier] | last')
-  leak_simulator=$(xcrun simctl create "Construct Leak Check $$" "$device_type" "$runtime")
   leak_build=$(mktemp -d)
-  trap 'xcrun simctl shutdown "$leak_simulator" >/dev/null 2>&1 || true; xcrun simctl delete "$leak_simulator"; rm -rf "$leak_build"' EXIT
-  xcrun simctl boot "$leak_simulator"
-  xcrun simctl bootstatus "$leak_simulator" >/dev/null
+  trap 'rm -rf "$leak_build"' EXIT
+  # The log of the Simulator holds the runs before this one: look only at what this run wrote.
+  run_started=$(date '+%Y-%m-%d %H:%M:%S')
   # An unsigned Simulator build has no Keychain; an ad-hoc signature gives it one.
   (cd iosApp && xcodegen generate >/dev/null &&
     TEST_RUNNER_LEAK_SEARCH=1 xcodebuild -project Construct.xcodeproj -scheme Construct \
-      -destination "platform=iOS Simulator,id=$leak_simulator" -derivedDataPath "$leak_build" \
+      -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -derivedDataPath "$leak_build" \
       -only-testing:ConstructTests/ModelSettingsStoreTests/testLeavesAFakeKeyForTheLeakSearch \
       CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test >"$run_log" 2>&1) || true
   grep -q 'TEST SUCCEEDED' "$run_log" || fail "the test that saves the key did not pass (see $run_log)"
 
   local data
-  data=$(xcrun simctl get_app_container "$leak_simulator" "$bundle_id" data)
+  data=$(xcrun simctl get_app_container "$SIMULATOR_UDID" "$bundle_id" data)
   echo "app files after saving the key:"
   (cd "$data" && find . -type f | sed 's/^/  /')
 
@@ -103,7 +103,7 @@ search_ios() (
   local hits
   hits=$(grep -rlF "$key" "$data" || true)
   [ -z "$hits" ] || { echo "KEY FOUND in the app's files: $hits"; found=1; }
-  hits=$(xcrun simctl spawn "$leak_simulator" log show --last 10m --style compact |
+  hits=$(xcrun simctl spawn "$SIMULATOR_UDID" log show --start "$run_started" --style compact |
     awk -v key="$key" 'index($0, key) { found = 1 } END { print found + 0 }')
   if [ "$hits" != 0 ]; then
     echo "KEY FOUND in the log"
@@ -115,8 +115,22 @@ search_ios() (
   echo "ios: the key is in no file of the app and not in the log"
 )
 
+search_ios() {
+  local bundle_id device_type runtime
+  bundle_id=$(sed -n 's/^ *APP_BUNDLE_ID: *//p' iosApp/project.yml | head -n 1)
+  [ -n "$bundle_id" ] || fail "APP_BUNDLE_ID is missing"
+  device_type=$(xcrun simctl list -j devicetypes | jq -er --arg name "${SIMULATOR_NAME:-iPhone 17}" \
+    '.devicetypes[] | select(.name == $name) | .identifier')
+  runtime=$(xcrun simctl list -j runtimes | jq -er \
+    '[.runtimes[] | select(.isAvailable and (.identifier | contains(".iOS-"))) | .identifier] | last')
+  # The helper takes its turn, boots the Simulator, resets it, and shuts it down when this script ends.
+  python3 scripts/shared_simulator.py --device-type "$device_type" --runtime "$runtime" --bundle-id "$bundle_id" \
+    -- scripts/check-key-not-leaked.sh ios-in-simulator
+}
+
 case "$platform" in
 android) search_android ;;
 ios) search_ios ;;
+ios-in-simulator) search_ios_in_simulator ;;
 *) fail "usage: check-key-not-leaked.sh android|ios" ;;
 esac
