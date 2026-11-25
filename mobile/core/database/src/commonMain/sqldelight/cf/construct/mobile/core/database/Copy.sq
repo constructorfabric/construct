@@ -44,11 +44,22 @@ CREATE TABLE numbers (
     numbers_json TEXT NOT NULL
 );
 
--- One row at most: when the copy was last brought up to date.
+-- One row at most: when the copy was last brought up to date and what it was brought up to date from. `computer` is
+-- the fingerprint of the certificate of the computer the copy came from, `reset_marker` the marker of its last
+-- erasure that the copy has seen, each token the one the computer gave for that part when the part was last copied,
+-- and `zone` the time zone of the computer's days. `first_copy_done` is 1 once a whole first copy from `computer`
+-- has been made.
 CREATE TABLE sync (
     id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
     synced_at TEXT,
-    memory_version INTEGER
+    memory_version INTEGER,
+    computer TEXT,
+    reset_marker TEXT,
+    facts_token TEXT,
+    chats_token TEXT,
+    dashboard_token TEXT,
+    zone TEXT,
+    first_copy_done INTEGER NOT NULL DEFAULT 0
 );
 
 listConversations:
@@ -117,9 +128,6 @@ SELECT fact_id, entity_kind, property, value_json, stored_at, tool FROM fact ORD
 saveFact:
 INSERT OR REPLACE INTO fact(fact_id, entity_kind, property, value_json, stored_at, tool) VALUES (?, ?, ?, ?, ?, ?);
 
-deleteFact:
-DELETE FROM fact WHERE fact_id = ?;
-
 deleteAllFacts:
 DELETE FROM fact;
 
@@ -158,3 +166,43 @@ UPDATE sync SET memory_version = ? WHERE id = 1;
 
 deleteSync:
 DELETE FROM sync;
+
+readSync:
+SELECT computer, reset_marker, facts_token, chats_token, dashboard_token, zone, first_copy_done, synced_at
+FROM sync WHERE id = 1;
+
+saveComputer:
+UPDATE sync SET computer = ? WHERE id = 1;
+
+saveResetMarker:
+UPDATE sync SET reset_marker = ? WHERE id = 1;
+
+saveFactsToken:
+UPDATE sync SET facts_token = ? WHERE id = 1;
+
+saveChatsToken:
+UPDATE sync SET chats_token = ? WHERE id = 1;
+
+saveDashboardToken:
+UPDATE sync SET dashboard_token = ?, zone = ? WHERE id = 1;
+
+saveFirstCopyDone:
+UPDATE sync SET first_copy_done = 1 WHERE id = 1;
+
+forgetResetMarker:
+UPDATE sync SET reset_marker = NULL WHERE id = 1;
+
+computerChats:
+SELECT conversation.id, conversation.title,
+    (SELECT COUNT(*) FROM message WHERE conversation_id = conversation.id) AS items
+FROM conversation WHERE origin = 'computer';
+
+messageCount:
+SELECT COUNT(*) FROM message WHERE conversation_id = ?;
+
+updateConversationTitle:
+UPDATE conversation SET title = ? WHERE id = ?;
+
+-- Read for the tables it names, not for its answer: a change signal for the dashboard.
+dashboardMarks:
+SELECT (SELECT COUNT(*) FROM numbers), (SELECT COUNT(*) FROM document);

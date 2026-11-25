@@ -49,7 +49,10 @@ final class Composition: ObservableObject {
         }
         copy = store
         construct = PhoneConstruct(store: store, settings: settings, dispatcher: BackgroundKt.backgroundDispatcher())
-        phoneConnection = PhoneConnectionKt.defaultPhoneConnection(
+        // Pairing records the computer in the copy (the same computer keeps what the phone holds of it, another one
+        // empties it); that call stays inside Kotlin, see `iosPhoneConnection`.
+        phoneConnection = IosPhoneConnectionKt.iosPhoneConnection(
+            copy: store,
             store: IosPairingSecretKt.iosPairingSecret(service: pairingService),
             networkAvailable: { KotlinBoolean(bool: checks.pathSatisfied()) },
             protocolVersion: PhoneProtocolKt.PHONE_PROTOCOL,

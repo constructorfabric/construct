@@ -65,6 +65,11 @@ class FakeConstruct(
 
     override val memoryFacts: Flow<Outcome<MemoryFacts>> = stored.map { Outcome.Ok(it) }
 
+    /** The fake has no sync: what changes its conversations is the page's own call, which reads again. */
+    override val conversationChanges: Flow<Unit> = MutableStateFlow(Unit)
+
+    override val dashboardChanges: Flow<Unit> = MutableStateFlow(Unit)
+
     override suspend fun listConversations(): Outcome<List<ConversationSummary>> =
         Outcome.Ok(
             threads.entries

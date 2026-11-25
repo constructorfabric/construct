@@ -19,9 +19,11 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -472,6 +474,163 @@ class PhoneConnectionTest {
             assertEquals(ComputerLink.Connected, observed.last().link)
         }
 
+    @Test
+    fun theCopyIsDecidedByTheIdentityOfTheComputerBeforeTheNewPairingIsSaved() =
+        runTest {
+            val fixture = Fixture(this)
+            val phone = fixture.connection()
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            assertEquals(listOf<Pair<String, String?>>(PIN to null), fixture.adopted)
+
+            // The same computer again, with a new token: the same identity, and the old record is what was there.
+            val old = fixture.store.read()
+            fixture.agent.token = "a9".repeat(32)
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            assertEquals(listOf(PIN, PIN), fixture.adopted.map { it.first })
+            assertEquals(old, fixture.adopted.last().second)
+
+            // Another computer: the identity that is asked is the one of the computer just paired.
+            fixture.agent.fingerprint = OTHER_PIN
+            val qr = "construct-pair://$ADDRESS?v=1&fp=$OTHER_PIN&s=$SECRET"
+            assertEquals(PairResult.Paired, phone.pairByQr(qr, "Phone"))
+            assertEquals(OTHER_PIN, fixture.adopted.last().first)
+        }
+
+    @Test
+    fun aPairingThatDoesNotCompleteAsksNothingOfTheCopy() =
+        runTest {
+            val fixture = Fixture(this)
+            fixture.agent.codeFailure = PhoneReplyKind.Refused
+            fixture.connection().pairByCode(ADDRESS, CODE, "Phone")
+            fixture.agent.codeFailure = null
+            fixture.agent.agentUpdate = true
+            fixture.connection().pairByCode(ADDRESS, CODE, "Phone")
+            assertEquals(emptyList(), fixture.adopted)
+        }
+
+    @Test
+    fun aCopyThatCannotBeChangedLeavesThePairingAsItWas() =
+        runTest {
+            val fixture = Fixture(this)
+            val phone = fixture.connection()
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            val old = fixture.store.read()
+
+            fixture.adoptFailure = IllegalStateException("disk full")
+            fixture.agent.token = "a9".repeat(32)
+            assertEquals(PairResult.StorageError, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            assertEquals(old, fixture.store.read())
+        }
+
+    @Test
+    fun aCallToTheComputerRunsOnOneAuthenticatedChannelAndKnowsTheComputerByItsIdentity() =
+        runTest {
+            val fixture = Fixture(this)
+            val phone = fixture.connection()
+            assertEquals(ComputerReach.Missed(ComputerLink.NotPaired), phone.reach { it.identity })
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            fixture.agent.calls.clear()
+
+            val reached =
+                phone.reach { channel ->
+                    channel.identity to
+                        channel.ask(buildJsonObject { put("cmd", "sync-check") })
+                }
+
+            val (identity, answer) = (reached as ComputerReach.Reached).value
+            assertEquals(PIN, identity)
+            assertEquals(JsonPrimitive(true), answer["ok"])
+            assertEquals(2, fixture.agent.calls.size)
+            assertTrue(
+                fixture.agent.calls
+                    .first()
+                    .contains("\"token\""),
+            )
+            assertEquals(PIN, fixture.agent.lastPin)
+        }
+
+    @Test
+    fun aCallThatCannotReachTheComputerSaysWhyAndRunsNothing() =
+        runTest {
+            val fixture = Fixture(this)
+            val phone = fixture.connection()
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            var ran = 0
+
+            fixture.network = false
+            assertEquals(ComputerReach.Missed(ComputerLink.NoNetwork), phone.reach { ran++ })
+            fixture.network = true
+            fixture.localAccess = false
+            assertEquals(ComputerReach.Missed(ComputerLink.NetworkPermission), phone.reach { ran++ })
+            fixture.localAccess = true
+            fixture.agent.action = PhoneReplyKind.Closed
+            assertEquals(ComputerReach.Missed(ComputerLink.Unreachable), phone.reach { ran++ })
+            fixture.agent.action = PhoneReplyKind.Line
+            fixture.agent.authReply = """{"v":1,"error":"update needed","min_version":1}"""
+            assertEquals(
+                ComputerReach.Missed(ComputerLink.PhoneUpdate),
+                fixture.connection(version = 0).reach { ran++ },
+            )
+            fixture.agent.authReply = """{"v":1,"error":"agent update needed"}"""
+            assertEquals(
+                ComputerReach.Missed(ComputerLink.ComputerUpdate),
+                fixture.connection(version = 2).reach { ran++ },
+            )
+            fixture.agent.authReply = null
+            fixture.agent.fingerprint = OTHER_PIN
+            assertEquals(ComputerReach.Missed(ComputerLink.Unreachable), phone.reach { ran++ })
+            assertEquals(0, ran)
+        }
+
+    @Test
+    fun aComputerThatStopsAnsweringInTheMiddleOfACallIsNotReachableAndAnUnpairedPhoneIsToo() =
+        runTest {
+            val fixture = Fixture(this)
+            val phone = fixture.connection()
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            val check = buildJsonObject { put("cmd", "sync-check") }
+
+            assertEquals(
+                ComputerReach.Missed(ComputerLink.Unreachable),
+                phone.reach {
+                    fixture.agent.action = PhoneReplyKind.Closed
+                    it.ask(check)
+                },
+            )
+            fixture.agent.action = PhoneReplyKind.Line
+            fixture.agent.revoked = true
+            assertEquals(
+                ComputerReach.Missed(ComputerLink.Unreachable),
+                phone.reach { it.ask(buildJsonObject { put("cmd", "ping") }) },
+            )
+        }
+
+    @Test
+    fun aCallThatIsCancelledAsksNothingMore() =
+        runTest {
+            val fixture = Fixture(this)
+            val phone = fixture.connection()
+            assertEquals(PairResult.Paired, phone.pairByCode(ADDRESS, CODE, "Phone"))
+            fixture.agent.calls.clear()
+            val check = buildJsonObject { put("cmd", "sync-check") }
+
+            lateinit var call: Job
+            call =
+                backgroundScope.launch {
+                    phone.reach { channel ->
+                        channel.ask(check)
+                        call.cancel()
+                        channel.ask(check)
+                    }
+                }
+            runCurrent()
+            call.join()
+            assertTrue(call.isCancelled)
+
+            // The authentication and the first call: nothing after the cancel.
+            assertEquals(2, fixture.agent.calls.size)
+        }
+
     private fun TestScope.tick() {
         advanceTimeBy(1.seconds)
         runCurrent()
@@ -487,6 +646,8 @@ class PhoneConnectionTest {
         var localAccess = true
         var localNetworkDenied = false
         var duringLocalNetworkCheck: () -> Unit = {}
+        val adopted = mutableListOf<Pair<String, String?>>()
+        var adoptFailure: Exception? = null
         var watching: Job? = null
         var now = 1000L
 
@@ -505,6 +666,11 @@ class PhoneConnectionTest {
                     assertEquals(47821, address.port)
                     duringLocalNetworkCheck()
                     localNetworkDenied
+                },
+                { identity ->
+                    // What the pairing record held when the copy was asked: the old pairing, not yet the new one.
+                    adopted += identity to store.read()
+                    adoptFailure?.let { throw it }
                 },
             )
 

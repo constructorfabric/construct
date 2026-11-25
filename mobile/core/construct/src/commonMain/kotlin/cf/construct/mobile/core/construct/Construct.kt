@@ -35,6 +35,13 @@ interface ChatApi {
 
     /** The events of the answers; collect it before sending to see every event. */
     val chatEvents: Flow<ChatEvent>
+
+    /**
+     * A signal, not the conversations: it comes when it is collected and after each change to the list or to
+     * the lines of any conversation, whoever made it (a sync, an answer, a delete). A page that shows the list
+     * reads it again on each signal. It never ends.
+     */
+    val conversationChanges: Flow<Unit>
 }
 
 interface MemoryApi {
@@ -48,7 +55,10 @@ interface MemoryApi {
     /** Only the profile's version. */
     suspend fun getMemoryVersion(): Outcome<Long?>
 
-    /** Deletes one fact by its id. Sending it again after a failure is safe. */
+    /**
+     * Deletes one fact by its id. Sending it again after a failure is safe. The phone's copy refuses it: a fact
+     * belongs to the computer, and nothing the person does on the phone changes the computer.
+     */
     suspend fun deleteMemoryFact(factId: String): Outcome<Unit>
 
     /** Asks for everything about the person to be erased; it does not wait for the end. */
@@ -63,6 +73,12 @@ interface DashboardApi {
 
     /** The last good document, or none, and the problem of the file as it is now. */
     suspend fun getDashboardDocument(): Outcome<DocumentState>
+
+    /**
+     * A signal, not the dashboard: it comes when it is collected and after each change to the document or to
+     * the numbers. A page that shows them reads them again on each signal. It never ends.
+     */
+    val dashboardChanges: Flow<Unit>
 }
 
 /** The one interface the screens use for chats, memory and the dashboard. */

@@ -174,6 +174,16 @@ class CopyStore(
      */
     internal fun factChanges(): Flow<Unit> = queries.listFacts().asFlow().map { }
 
+    /**
+     * Signals when it is collected, and again after each write to the conversations or the lines of any
+     * of them: a sync, an answer of the phone's own, a delete. A reader answers the signal by reading the list
+     * again, so it sees the whole write.
+     */
+    internal fun conversationChanges(): Flow<Unit> = queries.listConversations().asFlow().map { }
+
+    /** Signals when it is collected, and again after each write to the dashboard's document or its numbers. */
+    internal fun dashboardChanges(): Flow<Unit> = queries.dashboardMarks().asFlow().map { }
+
     fun memoryVersion(): Long? = queries.memoryVersion().executeAsOneOrNull()?.memory_version
 
     /** Replaces every fact and the profile's version. */
@@ -194,24 +204,152 @@ class CopyStore(
             queries.saveMemoryVersion(facts.version)
         }
 
-    /** Deleting a fact that is not there is not an error. */
-    fun deleteFact(factId: String) = queries.deleteFact(factId)
+    /** What the copy remembers about the computer it came from and how far it was brought up to date. */
+    fun syncRecord(): SyncRecord =
+        queries
+            .readSync { computer, marker, facts, chats, dashboard, zone, done, at ->
+                SyncRecord(computer, marker, facts, chats, dashboard, zone, done == 1L, at)
+            }.executeAsOneOrNull() ?: SyncRecord()
+
+    /** The chats of the computer that the copy holds, with how many lines each has. */
+    fun computerChats(): List<ChatOnCopy> =
+        queries.computerChats { id, title, items -> ChatOnCopy(id, title, items.toInt()) }.executeAsList()
+
+    /**
+     * The copy now belongs to the computer with this identity, because the phone has just paired with it.
+     * - The same computer again keeps the copy and its tokens. It forgets the reset marker: a computer drops its
+     *   marker when it unpairs its last phone and makes a new one for the next pairing, so a different marker
+     *   after a pairing is not an erase. The next check takes the computer's marker as the first it has seen, and
+     *   the sync that is applied saves it. An erase that happened while the phone was not paired, or before that
+     *   first sync is applied, is not seen as one; the sync still removes what the computer no longer has, and the
+     *   chats started on the phone stay.
+     * - A copy that has no computer takes it and keeps what it holds.
+     * - Another computer empties the copy of what came from the old one (the facts, the chats of the computer, the
+     *   dashboard and the record of the sync) in one transaction, so no page reads it half emptied, and the copy then
+     *   waits for its first copy from the new one.
+     *
+     * What the phone started and its model setup stay in every case.
+     */
+    fun adoptComputer(identity: String) =
+        queries.transaction {
+            val kept = syncRecord().computer
+            if (kept == identity) {
+                queries.forgetResetMarker()
+            } else {
+                if (kept != null) removeCopyOfComputer()
+                queries.startSync()
+                queries.saveComputer(identity)
+            }
+        }
+
+    /**
+     * The computer erased everything about the person since the copy last saw it: the copy is emptied, the
+     * chats started on the phone too, and keeps [marker] as the marker it has seen. The computer it came from
+     * and the fact that it was completely copied stay, so the page shows an empty copy and not a loading screen.
+     * It is a transaction of its own that commits before the refill, so a refill that is cut leaves the copy empty,
+     * as the computer is. An answer that is being written into a chat of the phone at that moment ends as an error,
+     * because the chat it continues is gone.
+     */
+    fun reset(marker: String) =
+        queries.transaction {
+            val record = syncRecord()
+            emptyCopy()
+            queries.startSync()
+            record.computer?.let(queries::saveComputer)
+            if (record.firstCopyDone) queries.saveFirstCopyDone()
+            queries.saveResetMarker(marker)
+        }
+
+    /**
+     * Applies one whole sync in one transaction, so a reader sees the copy as it was or as it is after the sync,
+     * never between. A change that the copy already holds is not written again.
+     *
+     * @throws CopyChanged when the copy belongs to another computer than the update, or when a chat that continues
+     * what the copy holds finds another number of lines there.
+     */
+    fun applySync(update: CopyUpdate) =
+        queries.transaction {
+            if (syncRecord().computer != update.computer) throw CopyChanged()
+            queries.startSync()
+            update.facts?.let(::applyFacts)
+            update.chats?.let(::applyChats)
+            update.dashboard?.let(::applyDashboard)
+            update.resetMarker?.let(queries::saveResetMarker)
+            queries.saveSyncedAt(update.syncedAt)
+            queries.saveFirstCopyDone()
+        }
+
+    private fun applyFacts(update: FactsUpdate) {
+        val held = facts()
+        if (held.facts != update.facts) {
+            queries.deleteAllFacts()
+            update.facts.forEach {
+                queries.saveFact(
+                    it.factId,
+                    it.entityKind.name,
+                    it.property,
+                    json.encodeToString(JsonElement.serializer(), it.value),
+                    it.storedAt,
+                    it.tool,
+                )
+            }
+            // The computer gives no version that fits the stream of the facts, so the copy counts its own: each change
+            // is the next version, and that is what makes the stream give the page the new facts. No facts, no version.
+            queries.saveMemoryVersion(if (update.facts.isEmpty()) null else (held.version ?: 0L) + 1L)
+        }
+        queries.saveFactsToken(update.token)
+    }
+
+    private fun applyChats(update: ChatsUpdate) {
+        val listed = update.chats.map { it.id }.toSet()
+        queries
+            .computerConversations()
+            .executeAsList()
+            .filter { it !in listed }
+            .forEach(::removeConversation)
+        update.chats.forEach { chat ->
+            if (conversationOrigin(chat.id) == PHONE_ORIGIN) return@forEach
+            if (chat.from == 0) {
+                queries.deleteMessagesOf(chat.id)
+            } else if (queries.messageCount(chat.id).executeAsOne() != chat.from.toLong()) {
+                throw CopyChanged()
+            }
+            // The first write makes the chat; a title the computer changed is written on every sync, and the time moves
+            // only when the chat has a new line (a chat that has none keeps the time it had).
+            queries.saveConversation(chat.id, chat.title, chat.time.orEmpty())
+            queries.updateConversationTitle(chat.title, chat.id)
+            chat.time?.let { queries.updateConversationTime(it, chat.id) }
+            chat.messages.forEachIndexed { index, message ->
+                queries.saveMessage(chat.id, (chat.from + index).toLong(), message.role.name, message.text)
+            }
+        }
+        queries.saveChatsToken(update.token)
+    }
+
+    private fun applyDashboard(update: DashboardUpdate) {
+        update.document?.let { saveDocument(DocumentState(it, null)) } ?: queries.deleteDocument()
+        queries.deleteAllNumbers()
+        update.numbers.forEach { (input, numbers) -> saveNumbers(input, numbers) }
+        queries.saveDashboardToken(update.token, update.zone)
+    }
 
     /** Removes the computer's copy while preserving phone chats and their native records. */
-    fun removeComputerCopy() =
-        queries.transaction {
-            queries.computerConversations().executeAsList().forEach(::removeConversation)
-            removeComputerData()
-        }
+    fun removeComputerCopy() = queries.transaction { removeCopyOfComputer() }
+
+    private fun removeCopyOfComputer() {
+        queries.computerConversations().executeAsList().forEach(::removeConversation)
+        removeComputerData()
+    }
 
     /** Empties the conversations, the facts, the dashboard and the record of the sync. */
-    fun deleteEverything() =
-        queries.transaction {
-            queries.deleteAllRecords()
-            queries.deleteAllMessages()
-            queries.deleteAllConversations()
-            removeComputerData()
-        }
+    fun deleteEverything() = queries.transaction { emptyCopy() }
+
+    private fun emptyCopy() {
+        queries.deleteAllRecords()
+        queries.deleteAllMessages()
+        queries.deleteAllConversations()
+        removeComputerData()
+    }
 
     private fun removeComputerData() {
         queries.deleteAllFacts()

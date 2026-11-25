@@ -34,6 +34,11 @@ class DatabaseConstruct(
 ) : Construct {
     override val chatEvents: Flow<ChatEvent> = emptyFlow()
 
+    /** The list now, and again after each write to the conversations or their lines; a sync is one write. */
+    override val conversationChanges: Flow<Unit> = store.conversationChanges().conflate()
+
+    override val dashboardChanges: Flow<Unit> = store.dashboardChanges().conflate()
+
     override suspend fun listConversations(): Outcome<List<ConversationSummary>> =
         onDisk { Outcome.Ok(store.conversations()) }
 
@@ -65,11 +70,8 @@ class DatabaseConstruct(
 
     override suspend fun getMemoryVersion(): Outcome<Long?> = onDisk { Outcome.Ok(store.memoryVersion()) }
 
-    override suspend fun deleteMemoryFact(factId: String): Outcome<Unit> =
-        onDisk {
-            store.deleteFact(factId)
-            Outcome.Ok(Unit)
-        }
+    /** The facts belong to the computer: the copy refuses, and holds them as they were. */
+    override suspend fun deleteMemoryFact(factId: String): Outcome<Unit> = Outcome.Failed(FACTS_READ_ONLY)
 
     /** Empties the copy; the copy cannot tell whether an erasure was already on, so it says it was not. */
     override suspend fun eraseEverything(): Outcome<EraseStarted> =
@@ -101,6 +103,7 @@ class DatabaseConstruct(
     companion object {
         const val UNREADABLE = "the copy could not be read"
         const val NOT_AVAILABLE_YET = "not available yet"
+        const val FACTS_READ_ONLY = "the facts belong to the computer and cannot be deleted on the phone"
         const val NO_NUMBERS = "no numbers for these days"
     }
 }

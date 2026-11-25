@@ -5,6 +5,7 @@ import cf.construct.mobile.core.chat.PhoneTransport
 import cf.construct.mobile.core.chat.nativePhoneTransport
 import cf.construct.mobile.core.keys.ModelSettingsException
 import cf.construct.mobile.core.keys.PairingSecret
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -47,6 +48,11 @@ data class LinkSnapshot(
  * One instance per app: it owns the revision that tells [monitor] the pairing changed, so a second instance
  * on the same store would not hear that the first one paired again. Call [monitor] from one coroutine at a
  * time; a second call would run a second connection to the computer.
+ *
+ * [adoptComputer] runs when a pairing has been granted, before it is saved, with the identity of the computer
+ * (see [ComputerChannel.identity]). It decides what happens to the copy of the computer's data: the same
+ * computer again keeps it, another one empties it. A pairing is saved only after it returned, so a copy that
+ * cannot be changed leaves the pairing as it was.
  */
 class PhoneConnection internal constructor(
     private val store: PairingSecret,
@@ -58,7 +64,8 @@ class PhoneConnection internal constructor(
     private val now: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     private val localAccess: () -> Boolean = { true },
     private val localNetworkDenied: (ComputerAddress) -> Boolean = { false },
-) {
+    private val adoptComputer: (String) -> Unit = {},
+) : ComputerAccess {
     private val protocol = PhoneProtocol(transport, version)
     private val pairing = Mutex()
     private val storage = Mutex()
@@ -114,15 +121,56 @@ class PhoneConnection internal constructor(
             }
         }
 
+    // The copy goes first. A crash between the two leaves the old pairing with a copy of the new computer, and
+    // the next sync sees that the two disagree and empties the copy again; the other order could show the old
+    // computer's data under the new pairing.
+    @Suppress("TooGenericExceptionCaught")
     private suspend fun saveNewPairing(granted: StoredPairing): PairResult =
         try {
             storage.withLock {
+                adoptComputer(granted.pin)
                 store.savePairing(granted.copy(lastContactMillis = now()))
                 revision.value++
             }
             PairResult.Paired
-        } catch (_: ModelSettingsException) {
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
             PairResult.StorageError
+        }
+
+    override suspend fun <T> reach(block: (ComputerChannel) -> T): ComputerReach<T> =
+        withContext(dispatcher) {
+            val context = currentCoroutineContext()
+            val saved =
+                try {
+                    storage.withLock { store.loadPairing(transport::isNumericAddress) }
+                } catch (_: ModelSettingsException) {
+                    return@withContext ComputerReach.Missed(ComputerLink.StorageError)
+                } ?: return@withContext ComputerReach.Missed(ComputerLink.NotPaired)
+            when {
+                !networkAvailable() -> {
+                    ComputerReach.Missed(ComputerLink.NoNetwork)
+                }
+
+                !localAccess() -> {
+                    ComputerReach.Missed(ComputerLink.NetworkPermission)
+                }
+
+                else -> {
+                    protocol.open(saved)?.use { protocol.runOn(saved, it, context, block) }
+                        ?: ComputerReach.Missed(
+                            if (localNetworkDenied(
+                                    saved.address,
+                                )
+                            ) {
+                                ComputerLink.NetworkPermission
+                            } else {
+                                ComputerLink.Unreachable
+                            },
+                        )
+                }
+            }
         }
 
     /** Watch only for as long as the caller keeps this coroutine alive. */
@@ -276,10 +324,15 @@ class PhoneConnection internal constructor(
 
 const val PHONE_POLL_INTERVAL_MILLIS = 5000L
 
-/** The connection the app shares; see [PhoneConnection] for why there is one. */
+/**
+ * The connection the app shares; see [PhoneConnection] for why there is one. [adoptComputer] is not optional: it is
+ * how the copy learns, each time a pairing completes, which computer it now belongs to, and a caller that left it
+ * out would show the old computer's data under the new pairing.
+ */
 fun defaultPhoneConnection(
     store: PairingSecret,
     networkAvailable: () -> Boolean,
+    adoptComputer: (String) -> Unit,
     protocolVersion: Int = PHONE_PROTOCOL,
     localAccess: () -> Boolean = { true },
     pollIntervalMillis: Long = PHONE_POLL_INTERVAL_MILLIS,
@@ -293,4 +346,18 @@ fun defaultPhoneConnection(
         pollInterval = pollIntervalMillis.milliseconds,
         localAccess = localAccess,
         localNetworkDenied = { localNetworkDenied(it.host, it.port) },
+        adoptComputer = adoptComputer,
     )
+
+/**
+ * A connection over a transport of the caller's. The sync tests use it to pair and sync with the computer's own
+ * test program from the JVM, where the phone's native transport does not run; [PhoneConnection]'s constructor is
+ * internal, and this is the one way in from another module.
+ */
+fun phoneConnectionOver(
+    transport: PhoneTransport,
+    store: PairingSecret,
+    networkAvailable: () -> Boolean,
+    adoptComputer: (String) -> Unit,
+    protocolVersion: Int = PHONE_PROTOCOL,
+): PhoneConnection = PhoneConnection(store, transport, networkAvailable, protocolVersion, adoptComputer = adoptComputer)
