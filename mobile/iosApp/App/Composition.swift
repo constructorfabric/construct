@@ -74,12 +74,15 @@ final class Composition: ObservableObject {
     }
 
     /// The sync with its timing: the app's own, or, for the sync test of the Simulator, a sync that waits before each
-    /// step so a test can see the loading screen and its counts, and checks often so it need not wait a minute.
+    /// step so a test can see the loading screen and its counts, and checks often so it need not wait a minute. A test
+    /// that must not meet a check in the middle of what it looks at sets the time between the checks (in
+    /// milliseconds) in `CONSTRUCT_SYNC_TEST_INTERVAL_MS`.
     private static func sync(_ syncer: Syncer) -> (syncer: Syncer, timing: SyncTiming) {
         #if DEBUG && targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--sync-test") {
             Logger().notice("Sync fixture started")
-            return (PacedSyncer(syncer, pause: 0.9), SyncTiming(interval: 6000, justSynced: 3000))
+            let interval = ProcessInfo.processInfo.environment["CONSTRUCT_SYNC_TEST_INTERVAL_MS"].flatMap(Int64.init)
+            return (PacedSyncer(syncer, pause: 0.9), SyncTiming(interval: interval ?? 6000, justSynced: 3000))
         }
         #endif
         let timing = SyncTiming(

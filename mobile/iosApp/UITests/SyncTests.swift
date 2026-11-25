@@ -24,8 +24,8 @@ final class SyncTests: ComputerTestCase {
         verifyPagesHoldTheComputersData()
         verifyTheSyncWhenTheAppOpens()
         try verifyChecksAndNewChat(fixture)
-        verifyComputerPage()
         try verifyNotReachable(fixture)
+        verifyComputerPage()
     }
 
     /// A row of the loading screen: its name and its count are read out as one.
@@ -44,7 +44,10 @@ final class SyncTests: ComputerTestCase {
         XCTAssertTrue(row("Memory").waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Step 2 of 3"].waitForExistence(timeout: 30))
         XCTAssertTrue(row("Memory").label.contains("12 facts"), "Memory says \(row("Memory").label)")
-        XCTAssertTrue(row("Chats").label.contains("copying") || row("Chats").label.contains(" of 4"))
+        // The chats are under way, and the dashboard waits. A row under way says "copying", then the count of the list
+        // as it is read ("4 chats"), then "k of 4": the test does not look for one of them.
+        XCTAssertFalse(row("Chats").label.contains("waiting"), "Chats says \(row("Chats").label)")
+        XCTAssertTrue(row("Dashboard").label.contains("waiting"), "Dashboard says \(row("Dashboard").label)")
         shot("loading")
         XCTAssertTrue(app.staticTexts["Step 3 of 3"].waitForExistence(timeout: 40))
         XCTAssertTrue(row("Chats").label.contains("4 chats"), "Chats says \(row("Chats").label)")
@@ -86,7 +89,20 @@ final class SyncTests: ComputerTestCase {
         XCTAssertFalse(app.staticTexts[syncing].exists)
     }
 
+    /// Starts the app again with ten minutes between the checks, so that after the sync of the start no check is near.
+    /// A step that taps while a check is about to end meets that check, not its own: a tap on "Sync now" or "Try again"
+    /// joins it, so "Syncing…" is gone before the test looks for it, and a check that reaches the computer again clears
+    /// the "not reachable" notice before the tap.
+    private func restartWithFewChecks() {
+        app.terminate()
+        app.launchEnvironment["CONSTRUCT_SYNC_TEST_INTERVAL_MS"] = "600000"
+        app.launch()
+    }
+
     private func verifyComputerPage() {
+        restartWithFewChecks()
+        XCTAssertTrue(app.staticTexts[justSynced].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts[justSynced].waitForNonExistence(timeout: 10))
         openComputer()
         XCTAssertTrue(text(startingWith: "Last sync ").waitForExistence(timeout: 10))
         let button = app.buttons["Sync now"]
@@ -114,6 +130,10 @@ final class SyncTests: ComputerTestCase {
         app.tabBars.buttons["Glasshouse"].tap()
         XCTAssertFalse(text(startingWith: unreachable).exists, "a notice on the Glasshouse page")
         app.tabBars.buttons["Chat"].tap()
+        // The computer stays off while the app is started again: the sync of the start misses it and shows the notice,
+        // and no check can clear it before "Try again" does.
+        restartWithFewChecks()
+        XCTAssertTrue(notice.waitForExistence(timeout: 30), "no notice after the app was started again")
         _ = try exchange("restart", with: fixture)
         app.buttons["Try again"].tap()
         XCTAssertTrue(app.staticTexts[justSynced].waitForExistence(timeout: 30))

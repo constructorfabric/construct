@@ -447,8 +447,9 @@ page would show a storage error. The script stops with a message when the build 
 to the file and stops and starts the program when the test asks, and the test follows the first copy (its steps and
 counts), the notices, the checks that say nothing, a new chat in the open list, "Sync now" and a computer that does not
 answer. The app runs with `--sync-test`, a debug Simulator hook like `--computer-page-test`: it checks every 6 seconds
-and waits before each sync and after each report of progress, so a test can see "Syncing" and the counts rise. A
-release build has neither. The test asks the script for each step
+(`CONSTRUCT_SYNC_TEST_INTERVAL_MS` sets the time in milliseconds, for a step that must not meet a check in the middle
+of what it looks at) and waits before each sync and after each report of progress, so a test can see "Syncing" and the
+counts rise. A release build has neither. The test asks the script for each step
 over a port on the loopback address, so no pairing secret is passed as a launch argument.
 
 ## Sync the copy from the computer
