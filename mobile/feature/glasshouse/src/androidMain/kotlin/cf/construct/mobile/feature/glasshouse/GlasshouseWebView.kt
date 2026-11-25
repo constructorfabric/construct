@@ -17,12 +17,14 @@ import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.ConcurrentHashMap
 
 /** What the web view sees, as the calls of the holder that wants to hear it. */
 class GlasshouseWebEvents(
@@ -35,13 +37,7 @@ class GlasshouseWebEvents(
 /**
  * The phone's web view for the Glasshouse page, set up as the page needs it, and kept alive by whoever owns
  * this object (a view model) while the screen comes and goes: the page, what was typed in it and its history stay.
- *
- * Every page, script and picture it fetches carries the app's User-Agent token. It follows web addresses only:
- * a link, a redirect or a new window to any other kind of address does nothing, and a window a page asks for
- * opens in the same page. A certificate the system does not trust is never accepted. A page that asks for a
- * permission (camera, microphone, location) is refused with no prompt. The cookies are the app's own, one set
- * for every web view of the app, kept on disk, apart from the phone's browser. Plain `http` stays blocked by the
- * app's network settings.
+ * What the page opens, refuses and keeps is set out in the README, "The Glasshouse page on Android".
  *
  * Use it on the main thread. Call [attach] when the screen shows the web view and [detach] when it leaves.
  */
@@ -61,8 +57,10 @@ class GlasshouseWebView(
     /** How much of the page has loaded, 0 to 100. */
     val progress: StateFlow<Int> = mutableProgress.asStateFlow()
 
-    // The addresses the main page has had since the load began: the first one and each redirect of it.
-    private val mainPage = mutableSetOf<String>()
+    // The addresses the main page has had since the load began: as typed, and as the web view writes each request of
+    // the page and each redirect of it, which is how a certificate error names the page. The web view asks for a
+    // request off the main thread.
+    private val mainPage: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private var address = ""
 
     /** Carries out what the holder asks for. */
@@ -104,7 +102,7 @@ class GlasshouseWebView(
         hidden: Boolean,
     ) {
         if (web !== mutableView.value) return
-        (web.context as? MutableContextWrapper)?.baseContext = container.context
+        web.baseContext = container.context
         if (web.parent !== container) {
             (web.parent as? ViewGroup)?.removeView(web)
             container.removeAllViews()
@@ -117,7 +115,7 @@ class GlasshouseWebView(
     fun detach() {
         val web = mutableView.value
         (web.parent as? ViewGroup)?.removeView(web)
-        (web.context as? MutableContextWrapper)?.baseContext = appContext
+        web.baseContext = appContext
     }
 
     /** Writes the cookies to the disk now, so a sign-in survives the app being closed. */
@@ -125,11 +123,18 @@ class GlasshouseWebView(
         CookieManager.getInstance().flush()
     }
 
-    /** Ends the web view for good. */
     fun destroy() {
         detach()
         mutableView.value.destroy()
     }
+
+    // The context a web view shows dialogs and reads resources through: the screen's while it is on the screen, the
+    // app's otherwise. Every web view here comes from [newWebView] with this wrapper, so the cast cannot fail.
+    private var WebView.baseContext: Context
+        get() = (context as MutableContextWrapper).baseContext
+        set(value) {
+            (context as MutableContextWrapper).baseContext = value
+        }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun newWebView(base: Context): WebView {
@@ -137,6 +142,10 @@ class GlasshouseWebView(
         with(web.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
+            // Some of these are the web view's default already; they are written out so that what a page may reach
+            // reads in one place.
+            // Location is refused here and again in the chrome client: if one of the two is ever changed, the other
+            // still stands.
             allowFileAccess = false
             allowContentAccess = false
             setGeolocationEnabled(false)
@@ -161,7 +170,10 @@ class GlasshouseWebView(
         events.onPageFailed(address, GlasshouseProblem.Offline)
     }
 
-    /** The main page goes to [url]: with no network it is not asked for, and the page says so. */
+    /**
+     * The main page goes to [url]: with no network it is not asked for, and the page says so. The address is
+     * recorded as the main page's either way, because the certificate check reads it when the page fails.
+     */
     private fun cancelWhenOffline(url: String): Boolean {
         mainPage += url
         val cancel = isOffline(appContext)
@@ -180,7 +192,7 @@ class GlasshouseWebView(
 
     /** The web view's process stopped: the page is lost, so make a new web view and say so. */
     private fun replace(dead: WebView) {
-        val base = (dead.context as? MutableContextWrapper)?.baseContext ?: appContext
+        val base = dead.baseContext
         (dead.parent as? ViewGroup)?.removeView(dead)
         dead.destroy()
         mutableView.value = newWebView(base)
@@ -219,6 +231,15 @@ class GlasshouseWebView(
             isReload: Boolean,
         ) {
             report(view, url)
+        }
+
+        // Called before the request goes out, so before any certificate error of it.
+        override fun shouldInterceptRequest(
+            view: WebView,
+            request: WebResourceRequest,
+        ): WebResourceResponse? {
+            if (request.isForMainFrame) mainPage += request.url.toString()
+            return null
         }
 
         override fun shouldOverrideUrlLoading(
@@ -313,7 +334,11 @@ internal object GlasshouseErrors {
         }
 }
 
-/** Whether the phone has no network to ask for a page with. */
+/**
+ * Whether the phone has no network to ask for a page with. Stricter than the phone connection's check in
+ * `Composition.kt` (any active network): a web page needs one that is meant to reach the internet, and the phone
+ * connection only the local network.
+ */
 private fun isOffline(context: Context): Boolean {
     val manager = context.getSystemService(ConnectivityManager::class.java)
     val network = manager?.activeNetwork ?: return true

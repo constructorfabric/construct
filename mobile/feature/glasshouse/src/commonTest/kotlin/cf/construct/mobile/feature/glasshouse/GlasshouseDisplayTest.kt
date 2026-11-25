@@ -25,6 +25,14 @@ class GlasshouseDisplayTest {
     }
 
     @Test
+    fun theHostIsReadAsTheAddressIsChecked() {
+        // Tabs and line breaks inside an address are dropped before it is checked, so before its host is read too.
+        assertEquals("example.test", GlasshouseDisplay.host("https://exam\nple.\ttest/garden"))
+        assertEquals("example.test", GlasshouseAddress.host(" \thttps:\\\\example.test\\garden "))
+        assertEquals(null, GlasshouseAddress.host("ftp://example.test/herbs"))
+    }
+
+    @Test
     fun whatIsNotAWebAddressIsShownAsItIs() {
         assertEquals("", GlasshouseDisplay.host(""))
         assertEquals("ftp://example.test/herbs", GlasshouseDisplay.host("ftp://example.test/herbs"))

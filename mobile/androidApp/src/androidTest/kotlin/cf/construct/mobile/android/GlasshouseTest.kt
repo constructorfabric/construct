@@ -91,6 +91,9 @@ class GlasshouseTest {
         assertTrue(page.evaluate("navigator.userAgent").endsWith(" Construct/$version"))
     }
 
+    // Red when the page's web view does not take cookies, or keeps them apart from the app's other web views (a
+    // profile of its own, say). That they are not the phone's browser's is the platform's: an app's web views have
+    // their own data folder, so no test of the app's code can show otherwise; it was checked by hand against Chrome.
     @Test
     fun theCookiesAreOneSetForEveryWebViewOfTheApp() {
         page.go(site.trusted + "/signin")
@@ -142,6 +145,7 @@ class GlasshouseTest {
             page.waitUntil(PAGE_WAIT_MS, "the tap on the $link link to reach the page") {
                 page.evaluate("document.body.getAttribute('data-clicks') || '0'") == "${tapped + 1}"
             }
+            // Nothing signals that the app did nothing, so this waits a moment for something to come up and then looks.
             Thread.sleep(1_500)
             assertTrue(page.pageText().contains("App links"), "the page changed after the $link link")
             assertEquals(page.appId, page.foregroundPackage(), "something else came up after the $link link")
@@ -177,11 +181,18 @@ class GlasshouseTest {
     @Test
     fun aPageKeepsLoadingWhileThePersonIsOnTheChatPage() {
         page.go(site.trusted + "/slow")
+        val web = checkNotNull(page.webView())
         page.openTab("Chat")
         compose.onNodeWithText("What do you know about me?").assertExists()
-        Thread.sleep(6_000)
+        // The page is read where it is, out of the screen: it has to finish loading while the person is on the Chat
+        // page. A web view that was paused when it left never answers here, and one that was loaded again on the
+        // way back would be asked for twice.
+        page.waitUntil(PAGE_WAIT_MS, "the slow page to load while the Chat page shows") {
+            page.pageText(web).contains("Slow page loaded")
+        }
         page.openGlasshouse()
         page.waitForPage("Slow page loaded")
+        assertEquals(1, site.requests().count { it.path == "/slow" })
     }
 
     @Test
@@ -194,6 +205,14 @@ class GlasshouseTest {
         compose.onNodeWithTag(RELOAD_TAG).performClick()
         page.waitUntil(PAGE_WAIT_MS, "Reload to try the site again") { site.connections("untrusted") > before }
         page.waitForMessage(NOT_TRUSTED)
+    }
+
+    @Test
+    fun anUntrustedCertificateShowsTheErrorForAnAddressTheWebViewWritesAnotherWay() {
+        // The web view reports the page as it writes the address, without the dot segments and the fragment.
+        page.go(site.untrusted + "/herbs/../#top")
+        page.waitForMessage(NOT_TRUSTED)
+        compose.onNodeWithTag(RELOAD_TAG).assertExists()
     }
 
     @Test
@@ -324,12 +343,14 @@ class GlasshouseTest {
         }
         val result = page.evaluate("document.getElementById('result').textContent")
         assertTrue(result.contains("camera:NotAllowedError"), result)
+        // The app holds no location permission, so the page is denied (code 1) whatever the callback answers: this
+        // half shows that no prompt comes up and the page hears no, not that the refusal in the callback is the cause.
         assertTrue(result.contains("location:code1"), result)
         assertEquals(context.packageName, page.foregroundPackage(), "a prompt came up")
     }
 
     @Test
-    fun theManifestAsksForNoPermissionTheWebViewCouldUse() {
+    fun thePageAddsNoPermissionToTheFourTheEarlierPagesAsk() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val asked =
             context.packageManager
@@ -341,7 +362,9 @@ class GlasshouseTest {
                 // The app's own permission for its receivers, which the libraries add, is not one a page could use.
                 .filter { it.startsWith("android.permission.") }
                 .toSet()
-        // The network, and the two the pairing page uses. Nothing for the microphone, the location or anything else.
+        // The four the app already had before this page: the network, its state, the local network and the camera
+        // (the last two are the pairing page's). A page that asks for the microphone, the location or anything else
+        // is refused in the web view, and no permission is added for it.
         assertEquals(
             setOf(
                 "android.permission.INTERNET",

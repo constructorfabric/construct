@@ -1,8 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Plain http stays blocked. The debug build alone also trusts the certificate of the page tests' server, which
-  the build makes for itself; `debug-overrides` is ignored by an app that is not debuggable.
--->
+<!-- Debug build only: it also trusts the page tests' certificate. See the README, "The Glasshouse page on Android". -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
     <debug-overrides>
