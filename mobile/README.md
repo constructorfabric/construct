@@ -151,7 +151,7 @@ Settings page against a fake provider on a local port. `iosApp/Tests/ModelSettin
 iPhone store over the real Keychain; the Keychain exists only inside the app, so it is an app test, not a
 Kotlin one. `scripts/check-key-not-leaked.sh android|ios` saves a made-up key through the app, proves its
 search by planting the key in a file, and then looks for the key in the app's files and in the log.
-It uses a separate Android app ID or a disposable iOS Simulator.
+It uses a separate Android app ID or the shared iOS Simulator (see [The test Simulator](#the-test-simulator)).
 
 ## The Glasshouse page
 
@@ -220,7 +220,7 @@ The page tests (`UITests/GlasshouseTests`) open real pages from a test server on
 way to trust a certificate and no code for the tests but two debug Simulator hooks (`GlasshouseReachability`, which
 lets a test say the phone has no network, and `--glasshouse-forget-data`, which starts a test with no cookies); a
 release build has neither. `scripts/test-glasshouse-ios.py` makes two certificates with `openssl`, puts the first one into the
-trust store of a Simulator it creates and deletes (`simctl keychain add-root-cert`), starts
+trust store of the shared test Simulator (`simctl keychain add-root-cert`, see [The test Simulator](#the-test-simulator)), starts
 `scripts/glasshouse_test_server.py` with both, runs the tests, and takes a screenshot of each state in both themes. The
 second certificate is trusted by nothing and stands for a site that cannot be trusted.
 
@@ -425,7 +425,7 @@ python3 scripts/test-phone-pairing.py --device <serial> \
 python3 -I scripts/test_phone_pairing_checks.py   # the script's check of the device log
 ```
 
-The iPhone page runs the same way in a Simulator that the script creates and deletes itself. Build
+The iPhone page runs the same way in the shared test Simulator (see [The test Simulator](#the-test-simulator)). Build
 the app and its tests once, then give the script the folder of that build:
 
 ```sh
@@ -450,6 +450,24 @@ answer. The app runs with `--sync-test`, a debug Simulator hook like `--computer
 and waits before each sync and after each report of progress, so a test can see "Syncing" and the counts rise. A
 release build has neither. The test asks the script for each step
 over a port on the loopback address, so no pairing secret is passed as a launch argument.
+
+## The test Simulator
+
+The scripts that test the iPhone app (`test-phone-pairing.py` with `--ios-build`, `test-glasshouse-ios.py` and
+`check-key-not-leaked.sh ios`) all use one Simulator named `Construct Test`, because every booted Simulator takes the
+memory of a phone. `scripts/shared_simulator.py` makes it the first time (from the device type and the runtime the
+script is given) and never deletes it. At the start of a run it
+
+- waits if another run is using the Simulator, so that two runs never clash,
+- boots it and waits until it answers,
+- resets its Keychain (so no pairing or key of an earlier run is left), removes the app with its
+  files, installs the app again, and sets the light appearance and the normal status bar,
+
+and when the run ends it shuts the Simulator down. A `Construct Test` Simulator of another device type or runtime, or a
+second one of the same name, is deleted when a run asks for the Simulator, so do not use that name for your own. The
+Android emulator is not part of this: the Android scripts use the emulator you start.
+
+`python3 -B -I scripts/test_shared_simulator_checks.py` checks the helper against a fake `simctl`, with no Simulator.
 
 ## Sync the copy from the computer
 
