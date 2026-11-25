@@ -255,6 +255,22 @@ class SyncHolderTest {
         }
 
     @Test
+    fun theNoticeOfAComputerThatWasNotReachableGoesWhenThePhoneIsUnpaired() =
+        runTest {
+            val syncer = FakeSyncer()
+            syncer.result = SyncResult.Missed(ComputerLink.Unreachable)
+            val holder = holder(syncer)
+            holder.setForeground(true)
+            runCurrent()
+            assertEquals(SyncNotice.NotReachable, holder.state.value.notice)
+
+            syncer.result = SyncResult.Missed(ComputerLink.NotPaired)
+            holder.syncNow()
+            runCurrent()
+            assertEquals(SyncNotice.None, holder.state.value.notice)
+        }
+
+    @Test
     fun nothingSyncsInTheBackgroundAndASyncThatRunsIsStopped() =
         runTest {
             val syncer = FakeSyncer()

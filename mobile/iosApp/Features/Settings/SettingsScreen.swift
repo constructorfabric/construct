@@ -19,9 +19,10 @@ struct SettingsScreen<Computer: View>: View {
     var body: some View {
         Group {
             if state.value.loading {
-                ProgressView("Loading the settings")
+                SyncNoticePage { ProgressView("Loading the settings") }
             } else {
                 List {
+                    SyncNoticeRow()
                     VStack(alignment: .leading, spacing: ConstructTheme.Space.large) {
                         if let reason = state.value.unavailable {
                             InlineNotice(

@@ -6,7 +6,10 @@ struct ComputerStatus {
     let label: String
     let notice: String
     let endpoint: String?
-    let lastContact: Date?
+    /// When the copy on the phone was last brought up to date, or nil if it never was.
+    let lastSynced: Date?
+    /// Whether a sync that the person waits for is running.
+    let syncing: Bool
     let checking: Bool
     let unpaired: Bool
     let connected: Bool
@@ -20,7 +23,7 @@ struct ComputerStatus {
     static let allowLocalNetwork = "Allow Local Network access for Construct in Settings to connect to your computer."
 
     static let checkingConnection = Self(
-        label: "Checking connection…", notice: "", endpoint: nil, lastContact: nil,
+        label: "Checking connection…", notice: "", endpoint: nil, lastSynced: nil, syncing: false,
         checking: true, unpaired: false, connected: false, canRetry: false, needsLocalNetwork: false,
         dot: .borderStrong
     )
@@ -80,6 +83,7 @@ struct ComputerScreen: View {
     let operation: ComputerActivity
     let open: (PairingMethod) -> Void
     let retry: () -> Void
+    let syncNow: () -> Void
     let unpair: () -> Void
     @State private var confirming = false
     @State private var replacing = false
@@ -130,6 +134,18 @@ struct ComputerScreen: View {
                 OpenAppSettingsButton()
             }
             details
+            if status.connected {
+                Button(action: syncNow) {
+                    HStack(spacing: ConstructTheme.Space.small) {
+                        if status.syncing { ProgressView().accessibilityHidden(true) }
+                        Text(status.syncing ? "Syncing…" : "Sync now")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(operation.busy || status.syncing)
+            }
             if status.canRetry {
                 Button(action: retry) {
                     Text("Try again").frame(maxWidth: .infinity)
@@ -159,7 +175,7 @@ struct ComputerScreen: View {
             ComputerDetail(
                 title: "Connection",
                 value: status.label,
-                detail: status.lastContact.map(LastContact.text),
+                detail: status.lastSynced.map(SyncText.lastSync),
                 dot: status.dot
             )
             ComputerDetail(

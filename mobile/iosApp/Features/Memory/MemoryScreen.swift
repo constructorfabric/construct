@@ -19,14 +19,19 @@ struct MemoryContent: View {
 
     var body: some View {
         if let failure = state.failure {
-            Text(failure)
-                .foregroundColor(ConstructTheme.color(.destructive))
+            SyncNoticePage {
+                Text(failure)
+                    .foregroundColor(ConstructTheme.color(.destructive))
+            }
         } else if state.loading && state.facts.isEmpty {
-            ProgressView()
+            SyncNoticePage { ProgressView() }
         } else {
-            List(state.facts, id: \.factId) { fact in
-                FactRow(fact: fact)
-                    .listRowBackground(ConstructTheme.color(.surface))
+            List {
+                SyncNoticeRow()
+                ForEach(state.facts, id: \.factId) { fact in
+                    FactRow(fact: fact)
+                        .listRowBackground(ConstructTheme.color(.surface))
+                }
             }
             .listStyle(.plain)
         }

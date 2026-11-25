@@ -13,6 +13,9 @@ final class Composition: ObservableObject {
     let modelSettingsDidCommit = PassthroughSubject<Void, Never>()
     let phoneConnection: PhoneConnection
     let copy: CopyStore
+    /// Copies from the paired computer into `copy`, and how often and how long the app lets it show.
+    let syncer: Syncer
+    let syncTiming: SyncTiming
     private let network: NWPathMonitor
 
     init() {
@@ -64,7 +67,26 @@ final class Composition: ObservableObject {
                 KotlinBoolean(bool: LocalNetworkAccess.isDenied(host: host, port: port.int32Value))
             }
         )
+        let sync = Self.sync(IosSyncKt.iosSyncer(connection: phoneConnection, copy: store))
+        syncer = sync.syncer
+        syncTiming = sync.timing
         network.start(queue: DispatchQueue(label: "Construct network"))
+    }
+
+    /// The sync with its timing: the app's own, or, for the sync test of the Simulator, a sync that waits before each
+    /// step so a test can see the loading screen and its counts, and checks often so it need not wait a minute.
+    private static func sync(_ syncer: Syncer) -> (syncer: Syncer, timing: SyncTiming) {
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--sync-test") {
+            Logger().notice("Sync fixture started")
+            return (PacedSyncer(syncer, pause: 0.9), SyncTiming(interval: 6000, justSynced: 3000))
+        }
+        #endif
+        let timing = SyncTiming(
+            interval: SyncHolderKt.SYNC_INTERVAL_MILLIS,
+            justSynced: SyncHolderKt.JUST_SYNCED_MILLIS
+        )
+        return (syncer, timing)
     }
 
     /// How the app finds out whether the phone has a network and how often it asks the computer. The
@@ -89,3 +111,39 @@ final class Composition: ObservableObject {
         network.cancel()
     }
 }
+
+/// How often the app checks the computer while it is in front of the person, and how long "Synced just now" shows,
+/// in milliseconds.
+struct SyncTiming {
+    let interval: Int64
+    let justSynced: Int64
+}
+
+#if DEBUG && targetEnvironment(simulator)
+/// For the sync test only: waits before each sync (three times `pause`) and after each report of progress, so the test
+/// can see "Syncing" and the counts of the first copy rise.
+final class PacedSyncer: NSObject, Syncer {
+    private let base: Syncer
+    private let pause: TimeInterval
+
+    init(_ base: Syncer, pause: TimeInterval) {
+        self.base = base
+        self.pause = pause
+    }
+
+    // The requirement as SKIE names it for a Kotlin `suspend` function of an interface.
+    // swiftlint:disable:next identifier_name
+    func __sync(progress: @escaping (StepProgress) -> Void) async throws -> SyncResult {
+        // Long enough for a test that looks every second or so to see "Syncing" at all.
+        try await Task.sleep(nanoseconds: UInt64(pause * 3 * 1_000_000_000))
+        return try await base.sync { [pause] report in
+            progress(report)
+            Thread.sleep(forTimeInterval: pause)
+        }
+    }
+
+    func record() -> SyncRecord {
+        base.record()
+    }
+}
+#endif

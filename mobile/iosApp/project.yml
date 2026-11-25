@@ -72,7 +72,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         MARKETING_VERSION: "0.1.1"
         # <YYMMDD>.<count of the day> in UTC for TestFlight builds.
-        CURRENT_PROJECT_VERSION: "261125.2"
+        CURRENT_PROJECT_VERSION: "261125.3"
   ConstructTests:
     type: bundle.unit-test
     platform: iOS
