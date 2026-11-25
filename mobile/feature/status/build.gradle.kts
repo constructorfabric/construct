@@ -39,6 +39,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":core:connection"))
+            api(project(":core:sync"))
             api(libs.coroutines.core)
         }
         commonTest.dependencies {

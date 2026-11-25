@@ -12,6 +12,7 @@ Multiplatform. This folder holds the shared Gradle project.
 | `core/database`      | The phone's copy in SQLite (SQLDelight) and `PhoneConstruct`, which runs chat with the copy as its history and facts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `core/designsystem`  | The tokens both apps share, as plain numbers: the colour roles of the desktop app's kit in light and dark, and a scale of spacing steps. Text sizes, radii and control sizes belong to each app's own theme.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `core/connection`    | Connecting to the computer: the pairing offer (a QR payload or a typed code), the line protocol, the connection state and the stored pairing. The Rust client is reached through `core/chat`; the pairing secret is kept by `core/keys`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `core/sync`          | Copying from the computer over the paired connection: facts, chats and the dashboard's numbers in three steps with counts, a check that copies only what changed, each sync applied whole or not at all. `SyncEngine` has no screen; `feature/status` holds the state.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `core/chat`          | The Rust chat core as Kotlin sees it: streaming answers, testing a model setting, and building the fixed request fixture. Android calls it through JNA and iOS uses cinterop.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `core/keys`          | `ModelSettingsStore` keeps the model address, model name and API key together in the Keychain (iPhone) or under a Keystore key (Android). Its contract tests also run against `FakeModelSettingsStore`. See "The model setting and its key".                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `feature/template`   | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -22,7 +23,7 @@ Multiplatform. This folder holds the shared Gradle project.
 | `androidApp`         | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. `AppFrame.kt` is the frame of every page (top bar with the title, a connection line, the navigation bar); a page without a feature is a `PlaceholderPage` until a feature module takes it over.                                                                                                                                                                           |
 | `iosApp`             | The iPhone app in SwiftUI. `project.yml` generates the Xcode project (not committed); Swift files under `App/`, `Core/` and `Features/` are picked up by folder. `Composition.swift` is the one place its objects are built, `Core/FlowState.swift` is the one adapter every feature uses to watch a state holder, `Core/ConstructTheme.swift` maps the shared colours to SwiftUI and holds the iPhone text sizes, radii and control sizes. `App/AppFrame.swift` is the frame of every page (the tab bar, a navigation bar with the inline title, a connection line); a page without a feature is a `PlaceholderPage` until a feature folder takes it over. The tab icons are Lucide, in the asset catalog. |
 
-The Memory holder watches the stream `Construct.memoryFacts`, so a fact changed in the copy shows by itself, and `refresh()` starts the watch again. The other state holders wrap the one-shot reads of `Construct`: a change shows after `refresh()`, not by itself. A read or a watch that is still running is dropped when a new one starts. A `Construct` reports a failed read as `Outcome.Failed` and does not throw (the stream gives it as an item and goes on); run a holder's scope and call `refresh()` on the main thread.
+The Memory holder watches the stream `Construct.memoryFacts`, so a fact changed in the copy shows by itself, and `refresh()` starts the watch again. The Chat holder also reads its list again when a sync changes the chats (`Construct.conversationChanges`). The other state holders wrap the one-shot reads of `Construct`: a change shows after `refresh()`, not by itself. A read or a watch that is still running is dropped when a new one starts. A `Construct` reports a failed read as `Outcome.Failed` and does not throw (the stream gives it as an item and goes on); run a holder's scope and call `refresh()` on the main thread.
 
 The calls and names follow the desktop app's `chat-protocol.ts`, `memory-protocol.ts` and
 `dashboard-protocol.ts` in `app/src`. A screen talks to `Construct` and never knows where the data
@@ -339,6 +340,49 @@ without an application identifier is refused every Keychain call by the Simulato
 page would show a storage error. The script stops with a message when the build is not signed.
 `--ios-theme dark` runs the same test in the dark appearance. The test asks the script for each step
 over a port on the loopback address, so no pairing secret is passed as a launch argument.
+
+## Sync the copy from the computer
+
+`core/sync` copies what the computer holds into the phone's copy over the paired connection. The first
+copy reads the facts, the chats and the dashboard in three steps and reports how many items each step has
+copied, and how many there are once the step knows (the facts and the numbers are counted as their pages come).
+After that a check asks the computer for a token of each part and copies only the parts whose token
+changed (a chat is read from the item the copy already has). What the sync reads is applied in one
+transaction, so a reader of the copy sees it as it was or as it is, never between; what the computer no
+longer has is removed from the copy. Emptying the copy (another computer, or an erase on the computer) is a
+transaction of its own that commits first, so a refill that is cut leaves the copy empty, as the computer is.
+A copy or a store that cannot be read or written cuts the sync and leaves the copy as it was; the next check
+tries again.
+
+The copy records the computer it came from by its certificate fingerprint, not its address. Pairing again
+with the same computer keeps the copy; pairing with another one removes what came from the first when the
+pairing completes, before any page can show it. A computer drops its erase marker when it unpairs its last
+phone, so pairing again with the same computer also forgets the marker the copy held, and the next check takes
+the computer's marker as the first it has seen. The copy keeps a marker only once a sync has been applied (the
+first pairing takes the computer's marker and wipes nothing, for the same reason). So an erase on the computer
+while the phone was unpaired, or between a pairing and the first sync that is applied, is not seen as an erase:
+the sync still removes what the computer no longer has, but the chats started on the phone stay. The chats
+started on the phone are removed only when a paired computer tells the phone, after that first sync, that
+everything about the person was erased. Nothing goes to the computer.
+
+`SyncHolder` in `feature/status` is the state the pages will show, and neither app builds it yet: the
+screens that use it come in the next changes. What the apps do today is record the computer in the copy
+when a pairing completes. The holder runs a sync when the app comes to the front, every minute while it
+stays there, and when a person asks for one. It says "syncing" and "just synced" only for a sync the person
+waits for, and "not reachable" once when the computer stops answering. A sync that is cut shows no notice and
+leaves "last synced" where it was. The other link states (not paired, no network permission, a pairing that
+cannot be opened, an app or a computer to update) are the Computer page's to show.
+
+The tests against the fake computer run with `./gradlew check`. `RealAgentSyncTest` runs the same
+engine against the test program of the computer's endpoint, over real TLS. It is skipped unless the
+program's path is given, and the pull request workflow does not build that program yet, so it runs where
+someone builds it:
+
+```sh
+cargo build --locked -p construct-agent --example phone_pairing
+cd mobile
+CONSTRUCT_PHONE_PAIRING_EXAMPLE=<path to the phone_pairing example> ./gradlew :core:sync:testAndroidHostTest
+```
 
 ## Run the iPhone app
 

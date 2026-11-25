@@ -33,14 +33,20 @@ internal fun createModelSettingsStore(context: Context): ModelSettingsStore = an
 
 internal fun createChatCore(): ChatCore = nativeChatCore()
 
+/**
+ * [copy] decides, each time a pairing completes, whether what the phone holds of the computer stays: it stays for
+ * the same computer and goes for another one.
+ */
 internal fun createPhoneConnection(
     context: Context,
     pollIntervalMillis: Long,
+    copy: CopyStore,
 ) = defaultPhoneConnection(
     androidPairingSecret(context),
     networkAvailable = { context.getSystemService(ConnectivityManager::class.java)?.activeNetwork != null },
     localAccess = { context.hasLocalNetworkPermission() },
     pollIntervalMillis = pollIntervalMillis,
+    adoptComputer = copy::adoptComputer,
 )
 
 internal fun Context.hasLocalNetworkPermission() =

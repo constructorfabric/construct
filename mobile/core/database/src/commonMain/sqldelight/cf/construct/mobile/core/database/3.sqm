@@ -1,0 +1,11 @@
+-- Which computer the copy came from (the fingerprint of its certificate), the marker of its last erasure that the
+-- copy has seen, the token of each part as it was when that part was last copied, the zone of the computer's days,
+-- and whether the first complete copy from that computer has been made. A copy made before this version has no
+-- computer and no first copy.
+ALTER TABLE sync ADD COLUMN computer TEXT;
+ALTER TABLE sync ADD COLUMN reset_marker TEXT;
+ALTER TABLE sync ADD COLUMN facts_token TEXT;
+ALTER TABLE sync ADD COLUMN chats_token TEXT;
+ALTER TABLE sync ADD COLUMN dashboard_token TEXT;
+ALTER TABLE sync ADD COLUMN zone TEXT;
+ALTER TABLE sync ADD COLUMN first_copy_done INTEGER NOT NULL DEFAULT 0;

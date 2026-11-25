@@ -9,7 +9,9 @@ import cf.construct.mobile.core.model.ChatInput
 import cf.construct.mobile.core.model.ChatMessage
 import cf.construct.mobile.core.model.ChatRole
 import cf.construct.mobile.core.model.ConversationOrigin
+import cf.construct.mobile.core.model.ConversationSummary
 import cf.construct.mobile.core.model.Outcome
+import cf.construct.mobile.core.model.valueOrNull
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -60,6 +62,38 @@ class ChatHolderTest {
             assertEquals(ChatMessage(ChatRole.USER, "A new question"), retriedMessage)
             val messages = assertNotNull(holder.state.value.thread).messages
             assertEquals(2, messages.count { it.role == ChatRole.USER })
+        }
+
+    @Test
+    fun theListThatIsOpenShowsWhatASyncChangesWithoutReopeningIt() =
+        runTest {
+            val fake = FakeConstruct(backgroundScope)
+            val changes = MutableSharedFlow<Unit>()
+            var listed = fake.listConversations().valueOrNull().orEmpty()
+            val construct =
+                object : Construct by fake {
+                    override val conversationChanges = changes
+
+                    override suspend fun listConversations(): Outcome<List<ConversationSummary>> = Outcome.Ok(listed)
+                }
+            val holder = holder(construct)
+            runCurrent()
+            assertEquals(
+                listOf("c1", "c2"),
+                holder.state.value.conversations
+                    .map { it.id },
+            )
+
+            // A sync brings a new chat of the computer and removes another.
+            listed = listOf(ConversationSummary("c3", "From the computer", "2026-11-09T10:00:00Z"), listed.first())
+            changes.emit(Unit)
+            runCurrent()
+
+            assertEquals(
+                listOf("c3", "c1"),
+                holder.state.value.conversations
+                    .map { it.id },
+            )
         }
 
     @Test

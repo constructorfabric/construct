@@ -69,6 +69,15 @@ class DatabaseConstructTest {
     }
 
     @Test
+    fun theCopyRefusesToDeleteAFactAndHoldsItAsItWas() =
+        runTest {
+            store.seedWithSampleData()
+            val facts = construct.memoryFacts.first()
+            assertEquals(Outcome.Failed(DatabaseConstruct.FACTS_READ_ONLY), construct.deleteMemoryFact("f1"))
+            assertEquals(facts, construct.memoryFacts.first())
+        }
+
+    @Test
     fun sendingFailsBecauseNothingAnswersYet() =
         runTest {
             assertEquals(Outcome.Failed("not available yet"), construct.sendMessage(ChatInput("c1", "Hi")))
@@ -127,9 +136,9 @@ class DatabaseConstructTest {
             )
             assertEquals(Outcome.Failed(DatabaseConstruct.UNREADABLE), construct.memoryFacts.first())
             assertEquals(Outcome.Ok(2L), construct.getMemoryVersion())
-            construct.deleteMemoryFact("f9")
+            driver.execute(null, "DELETE FROM fact WHERE fact_id = 'f9'", 0)
             assertEquals(Outcome.Failed(DatabaseConstruct.UNREADABLE), construct.memoryFacts.first())
-            construct.deleteMemoryFact("f8")
+            driver.execute(null, "DELETE FROM fact WHERE fact_id = 'f8'", 0)
             assertEquals(Outcome.Ok(MemoryFacts(emptyList(), 2L)), construct.memoryFacts.first())
         }
 
@@ -146,7 +155,8 @@ class DatabaseConstructTest {
             runCurrent()
             assertEquals(listOf(Outcome.Failed(DatabaseConstruct.UNREADABLE)), seen)
 
-            construct.deleteMemoryFact("f9")
+            driver.execute(null, "DELETE FROM fact WHERE fact_id = 'f9'", 0)
+            driver.notifyListeners("fact")
             runCurrent()
 
             assertEquals(Outcome.Ok(MemoryFacts(emptyList(), 2L)), seen.last())
@@ -207,7 +217,6 @@ class DatabaseConstructTest {
 
             store.saveFacts(MemoryFacts(listOf(fact), 1L))
             store.markSynced("2026-01-02T10:00:00Z")
-            store.deleteFact("not-there")
             runCurrent()
 
             assertEquals(listOf(Outcome.Ok(MemoryFacts(listOf(fact), 1L))), seen)

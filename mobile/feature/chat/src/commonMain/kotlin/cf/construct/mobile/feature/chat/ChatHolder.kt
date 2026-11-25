@@ -46,6 +46,9 @@ class ChatHolder(
 
     init {
         scope.launch(start = CoroutineStart.UNDISPATCHED) { construct.chatEvents.collect(::onEvent) }
+        // A sync changes the list under a page that is open: the list is read again on each signal. The first
+        // signal comes at once, and is the read that cannot miss a change made while the first read ran.
+        scope.launch { construct.conversationChanges.collect { refreshList() } }
         refresh()
     }
 

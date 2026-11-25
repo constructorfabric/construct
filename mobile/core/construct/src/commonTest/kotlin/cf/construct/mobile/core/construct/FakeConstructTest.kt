@@ -5,9 +5,11 @@ import cf.construct.mobile.core.model.ChatInput
 import cf.construct.mobile.core.model.ChatMessage
 import cf.construct.mobile.core.model.ChatRole
 import cf.construct.mobile.core.model.EraseStarted
+import cf.construct.mobile.core.model.MemoryFacts
 import cf.construct.mobile.core.model.Outcome
 import cf.construct.mobile.core.model.valueOrNull
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -151,5 +153,31 @@ class FakeConstructTest {
             val construct = fake()
             construct.eraseEverything()
             assertEquals(Outcome.Ok(EraseStarted(running = true)), construct.eraseEverything())
+        }
+
+    private fun Outcome<MemoryFacts>.factIds(): List<String> = valueOrNull()?.facts.orEmpty().map { it.factId }
+
+    @Test
+    fun deletingAFactIsSafeToRepeat() =
+        runTest {
+            val construct = fake()
+            construct.deleteMemoryFact("f1")
+            assertEquals(Outcome.Ok(Unit), construct.deleteMemoryFact("f1"))
+            assertEquals(listOf("f2", "f3", "f4"), construct.memoryFacts.first().factIds())
+        }
+
+    @Test
+    fun aCollectorThatIsAlreadyCollectingSeesADeletedFact() =
+        runTest {
+            val construct = fake()
+            val seen = mutableListOf<Outcome<MemoryFacts>>()
+            backgroundScope.launch(
+                UnconfinedTestDispatcher(testScheduler),
+            ) { construct.memoryFacts.collect { seen += it } }
+            runCurrent()
+            construct.deleteMemoryFact("f1")
+            runCurrent()
+            assertEquals(listOf("f2", "f3", "f4"), seen.last().factIds())
+            assertEquals(2, seen.size)
         }
 }

@@ -37,6 +37,7 @@ include(":core:construct")
 include(":core:database")
 include(":core:chat")
 include(":core:connection")
+include(":core:sync")
 include(":core:keys")
 include(":core:designsystem")
 // Every folder under feature/ with a build file is a feature, so a copy of feature/template needs

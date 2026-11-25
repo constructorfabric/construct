@@ -65,11 +65,17 @@ data class DashboardNumbers(
     val sessionCount: Int,
     val days: List<DayMinutes>,
     val groups: List<GroupMinutes>,
+    /** How many projects with time in the days the person hides on the computer's dashboard. */
+    val hiddenProjectCount: Int = 0,
 )
 
 enum class WidgetKind { TOTAL, BARS_PER_DAY, TABLE, DAY_SUMMARY }
 
-enum class GroupBy { PROJECT, TICKET, TOOL, DAY }
+/** What a widget counts the time of: the sessions of the AI tools, or the applications and sites in front. */
+enum class Source { AI_SESSIONS, ON_SCREEN }
+
+/** What a table groups by. [APP] and [SITE] are for the time on screen only; [TOOL] and [COLLECTION] are not. */
+enum class GroupBy { PROJECT, TICKET, TOOL, COLLECTION, DAY, APP, SITE }
 
 enum class Period { TODAY, THIS_WEEK, LAST_WEEK, THIS_MONTH, LAST_MONTH, LAST_7_DAYS, LAST_30_DAYS }
 
@@ -91,6 +97,8 @@ data class Widget(
     val period: Period? = null,
     val sessions: Whose? = null,
     val filter: Filter? = null,
+    /** What the widget counts the time of; the document's when left out. */
+    val source: Source? = null,
 )
 
 @Serializable
@@ -100,6 +108,8 @@ data class DashboardDocument(
     val period: Period,
     val sessions: Whose,
     val widgets: List<Widget>,
+    /** What the widgets that have none of their own count the time of; the AI sessions when left out. */
+    val source: Source? = null,
 )
 
 /** Why the file as it is now is not used, and where: a line and column or a JSON pointer. */

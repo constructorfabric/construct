@@ -2,6 +2,16 @@ complexity:
   TooManyFunctions:
     # The fake implements an interface; its overrides are not a design choice.
     ignoreOverridden: true
+    # A test class has one function for each thing it shows. The default list of test folders, and the host tests.
+    excludes:
+      - '**/test/**'
+      - '**/androidTest/**'
+      - '**/commonTest/**'
+      - '**/jvmTest/**'
+      - '**/androidUnitTest/**'
+      - '**/androidInstrumentedTest/**'
+      - '**/androidHostTest/**'
+      - '**/iosTest/**'
   LongParameterList:
     # A composable takes its state and its callbacks as parameters; that is how Compose is written.
     ignoreDefaultParameters: true

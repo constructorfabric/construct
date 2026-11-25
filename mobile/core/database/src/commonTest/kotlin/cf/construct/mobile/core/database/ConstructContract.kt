@@ -53,7 +53,7 @@ fun TestScope.collectFacts(construct: Construct): List<Outcome<MemoryFacts>> {
 }
 
 /**
- * What every [Construct] must answer for the reads and the deletes, whatever keeps its data. Each
+ * What every [Construct] must answer for the reads and the erasure, whatever keeps its data. Each
  * implementation holds the data [FakeConstruct] is seeded with, and [contractNumbers] for [contractInput].
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -118,38 +118,17 @@ abstract class ConstructContract {
         }
 
     @Test
-    fun deletingAFactIsSafeToRepeat() =
-        runTest {
-            val construct = construct()
-            construct.deleteMemoryFact("f1")
-            assertEquals(Outcome.Ok(Unit), construct.deleteMemoryFact("f1"))
-            assertEquals(listOf("f2", "f3", "f4"), construct.factIds())
-        }
-
-    @Test
-    fun aCollectorThatIsAlreadyCollectingSeesADeletedFactAndTheErasure() =
+    fun aCollectorThatIsAlreadyCollectingSeesTheErasure() =
         runTest {
             val construct = construct()
             val seen = collectFacts(construct)
             runCurrent()
             assertEquals(listOf(FakeConstruct.seededFacts.map { it.factId }), seen.map { it.factIds() })
 
-            construct.deleteMemoryFact("f1")
-            runCurrent()
-            assertEquals(listOf("f2", "f3", "f4"), seen.last().factIds())
-
             construct.eraseEverything()
             runCurrent()
             assertEquals(Outcome.Ok(MemoryFacts(emptyList(), null)), seen.last())
-            assertEquals(3, seen.size)
-        }
-
-    @Test
-    fun aCollectorThatStartsLaterGetsTheFactsAsTheyAreThen() =
-        runTest {
-            val construct = construct()
-            construct.deleteMemoryFact("f1")
-            assertEquals(listOf("f2", "f3", "f4"), construct.memoryFacts.first().factIds())
+            assertEquals(2, seen.size)
         }
 
     @Test

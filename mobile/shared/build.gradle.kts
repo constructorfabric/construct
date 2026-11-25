@@ -25,6 +25,7 @@ kotlin {
             export(project(":core:construct"))
             export(project(":core:database"))
             export(project(":core:keys"))
+            export(project(":core:sync"))
             export(project(":core:designsystem"))
             featurePaths.forEach { export(project(it)) }
         }
@@ -38,6 +39,7 @@ kotlin {
             api(project(":core:construct"))
             api(project(":core:database"))
             api(project(":core:keys"))
+            api(project(":core:sync"))
             api(project(":core:designsystem"))
             featurePaths.forEach { api(project(it)) }
         }
