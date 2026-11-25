@@ -10,6 +10,7 @@ class ConstructApp : Application() {
     internal val copy by lazy { createCopy(this) }
     val construct by lazy { createConstruct(copy, modelSettings) }
     val chatCore by lazy { createChatCore() }
+    val versionName: String by lazy { packageManager.getPackageInfo(packageName, 0).versionName.orEmpty() }
     val phoneConnection by lazy { createPhoneConnection(this, PhonePolling.intervalMillis, copy) }
 
     // The init throws a plain RuntimeException from Java when the check cannot start.
