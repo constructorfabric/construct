@@ -13,3 +13,11 @@ unsafe_code = "forbid"
 pedantic = { level = "deny", priority = -1 }
 expect_used = "deny"
 unwrap_used = "deny"
+
+# Keep debug builds small. Line tables still give file and line numbers in panics and
+# backtraces; dependencies carry no debug info. Full debug info grew one target dir past 15 GB.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
