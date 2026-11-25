@@ -59,6 +59,8 @@ enum ConstructTheme {
         static let caption: CGFloat = 12
         static let section: CGFloat = 20
         static let heading: CGFloat = 22
+        /// The one big number of a widget.
+        static let display: CGFloat = 34
     }
 
     enum Radius {
@@ -85,6 +87,20 @@ enum ConstructTheme {
         static let dot: CGFloat = 8
         /// The bar of the first copy.
         static let bar: CGFloat = 8
+    }
+
+    /// The bars of the Dashboard page.
+    enum Chart {
+        /// The height of the tallest bar.
+        static let height: CGFloat = 120
+        /// The widest a bar gets: a page that counts one day has one bar.
+        static let barWidth: CGFloat = 44
+        /// What a day with no time keeps of a bar, so the day is still seen.
+        static let baseline: CGFloat = 2
+        /// The bar that shows a share of the time in a table.
+        static let share: CGFloat = 6
+        /// The widest the share bar of a table row is.
+        static let shareWidth: CGFloat = 96
     }
 
     /// The loading line of a web page, along the bottom of the address bar, and the look of a control that has
