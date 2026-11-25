@@ -144,6 +144,117 @@ jobs:
           path: ${{ matrix.path }}
           if-no-files-found: error
 
+  # The disk image signed with the Developer ID certificate and notarized. It runs for a release tag or a manual
+  # run, in the protected `desktop-release` environment that holds the certificate and the notarization login,
+  # and a pull request skips it. Without it, or when it fails, `publish` ships the ad hoc image of `build`.
+  build-macos-signed:
+    needs: version
+    if: >-
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref_type == 'tag')) &&
+      contains(fromJSON(vars.RELEASE_REPOSITORIES || '["constructorfabric/construct"]'), github.repository)
+    name: Build (macos-arm64, signed and notarized)
+    runs-on: macos-15
+    environment: desktop-release
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      RUST_TARGET: aarch64-apple-darwin
+    steps:
+      - *checkout
+      - name: Check the signing secrets
+        shell: bash
+        env:
+          MAC_CERTIFICATE_BASE64: ${{ secrets.MAC_CERTIFICATE_BASE64 }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=()
+          for name in MAC_CERTIFICATE_BASE64 MAC_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::The desktop-release environment lacks these secrets: ${missing[*]}"
+            exit 1
+          fi
+      - name: Install macOS build dependencies
+        run: |
+          test "$(rustc --print host-tuple)" = "$RUST_TARGET"
+          brew install protobuf
+          # Seed the bundled PostgreSQL cache without querying GitHub's releases API.
+          scripts/build-pgvector.sh --download-postgresql "$HOME/.theseus/postgresql" "$RUST_TARGET"
+      - *rust-cache
+      - *build-agent
+      - *setup-node
+      - name: Install app dependencies
+        run: make app-deps
+      - name: Import the Developer ID certificate
+        shell: bash
+        env:
+          MAC_CERTIFICATE_BASE64: ${{ secrets.MAC_CERTIFICATE_BASE64 }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          identity=$(scripts/macos-import-certificate.sh)
+          {
+            echo "MAC_SIGN_IDENTITY=$identity"
+            echo "MAC_SIGN_KEYCHAIN=$RUNNER_TEMP/signing/signing.keychain-db"
+          } >> "$GITHUB_ENV"
+          echo "Signing with the Developer ID identity $identity"
+      - name: Package, sign and notarize the app
+        working-directory: app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run make
+      - name: Sign, notarize and staple the disk image
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          app='app/out/Construct Browser-darwin-arm64/Construct Browser.app'
+          dmg=$(ls app/out/make/dmg/arm64/*.dmg)
+          # The output is read into a variable first: `grep -q` exits at its first match, and the writer of a pipe
+          # then dies of SIGPIPE, which `pipefail` turns into a failed step on a good build.
+          signature=$(codesign -dv --verbose=4 "$app" 2>&1)
+          agent_signature=$(codesign -dv --verbose=4 "$app/Contents/Resources/construct-agent" 2>&1)
+          printf '%s\n' "$signature" "$agent_signature"
+          codesign --verify --deep --strict "$app"
+          grep -Eq 'flags=0x[[:xdigit:]]+\(([^,()]+,)*runtime[,)]' <<< "$signature" \
+            || { echo '::error::The app has no hardened runtime'; exit 1; }
+          grep -Eq 'flags=0x[[:xdigit:]]+\(([^,()]+,)*runtime[,)]' <<< "$agent_signature" \
+            || { echo '::error::The agent has no hardened runtime, so the notarization would refuse it'; exit 1; }
+          grep -Fq "TeamIdentifier=$APPLE_TEAM_ID" <<< "$signature" \
+            || { echo '::error::The app is not signed by the release team'; exit 1; }
+          # Forge notarized and stapled the app; the disk image is signed, notarized and stapled here.
+          codesign --force --sign "$MAC_SIGN_IDENTITY" --keychain "$MAC_SIGN_KEYCHAIN" --timestamp "$dmg"
+          notary=$(xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait 2>&1) || { printf '%s\n' "$notary"; exit 1; }
+          printf '%s\n' "$notary"
+          grep -q 'status: Accepted' <<< "$notary" || { echo '::error::The notary service did not accept the disk image'; exit 1; }
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+          echo "Signed and notarized: $(basename "$dmg")"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-arm64-dmg-signed
+          path: app/out/make/dmg/arm64/*.dmg
+          if-no-files-found: error
+      # Whatever the result: no certificate stays on the runner.
+      - name: Remove the signing keychain
+        if: always()
+        run: scripts/macos-clean-signing.sh
+
   build-windows:
     needs: version
     name: Build (windows-x64)
@@ -212,7 +323,7 @@ jobs:
       !cancelled() && needs.version.result == 'success' &&
       needs.build-linux.result == 'success' && needs.build.result == 'success' &&
       needs.smoke.result == 'success'
-    needs: [version, build-linux, build, smoke, build-windows]
+    needs: [version, build-linux, build, smoke, build-windows, build-macos-signed]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -227,6 +338,21 @@ jobs:
           path: dist
           pattern: '*-{deb,dmg}'
           merge-multiple: true
+      # The signed and notarized disk image replaces the ad hoc one when the signed job succeeded. The names of the
+      # two files are the same, so the signed one is downloaded apart and copied over.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: download-signed-dmg
+        if: needs.build-macos-signed.result == 'success'
+        with:
+          name: macos-arm64-dmg-signed
+          path: dist-signed
+      - name: Use the signed disk image
+        if: steps.download-signed-dmg.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp dist-signed/*.dmg dist/
+          echo "The disk image is signed with the Developer ID certificate and notarized." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: download-windows
         if: needs.build-windows.result == 'success'
