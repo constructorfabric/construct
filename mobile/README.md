@@ -18,7 +18,7 @@ Multiplatform. This folder holds the shared Gradle project.
 | `feature/template`   | An empty feature to copy: a state, a state holder (plain common Kotlin that both apps watch), an Android screen that shows the state and loads nothing, and a test with `FakeConstruct`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `feature/memory`     | The first feature made from the template: the person's facts as a plain list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `feature/settings`   | The model setup of the Settings page, made from the template: a state, a state holder (read, save, test, remove the key) and the Android screen with its form row and message line.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `feature/glasshouse` | What both phones share about the Glasshouse page, the page that opens a web address as on the computer: the state, its state holder, the rule for a typed address, the kinds of problem and the User-Agent. The Android screen is only the line that says why there is no page; the web view comes with each phone's page. See "The Glasshouse page".                                                                                                                                                                                                                                                                                                                                                       |
+| `feature/glasshouse` | What both phones share about the Glasshouse page, the page that opens a web address as on the computer: the state, its state holder, the rule for a typed address, the kinds of problem and the User-Agent. Android adds the address bar, the screen and `GlasshouseWebView`, the phone's web view set up for the page; the iPhone's web view comes with its page. See "The Glasshouse page".                                                                                                                                                                                                                                                                                                                                                       |
 | `shared`             | The one Kotlin framework the iPhone app links (`ConstructShared`): it re-exports the modules above, adds `UiScope` (a main-thread scope Swift can create and close) and uses SKIE, which shows Kotlin flows to Swift as `AsyncSequence`. Its analytics upload is off.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `androidApp`         | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. `AppFrame.kt` is the frame of every page (top bar with the title, a connection line, the navigation bar); a page without a feature is a `PlaceholderPage` until a feature module takes it over.                                                                                                                                                                           |
 | `iosApp`             | The iPhone app in SwiftUI. `project.yml` generates the Xcode project (not committed); Swift files under `App/`, `Core/` and `Features/` are picked up by folder. `Composition.swift` is the one place its objects are built, `Core/FlowState.swift` is the one adapter every feature uses to watch a state holder, `Core/ConstructTheme.swift` maps the shared colours to SwiftUI and holds the iPhone text sizes, radii and control sizes. `App/AppFrame.swift` is the frame of every page (the tab bar, a navigation bar with the inline title, a connection line); a page without a feature is a `PlaceholderPage` until a feature folder takes it over. The tab icons are Lucide, in the asset catalog. |
@@ -231,6 +231,49 @@ xcodebuild -project iosApp/Construct.xcodeproj -scheme Construct -derivedDataPat
 python3 scripts/test-glasshouse-ios.py --ios-build <build folder> \
  --ios-device-type com.apple.CoreSimulator.SimDeviceType.iPhone-17 \
  --ios-runtime com.apple.CoreSimulator.SimRuntime.iOS-27-2 --screenshots <folder>
+```
+
+### The Glasshouse page on Android
+
+`GlasshouseViewModel` (in `androidApp`) makes the holder and the one `GlasshouseWebView` when the person first opens
+the page, and keeps both for as long as the activity's screen lives. The screen takes the web view out of its frame when
+it leaves and puts it back when it returns, so the page, what was typed in it and its history stay while the person is
+on another page of the app; a page that was loading keeps loading. The page has no title bar and no connection line:
+its address bar takes their place.
+
+- **Address bar.** One rounded bar with the lock (only for an `https` page that opened), the host and reload. Tapped,
+  it shows the whole address and a clear button, and the keyboard's Go key opens it. A refused address stays in the bar
+  and the message is under it. The system back goes back in the page while it can.
+- **Start address.** `-PconstructGlasshouseStartAddress=<https address>` (`gradle.properties`) puts it into the build.
+  It is empty, so the page says there is none and the person types an address. It is not a setting of the app.
+- **User-Agent.** `Construct/<version>` goes last on the web view's own User-Agent, where `<version>` is the app's
+  `versionName`; it is set before the first load, so the page, its scripts and its pictures all carry it.
+- **Cookies.** The web views of an app share one `CookieManager` jar, kept in the app's own data, so it is not the
+  phone's browser's. `flushCookies` writes it to the disk after each page and when the activity stops, so a sign-in
+  survives the app being closed.
+- **What opens.** Only web addresses: a link, a redirect or a new window to any other kind of address does nothing and
+  starts no other app, and a window a page asks for opens in the same page. A certificate the system does not trust is
+  never accepted. Plain `http` stays blocked by the app's network settings and shows the "cannot open" message.
+- **Permissions.** A page that asks for the camera, the microphone, the location or anything else is refused, with no
+  prompt. The manifest is unchanged by the page: the camera and local network permissions are the pairing page's.
+- **Problems.** The web view's error codes become the kinds of problem in `GlasshouseErrors`: a name that does not
+  resolve is "not found", a connection that fails is "refused", and both are "offline" when the phone has no network.
+  With no network the page is not asked for at all: the web view would wait on a connection it had open before the
+  network went, so the page says "offline" at once and Reload asks again. A web view whose process stopped is replaced
+  and the page says "stopped working" with Reload.
+
+The page tests (`GlasshouseTest`, `GlasshouseRestartTest`) open real pages from a test server on the computer over
+`https`. The debug build, and only the debug build, trusts that server's certificate: `./gradlew :androidApp:assembleDebug`
+makes two certificates with `keytool` (`generateGlasshouseTestCertificates`), puts the public part of the first into the
+debug resources, and `src/debug/res/xml/network_security_config.xml` trusts it through `debug-overrides`, which an app
+that is not debuggable ignores. The second certificate is trusted by nothing and stands for a site that cannot be trusted.
+`scripts/glasshouse_test_server.py` serves the made-up pages with them and logs what it was asked for; the tests read
+that log through the same connection. To run everything on an emulator that is yours alone (the tests turn its network
+off and on), and to take a screenshot of each state in both themes:
+
+```sh
+./gradlew :androidApp:assembleDebug :androidApp:assembleDebugAndroidTest
+python3 scripts/test-glasshouse.py --device emulator-5554 --screenshots <folder>
 ```
 
 ## Rules

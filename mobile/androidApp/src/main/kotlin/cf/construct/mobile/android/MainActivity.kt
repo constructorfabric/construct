@@ -10,6 +10,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -21,6 +22,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import cf.construct.mobile.core.chat.ChatCore
 import cf.construct.mobile.core.construct.Construct
 import cf.construct.mobile.core.keys.ModelSettingsStore
+import cf.construct.mobile.feature.glasshouse.GlasshouseScreen
 import cf.construct.mobile.feature.memory.MemoryHolder
 import cf.construct.mobile.feature.memory.MemoryScreen
 import cf.construct.mobile.feature.settings.SettingsActions
@@ -51,6 +53,17 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    // Made when the person first opens the page; the activity flushes its cookies only if it exists.
+    private val glasshouseModel =
+        viewModels<GlasshouseViewModel> {
+            viewModelFactory {
+                initializer {
+                    val app = application as ConstructApp
+                    GlasshouseViewModel(app, BuildConfig.GLASSHOUSE_START_ADDRESS, app.versionName)
+                }
+            }
+        }
 
     private val memory: MemoryViewModel by viewModels {
         viewModelFactory { initializer { MemoryViewModel((application as ConstructApp).construct) } }
@@ -118,7 +131,7 @@ class MainActivity : ComponentActivity() {
                             }
 
                             else -> {
-                                PlaceholderPage(page)
+                                OtherPage(page, glasshouseModel)
                             }
                         }
                     }
@@ -157,6 +170,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         connection.holder.setForeground(false)
+        // A sign-in made in the page must be on the disk if the app is closed now.
+        if (glasshouseModel.isInitialized()) glasshouseModel.value.web.flushCookies()
         super.onStop()
     }
 }
@@ -183,4 +198,22 @@ internal class SettingsViewModel(
             onRemoveKey = holder::removeKey,
             onTryAgain = holder::load,
         )
+}
+
+/**
+ * The pages that are not Memory or Settings: the Glasshouse page, and a placeholder for the rest. The Glasshouse
+ * view model is made when its page is first shown, not before.
+ */
+@Composable
+private fun OtherPage(
+    page: Page,
+    glasshouseModel: Lazy<GlasshouseViewModel>,
+) {
+    if (page == Page.Glasshouse) {
+        val model = glasshouseModel.value
+        val state by model.holder.state.collectAsState()
+        GlasshouseScreen(state, model.web, model.actions)
+    } else {
+        PlaceholderPage(page)
+    }
 }

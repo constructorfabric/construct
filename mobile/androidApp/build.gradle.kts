@@ -1,4 +1,8 @@
 import com.android.build.api.variant.HostTestBuilder
+import org.gradle.process.ExecOperations
+import java.security.KeyStore
+import java.util.Base64
+import javax.inject.Inject
 
 plugins {
     alias(libs.plugins.android.application)
@@ -38,7 +42,17 @@ android {
         // The chat core is built for these two only; this keeps the 32-bit libraries of the JNA AAR out, so
         // a device of another ABI cannot install an app whose core would not load.
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        // The address the Glasshouse page opens first. Empty means none: the page says so and the person types
+        // one. A build sets it with -PconstructGlasshouseStartAddress=<https address>; it is not a setting.
+        val glasshouseStart = providers.gradleProperty("constructGlasshouseStartAddress").orElse("").get()
+        buildConfigField(
+            "String",
+            "GLASSHOUSE_START_ADDRESS",
+            "\"" + glasshouseStart.replace("\\", "\\\\").replace("\"", "\\\"") + "\"",
+        )
     }
+
+    buildFeatures { buildConfig = true }
 
     sourceSets {
         // The Rust library of each ABI, built outside the repository by scripts/build-core.sh.
@@ -90,6 +104,13 @@ android {
 androidComponents {
     // The release build must be tested too: its seeding differs from the debug build's.
     beforeVariants(selector().withBuildType("release")) { it.hostTests[HostTestBuilder.UNIT_TEST_TYPE]?.enable = true }
+    // The certificate the page tests trust goes into the debug build alone.
+    onVariants(selector().withBuildType("debug")) { variant ->
+        variant.sources.res?.addGeneratedSourceDirectory(
+            glasshouseTestCertificates,
+            GlasshouseTestCertificates::resDir,
+        )
+    }
 }
 
 dependencies {
@@ -100,6 +121,7 @@ dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":core:keys"))
     implementation(project(":feature:chat"))
+    implementation(project(":feature:glasshouse"))
     implementation(project(":feature:memory"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:status"))
@@ -174,3 +196,99 @@ tasks.configureEach {
         dependsOn(generateTestKeystore)
     }
 }
+
+// The page tests open pages from a test server over https. Two certificates are made here with the JDK's keytool for
+// each build folder and are not stored: `trusted` is the one the debug build, and only the debug build, accepts (the
+// `debug-overrides` of src/debug/res/xml/network_security_config.xml are read only by an app that is debuggable, and
+// the file is added to the debug variant alone); `untrusted` is for the site whose certificate nothing trusts. The
+// test server reads both from `server` in the output folder (scripts/test-glasshouse.py).
+abstract class GlasshouseTestCertificates : DefaultTask() {
+    @get:OutputDirectory
+    abstract val resDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val serverDir: DirectoryProperty
+
+    @get:Inject
+    abstract val exec: ExecOperations
+
+    @TaskAction
+    fun make() {
+        val raw =
+            resDir
+                .get()
+                .asFile
+                .resolve("raw")
+                .apply { deleteRecursively() }
+        raw.mkdirs()
+        val server = serverDir.get().asFile.apply { deleteRecursively() }
+        server.mkdirs()
+        for (name in listOf("trusted", "untrusted")) {
+            val store = temporaryDir.resolve("$name.p12").apply { delete() }
+            exec.exec {
+                commandLine(
+                    File(System.getProperty("java.home"), "bin/keytool").path,
+                    "-genkeypair",
+                    "-alias",
+                    "server",
+                    "-keyalg",
+                    "RSA",
+                    "-keysize",
+                    "2048",
+                    "-validity",
+                    "90",
+                    "-dname",
+                    "CN=glasshouse-test-$name",
+                    // The emulator reaches the Mac at 10.0.2.2; the other two are for a phone with a reverse port.
+                    "-ext",
+                    "san=ip:10.0.2.2,ip:127.0.0.1,dns:localhost",
+                    "-storetype",
+                    "PKCS12",
+                    "-storepass",
+                    PASSWORD,
+                    "-keystore",
+                    store.path,
+                )
+            }
+            val keys =
+                KeyStore
+                    .getInstance(
+                        "PKCS12",
+                    ).apply { store.inputStream().use { load(it, PASSWORD.toCharArray()) } }
+            val certificate = pem("CERTIFICATE", keys.getCertificate("server").encoded)
+            server.resolve("$name.pem").writeText(certificate)
+            server
+                .resolve(
+                    "$name-key.pem",
+                ).writeText(pem("PRIVATE KEY", keys.getKey("server", PASSWORD.toCharArray()).encoded))
+            if (name == "trusted") raw.resolve("glasshouse_test_certificate.pem").writeText(certificate)
+        }
+    }
+
+    private fun pem(
+        label: String,
+        der: ByteArray,
+    ): String =
+        "-----BEGIN $label-----\n" +
+            Base64.getMimeEncoder(PEM_LINE, "\n".toByteArray()).encodeToString(der) +
+            "\n-----END $label-----\n"
+
+    private companion object {
+        const val PASSWORD = "glasshouse-test"
+        const val PEM_LINE = 64
+    }
+}
+
+val glasshouseTestCertificates =
+    tasks.register<GlasshouseTestCertificates>("generateGlasshouseTestCertificates") {
+        resDir.set(layout.buildDirectory.dir("generated/glasshouseTest/res"))
+        serverDir.set(layout.buildDirectory.dir("generated/glasshouseTest/server"))
+        // Made again when the files are gone or old, so the 90-day certificates never go stale.
+        val trusted = layout.buildDirectory.file("generated/glasshouseTest/server/trusted.pem")
+        outputs.upToDateWhen {
+            trusted.get().asFile.let {
+                it.exists() &&
+                    System.currentTimeMillis() - it.lastModified() < 60L * 24 * 3600 * 1000
+            }
+        }
+    }

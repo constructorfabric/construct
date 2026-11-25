@@ -54,20 +54,24 @@ fun AppFrame(
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            Column {
-                TopAppBar(
-                    title = { Text(detail?.title ?: stringResource(selected.title)) },
-                    actions = { if (detail == null) pageActions() },
-                    navigationIcon = {
-                        if (detail != null) {
-                            IconButton(onClick = goBack) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            // The Glasshouse page is a browser: its address bar takes the place of the title, and it has nothing
+            // to sync.
+            if (selected != Page.Glasshouse) {
+                Column {
+                    TopAppBar(
+                        title = { Text(detail?.title ?: stringResource(selected.title)) },
+                        actions = { if (detail == null) pageActions() },
+                        navigationIcon = {
+                            if (detail != null) {
+                                IconButton(onClick = goBack) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                }
                             }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-                )
-                if (detail == null) ConnectionLine(connection, onTryAgain, LocalControlSizes.current.dot)
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                    )
+                    if (detail == null) ConnectionLine(connection, onTryAgain, LocalControlSizes.current.dot)
+                }
             }
         },
         bottomBar = { if (detail == null) PageBar(selected, onSelect) },
