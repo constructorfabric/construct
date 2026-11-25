@@ -18,9 +18,11 @@ it resets the Simulator's Keychain, installs the app again, puts the first certi
 store (`simctl keychain add-root-cert`), so the page tests load pages over https from this Mac, and shuts the Simulator
 down at the end. The second certificate is trusted by nothing and stands for a site that cannot be trusted. Nothing
 about the certificates is in the app. The script starts `glasshouse_test_server.py`, runs the page tests
-(`ConstructUITests/GlasshouseTests`) and, with --screenshots, runs the screenshot test in the light and the dark
-theme and saves a picture of each state of the page. It also answers the test's one request that only a Mac can do:
-stopping the web process of the page. The exit status is 0 when every test passed.
+(`ConstructUITests/GlasshouseTests`) and the restricted mode tests (`ConstructUITests/GlasshouseRestrictedTests`) and,
+with --screenshots, runs the screenshot test in the light and the dark theme and saves a picture of each state of the
+page. It also answers the requests of the tests that only a Mac can do: stopping the web process of the page, and
+setting and reading the Simulator's pasteboard from outside the app (`pbcopy:<text>`, `pbpaste`). The exit status is 0
+when every test passed.
 """
 
 import argparse
@@ -41,11 +43,11 @@ import shared_simulator  # noqa: E402
 
 MOBILE = Path(__file__).resolve().parents[1]
 SERVER = Path(__file__).resolve().parent / "glasshouse_test_server.py"
-TESTS = "ConstructUITests/GlasshouseTests"
+TESTS = ("ConstructUITests/GlasshouseTests", "ConstructUITests/GlasshouseRestrictedTests")
 SHOTS_TEST = "ConstructUITests/GlasshouseShotsTests/testEveryStateForTheScreenshots"
 RUN_TIMEOUT = 1800
 STATES = ("nostart", "ready", "refused", "typing", "loading", "notfound", "certificate", "connection-refused", "stopped",
-          "offline")
+          "offline", "restricted", "blocked")
 
 
 def read(*args):
@@ -112,8 +114,19 @@ def stop_web_processes(device):
     return killed
 
 
+def pasteboard(device, command):
+    """`pbcopy:<text>` puts a text on the Simulator's pasteboard, `pbpaste` answers with what is there (one line)."""
+    if command.startswith("pbcopy:"):
+        subprocess.run(("xcrun", "simctl", "pbcopy", device), input=command[len("pbcopy:"):], text=True, check=True,
+                       timeout=60)
+        return "done"
+    result = subprocess.run(("xcrun", "simctl", "pbpaste", device), capture_output=True, text=True, timeout=60)
+    return result.stdout.replace("\n", " ").strip() if result.returncode == 0 else ""
+
+
 def serve_control(listener, device):
-    """One word per line in, one word back: `crash` stops the web processes of the Simulator."""
+    """One line in, one line back: `crash` stops the web processes of the Simulator, and `pbcopy:<text>` and `pbpaste`
+    set and read its pasteboard."""
     while True:
         try:
             client, _ = listener.accept()
@@ -121,7 +134,10 @@ def serve_control(listener, device):
             return
         with client:
             command = client.makefile().readline().strip()
-            answer = "done" if command == "crash" and stop_web_processes(device) else "unknown"
+            if command.startswith("pbcopy:") or command == "pbpaste":
+                answer = pasteboard(device, command)
+            else:
+                answer = "done" if command == "crash" and stop_web_processes(device) else "unknown"
             client.sendall((answer + "\n").encode())
 
 
@@ -134,10 +150,11 @@ def find_manifest(build):
 
 def run_tests(manifest, device, environment, only, skip=(), result=None):
     """Runs the tests named in `only` (a name or a list of names) and says whether all of them passed."""
+    only = [only] if isinstance(only, str) else list(only)
     command = ["xcodebuild", "-xctestrun", manifest, "-destination", f"id={device}", "-parallel-testing-enabled", "NO"]
     if result:
         command += ["-resultBundlePath", str(result)]
-    command += [f"-only-testing:{item}" for item in ([only] if isinstance(only, str) else only)]
+    command += [f"-only-testing:{item}" for item in only]
     command += [f"-skip-testing:{item}" for item in skip]
     command += ["test-without-building"]
     env = dict(os.environ, **{f"TEST_RUNNER_{key}": value for key, value in environment.items()})
@@ -178,7 +195,7 @@ def main():
     parser.add_argument("--screenshots", type=Path, help="a folder to save a screenshot of each state in both themes")
     parser.add_argument("--screenshots-only", action="store_true", help="take the screenshots and run no other test")
     parser.add_argument("--only", action="append",
-                        help="run only this test of GlasshouseTests, such as testBackForwardAndReloadWork; repeat it for more")
+                        help="run only this test, such as GlasshouseTests/testBackForwardAndReloadWork; repeat it for more")
     args = parser.parse_args()
     if args.screenshots_only and not args.screenshots:
         parser.error("--screenshots-only needs --screenshots")
@@ -203,7 +220,7 @@ def main():
                     }
                     passed = True
                     if args.only:
-                        passed = run_tests(manifest, device, environment, [f"{TESTS}/{name}" for name in args.only])
+                        passed = run_tests(manifest, device, environment, [f"ConstructUITests/{name}" for name in args.only])
                     elif not args.screenshots_only:
                         passed = run_tests(manifest, device, environment, TESTS)
                     if args.screenshots and not args.only:

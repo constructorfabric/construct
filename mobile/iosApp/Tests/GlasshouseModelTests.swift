@@ -37,7 +37,23 @@ final class GlasshouseModelTests: XCTestCase {
         let refusal = try XCTUnwrap(scripts.first { $0.source.contains("geolocation") })
         XCTAssertEqual(refusal.injectionTime, .atDocumentStart)
         XCTAssertFalse(refusal.isForMainFrameOnly)
-        XCTAssertEqual(scripts.count, 1)
+        XCTAssertEqual(scripts.count, 2)
+    }
+
+    func testPrintAndShareAreRefusedByAScriptThatRunsFirstInEveryFrame() throws {
+        let (_, view) = started()
+        let scripts = view.configuration.userContentController.userScripts
+        let refusal = try XCTUnwrap(scripts.first { $0.source.contains(GlasshouseRestrictions.messageName) })
+        XCTAssertEqual(refusal.injectionTime, .atDocumentStart)
+        XCTAssertFalse(refusal.isForMainFrameOnly)
+    }
+
+    func testTheWebViewIsTheOneWhoseTouchMenuOffersNoCopyCutOrShare() {
+        let (_, view) = started()
+        XCTAssertTrue(view is GlasshouseWebView)
+        XCTAssertFalse(view.canPerformAction(NSSelectorFromString("copy:"), withSender: nil))
+        XCTAssertFalse(view.canPerformAction(NSSelectorFromString("cut:"), withSender: nil))
+        XCTAssertFalse(view.canPerformAction(NSSelectorFromString("_share:"), withSender: nil))
     }
 
     func testAPageCannotAskForAnotherWindowByItselfAndTheWebViewHasNoInspector() {

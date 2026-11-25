@@ -20,6 +20,10 @@ task `generateGlasshouseTestCertificates` writes. The pages:
   /new-window       a link and a button that ask for a new window
   /app-links        links to addresses of other apps and of phone features, and one that redirects to one
   /permissions      asks for the camera and the location and writes what it was told
+  /restricted       the page of the restricted mode tests: text, a picture, a link that asks for a download, a file the
+                    server sends to save, and buttons for the page's own copy, print and share commands
+  /notes.txt        a plain text file
+  /attachment       the same file, sent with a header that asks to save it
   /slow             answers after thirty seconds
   /__requests       what the server was asked for: path, User-Agent and whether a cookie came (JSON)
   /__reset          forgets the requests
@@ -57,6 +61,44 @@ PAGE = """<!doctype html>
 <style>body{{font-family:Georgia,serif;margin:16px;color:#1f2933;line-height:1.5}}
 img{{display:block;width:100%;height:150px;border-radius:8px}} a,button,input{{font-size:1rem}}
 input{{width:90%;padding:8px}}</style></head><body>{body}</body></html>
+"""
+
+
+RESTRICTED = """
+<h1>Restricted notes</h1>
+<p id="words">Basil likes warmth and mint likes a pot of its own.</p>
+<img id="pic" src="/garden.png" alt="A green picture">
+<p><a id="download" href="/notes.txt" download="notes.txt">Download the notes</a></p>
+<p><a id="attachment" href="/attachment">Open the notes file</a></p>
+<p><button id="copy">Copy the code</button> <button id="print">Print notes</button> <button id="share">Share notes</button> <button id="select">Select the words</button></p>
+<p><input id="field" type="text" placeholder="Paste here"></p>
+<p id="status">ready</p>
+<script>
+const status = document.getElementById('status');
+document.getElementById('copy').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText('page-secret-code');
+    status.textContent = 'copied';
+  } catch (error) {
+    status.textContent = 'copy failed: ' + error.name;
+  }
+});
+document.getElementById('select').addEventListener('click', () => {
+  const range = document.createRange();
+  range.selectNodeContents(document.getElementById('words'));
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+});
+document.getElementById('print').addEventListener('click', () => { window.print(); status.textContent = 'print asked'; });
+document.getElementById('share').addEventListener('click', async () => {
+  try {
+    await navigator.share({title: 'Notes', text: 'Basil likes warmth.'});
+    status.textContent = 'shared';
+  } catch (error) {
+    status.textContent = 'share refused: ' + error.name;
+  }
+});
+</script>
 """
 
 
@@ -206,6 +248,13 @@ navigator.geolocation.getCurrentPosition(() => { lines.location = 'granted'; sho
 """
                 body = f'<h1>Permissions</h1><p id="result">asking</p><script>{script}</script>'
                 return self.send(200, page("Permissions", body))
+            if path == "/restricted":
+                return self.send(200, page("Restricted notes", RESTRICTED))
+            if path == "/notes.txt":
+                return self.send(200, b"Basil likes warmth.\n", "text/plain; charset=utf-8")
+            if path == "/attachment":
+                headers = (("Content-Disposition", 'attachment; filename="notes.txt"'),)
+                return self.send(200, b"Basil likes warmth.\n", "text/plain; charset=utf-8", headers)
             if path == "/slow":
                 time.sleep(SLOW_SECONDS)
                 return self.send(200, page("Slow page", "<h1>Slow page loaded</h1><p>It took a long while.</p>"))

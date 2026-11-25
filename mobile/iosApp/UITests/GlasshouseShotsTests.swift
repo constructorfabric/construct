@@ -59,5 +59,20 @@ final class GlasshouseShotsTests: GlasshouseTestCase {
         go(site.trusted + "/herbs")
         waitForMessage(Message.noNetwork)
         shot("offline", theme)
+
+        post(TestSite.onlineNotification)
+        shootRestrictedMode(theme)
+    }
+
+    /// The page in restricted mode, and the line that tells a refused download.
+    private func shootRestrictedMode(_ theme: String) {
+        go(site.trusted + "/restricted")
+        waitForPage("Restricted notes")
+        Thread.sleep(forTimeInterval: 1)
+        shot("restricted", theme)
+
+        app.webViews.links["Download the notes"].tap()
+        _ = app.staticTexts[Message.downloadBlocked].waitForExistence(timeout: 10)
+        shot("blocked", theme)
     }
 }

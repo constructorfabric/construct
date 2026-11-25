@@ -12,6 +12,8 @@ final class GlasshouseModel: NSObject, ObservableObject {
     let state: FlowState<GlasshouseState>
     @Published private(set) var webView: WKWebView?
     @Published private(set) var progress = 0.0
+    /// The page's restricted mode, which the screen shows and the delegate calls tell what the page refused.
+    let restriction: GlasshouseRestriction
 
     private let holder: GlasshouseHolder
     private let version: String
@@ -24,11 +26,17 @@ final class GlasshouseModel: NSObject, ObservableObject {
     /// web view's current one, and "back" returns to it.
     private var failedBeforeShowing = false
 
-    init(startAddress: String?, version: String, reachability: GlasshouseReachability = GlasshouseReachability()) {
+    init(
+        startAddress: String?,
+        version: String,
+        reachability: GlasshouseReachability = GlasshouseReachability(),
+        restriction: GlasshouseRestriction? = nil
+    ) {
         holder = GlasshouseHolder(configuredStartAddress: startAddress)
         state = FlowState(holder.state)
         self.version = version
         self.reachability = reachability
+        self.restriction = restriction ?? GlasshouseRestriction()
         super.init()
         #if DEBUG && targetEnvironment(simulator)
         // A page test starts from no cookies and no site data, which are otherwise kept between launches.
@@ -37,6 +45,11 @@ final class GlasshouseModel: NSObject, ObservableObject {
                 ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
                 modifiedSince: .distantPast
             ) {}
+        }
+        // A restricted mode test needs something the app itself put on the pasteboard: the app may read that back, and
+        // it cannot read what a test runner or another app put there. An empty text empties the pasteboard.
+        if let text = ProcessInfo.processInfo.environment["CONSTRUCT_GLASSHOUSE_TEST_PASTEBOARD"] {
+            UIPasteboard.general.items = text.isEmpty ? [] : [["public.utf8-plain-text": text]]
         }
         #endif
     }
@@ -54,7 +67,8 @@ final class GlasshouseModel: NSObject, ObservableObject {
             edited: { [holder] in holder.addressEdited() },
             reload: { [holder] in holder.reload() },
             back: { [holder] in holder.back() },
-            forward: { [holder] in holder.forward() }
+            forward: { [holder] in holder.forward() },
+            dismissScreenshotNotice: { [restriction] in restriction.dismissScreenshotNotice() }
         )
     }
 
@@ -83,11 +97,21 @@ final class GlasshouseModel: NSObject, ObservableObject {
         // everything it asks for, from the first request.
         configuration.applicationNameForUserAgent = "Construct/\(version)"
         configuration.userContentController.addUserScript(GlasshouseRefusals.userScript())
-        let view = WKWebView(frame: .zero, configuration: configuration)
+        // Restricted mode: a print or a share the page's script asks for is refused and said so.
+        configuration.userContentController.addUserScript(GlasshouseRestrictions.userScript())
+        configuration.userContentController.add(
+            GlasshouseBlockedMessages { [weak self] action in self?.restriction.blocked(action) },
+            name: GlasshouseRestrictions.messageName
+        )
+        let view = GlasshouseWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
         view.allowsLinkPreview = false
+        if #available(iOS 16.4, *) {
+            // No developer tools: the system's Web Inspector is off for this web view.
+            view.isInspectable = false
+        }
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.underPageBackgroundColor = UIColor(ConstructTheme.color(.background))
         view.accessibilityIdentifier = "glasshouse-page"
@@ -205,7 +229,12 @@ extension GlasshouseModel: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
-        guard let url = navigationAction.request.url, !navigationAction.shouldPerformDownload else {
+        if navigationAction.shouldPerformDownload {
+            restriction.blocked(.download)
+            decisionHandler(.cancel)
+            return
+        }
+        guard let url = navigationAction.request.url else {
             decisionHandler(.cancel)
             return
         }
@@ -233,8 +262,13 @@ extension GlasshouseModel: WKNavigationDelegate {
         decidePolicyFor navigationResponse: WKNavigationResponse,
         decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
     ) {
-        // A file the web view cannot show would be a download, which this page does not offer.
-        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .cancel)
+        // A file to save, not a page to show, would be a download, which restricted mode refuses.
+        if GlasshouseRestrictions.isDownload(navigationResponse.response, canShow: navigationResponse.canShowMIMEType) {
+            restriction.blocked(.download)
+            decisionHandler(.cancel)
+        } else {
+            decisionHandler(.allow)
+        }
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -276,6 +310,15 @@ extension GlasshouseModel: WKNavigationDelegate {
 }
 
 extension GlasshouseModel: WKUIDelegate {
+    /// A touch and hold on a link or a picture shows no menu: "Copy", "Share" and "Save image" are all in it.
+    func webView(
+        _ webView: WKWebView,
+        contextMenuConfigurationFor elementInfo: WKContextMenuElementInfo,
+        completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+
     func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,

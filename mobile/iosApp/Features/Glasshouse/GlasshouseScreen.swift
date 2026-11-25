@@ -9,14 +9,18 @@ struct GlasshouseActions {
     let reload: () -> Void
     let back: () -> Void
     let forward: () -> Void
+    /// The person has read the line that says a screenshot cannot be blocked.
+    let dismissScreenshotNotice: () -> Void
 }
 
 /// The Glasshouse page: the address bar under the status area, the web page, and back and forward above the tab
-/// bar. It draws the state and the web view it is given, and loads nothing itself.
+/// bar. It draws the state and the web view it is given, and loads nothing itself. The page is always in restricted
+/// mode, so the sign of it is always under the address bar.
 struct GlasshouseScreen: View {
     @ObservedObject var state: FlowState<GlasshouseState>
     let progress: Double
     let webView: WKWebView?
+    let restricted: GlasshouseRestrictedState
     let actions: GlasshouseActions
 
     var body: some View {
@@ -32,9 +36,21 @@ struct GlasshouseScreen: View {
                     edited: actions.edited,
                     reload: actions.reload
                 )
+                RestrictedSign()
                 if current.addressRefused {
                     InlineNotice(text: GlasshouseTexts.notWeb, error: true)
                         .accessibilityIdentifier("glasshouse-message")
+                }
+                if restricted.screenshotNotice {
+                    InlineNotice(
+                        text: GlasshouseTexts.screenshotOpen,
+                        actions: [.init(title: GlasshouseTexts.understood, run: actions.dismissScreenshotNotice)]
+                    )
+                    .accessibilityIdentifier("glasshouse-screenshot-notice")
+                }
+                if let blocked = restricted.blocked {
+                    InlineNotice(text: GlasshouseTexts.blocked(blocked))
+                        .accessibilityIdentifier("glasshouse-blocked")
                 }
             }
             .padding(.horizontal, ConstructTheme.Space.large)
@@ -59,7 +75,18 @@ struct GlasshouseScreen: View {
         return ZStack(alignment: .topLeading) {
             if let webView {
                 GlasshouseWebContainer(webView: webView)
-                    .accessibilityHidden(message != nil)
+                    .accessibilityHidden(message != nil || restricted.covered)
+            }
+            if restricted.covered {
+                // The screen is being recorded or shown on another screen: nothing of the page is on it.
+                Text(GlasshouseTexts.pageHidden)
+                    .font(.system(size: ConstructTheme.TextSize.secondary))
+                    .foregroundStyle(ConstructTheme.color(.mutedForeground))
+                    .multilineTextAlignment(.center)
+                    .padding(ConstructTheme.Space.large)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(ConstructTheme.color(.background))
+                    .accessibilityIdentifier("glasshouse-hidden")
             }
             if let message {
                 VStack(alignment: .leading, spacing: ConstructTheme.Space.none) {
@@ -86,6 +113,20 @@ struct GlasshouseScreen: View {
             return (GlasshouseTexts.noStartAddress, false)
         }
         return nil
+    }
+}
+
+/// The small sign that the page is in restricted mode, which nothing switches off.
+private struct RestrictedSign: View {
+    var body: some View {
+        HStack(spacing: ConstructTheme.Space.small) {
+            FeatureIcon("GlasshouseLock", size: ConstructTheme.TextSize.caption)
+            Text(GlasshouseTexts.restricted)
+                .font(.system(size: ConstructTheme.TextSize.caption))
+        }
+        .foregroundStyle(ConstructTheme.color(.mutedForeground))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("glasshouse-restricted")
     }
 }
 
