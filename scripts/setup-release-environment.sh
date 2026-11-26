@@ -125,8 +125,14 @@ done < <(gh api --paginate "repos/$repo/environments/$environment/deployment-bra
 
 # Secrets of the same names at the level of the repository or the organisation, or in the three environments
 # this one replaces, reach workflows of any branch. They are not removed here, but they are named.
-shared=$( { gh api --paginate "repos/$repo/actions/secrets" --jq '.secrets[].name' 2>/dev/null || true
-  gh api --paginate "repos/$repo/actions/organization-secrets" --jq '.secrets[].name' 2>/dev/null || true; } | sort -u)
+shared=
+for scope in actions/secrets actions/organization-secrets; do
+  if names=$(gh api --paginate "repos/$repo/$scope" --jq '.secrets[].name' 2>/dev/null); then
+    shared+=$names$'\n'
+  else
+    echo "warning: could not list $scope of $repo; look for secrets of the same names there yourself" >&2
+  fi
+done
 for item in "${planned[@]}"; do
   rest=${item#*:}
   name=${rest%%:*}
