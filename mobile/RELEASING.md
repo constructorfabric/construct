@@ -22,6 +22,11 @@ environment secrets.
 | Android | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEYSTORE_PASSWORD`, optional `ANDROID_KEY_PASSWORD`     |                             |
 | Desktop | `MAC_CERTIFICATE_BASE64`, `MAC_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` |                             |
 
+`scripts/setup-release-environment.sh` creates the environment and sets these secrets from environment
+variables and files; the variables are listed at the top of the script. Run it as an administrator of
+the repository. It can be run again at any time to restore the environment, and `DRY_RUN=1` checks the
+inputs and changes nothing.
+
 Use an App Store Connect team key with access to the app, its build and upload history, and
 the intended internal group. Set `TESTFLIGHT_INTERNAL_GROUP` to the exact group name and enable
 automatic distribution of new builds to it. The workflow verifies the unsigned and signed
