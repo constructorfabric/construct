@@ -68,7 +68,8 @@ final class GlasshouseModel: NSObject, ObservableObject {
             reload: { [holder] in holder.reload() },
             back: { [holder] in holder.back() },
             forward: { [holder] in holder.forward() },
-            dismissScreenshotNotice: { [restriction] in restriction.dismissScreenshotNotice() }
+            dismissScreenshotNotice: { [restriction] in restriction.dismissScreenshotNotice() },
+            screenshotProtection: { [restriction] worked in restriction.screenshotProtection(worked: worked) }
         )
     }
 

@@ -7,13 +7,17 @@ struct GlasshouseRestrictedState: Equatable {
     var blocked: GlasshouseBlockedAction?
     /// The page is hidden, because the screen is being recorded or shown on another screen.
     var covered = false
-    /// The line that says a screenshot of the page cannot be blocked on this phone, until the person has read it.
+    /// The page is kept out of screenshots and recordings: the last try to put it there worked.
+    var screenshotProtected = false
+    /// The line that says a screenshot of the page cannot be blocked on this phone: the last try to keep the page out
+    /// of screenshots failed, and the person has not read the line yet.
     var screenshotNotice = false
 }
 
 /// The page's restricted mode while the app runs, kept by `GlasshouseModel`: the page is always in it and nothing
 /// switches it off. It guards the clipboard while the page is shown, hides the page while the screen is recorded or
-/// shown on another screen, and keeps the one line that tells a refused action.
+/// shown on another screen, knows whether the page is kept out of screenshots, and keeps the one line that tells a
+/// refused action.
 @MainActor
 final class GlasshouseRestriction: ObservableObject {
     @Published private(set) var state: GlasshouseRestrictedState
@@ -22,19 +26,19 @@ final class GlasshouseRestriction: ObservableObject {
     private let isCaptured: @MainActor () -> Bool
     private let noticeSeconds: Double
     private var visible = false
+    private var noticeRead = false
     private var appActive: Bool
     private var clearing: Task<Void, Never>?
     private var observers: [AnyCancellable] = []
 
     init(
-        screenshotCanBeBlocked: Bool = GlasshouseScreenshot.canBeBlocked,
         clipboard: GlasshouseClipboard? = nil,
         center: NotificationCenter = .default,
         appActive: Bool? = nil,
         isCaptured: @escaping @MainActor () -> Bool = GlasshouseScreenshot.screenIsCaptured,
         noticeSeconds: Double = 6
     ) {
-        state = GlasshouseRestrictedState(screenshotNotice: !screenshotCanBeBlocked)
+        state = GlasshouseRestrictedState()
         self.clipboard = clipboard ?? GlasshouseClipboard()
         self.appActive = appActive ?? (UIApplication.shared.applicationState == .active)
         self.isCaptured = isCaptured
@@ -85,7 +89,16 @@ final class GlasshouseRestriction: ObservableObject {
         }
     }
 
+    /// The page was put, or could not be put, out of screenshots and recordings. Until the first try nothing is said
+    /// about it; the line that says a screenshot cannot be blocked shows only after a try that failed, and not again
+    /// after the person has read it.
+    func screenshotProtection(worked: Bool) {
+        state.screenshotProtected = worked
+        state.screenshotNotice = !worked && !noticeRead
+    }
+
     func dismissScreenshotNotice() {
+        noticeRead = true
         state.screenshotNotice = false
     }
 
@@ -102,13 +115,9 @@ final class GlasshouseRestriction: ObservableObject {
     }
 }
 
-/// What this phone can do about a screenshot or a recording of the page.
+/// What this phone says about a recording of the page. Keeping the page out of a screenshot is
+/// `GlasshouseScreenshotShield`'s.
 enum GlasshouseScreenshot {
-    /// Whether the page can be kept out of a screenshot. Apple offers no way to do that. The one known way, a view in a
-    /// secure text field, is not an Apple function and is reported to fail on iOS 18 and later, so the page does not
-    /// rely on it: it says that a screenshot cannot be blocked.
-    static let canBeBlocked = false
-
     /// Whether the screen is being recorded or shown on another screen, which Apple supports telling an app.
     @MainActor
     static func screenIsCaptured() -> Bool {
