@@ -220,7 +220,7 @@ make build app-deps
 Electron Forge writes the disk image to `app/out/make/dmg/arm64/`. A disk image built this way, or
 by a pull request, uses an ad hoc signature and ships without notarization. The disk image of a release
 (a `v*` tag, or a manual run of the Desktop release workflow) is signed with the team's Developer ID
-certificate and notarized in the protected `desktop-release` environment, and it opens without the
+certificate and notarized in the `release` environment, and it opens without the
 Gatekeeper exception below.
 
 1. Open the disk image and drag **Construct Browser** into **Applications**. For an update, quit the

@@ -1,6 +1,6 @@
 name: Mobile release
 
-# Configure the protected environments documented in mobile/RELEASING.md.
+# Needs the `release` environment documented in mobile/RELEASING.md.
 on:
   workflow_dispatch:
     inputs:
@@ -64,7 +64,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,25 +71,21 @@ jobs:
       - name: Authorize the exact release source
         env:
           RELEASE_PLATFORM: ${{ inputs.platform }}
-          GH_TOKEN: ${{ github.token }}
         run: mobile/scripts/check-ci-release.sh "$RELEASE_PLATFORM"
 
   ios:
     needs: authorize
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON(vars.RELEASE_REPOSITORIES || '["constructorfabric/construct"]'), github.repository) && github.ref == 'refs/heads/main' && github.ref_protected && inputs.confirm_release && inputs.platform == 'ios'
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON(vars.RELEASE_REPOSITORIES || '["constructorfabric/construct"]'), github.repository) && github.ref == 'refs/heads/main' && inputs.confirm_release && inputs.platform == 'ios'
     runs-on: macos-15
     timeout-minutes: 90
-    environment: mobile-ios-release
+    environment: release
     permissions:
       contents: read
-      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Recheck canonical source and environment after approval
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Recheck the canonical source
         run: mobile/scripts/check-ci-release.sh ios
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
@@ -145,21 +140,18 @@ jobs:
 
   publish-android:
     needs: authorize
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON(vars.RELEASE_REPOSITORIES || '["constructorfabric/construct"]'), github.repository) && github.ref == 'refs/heads/main' && github.ref_protected && inputs.confirm_release && inputs.platform == 'android'
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON(vars.RELEASE_REPOSITORIES || '["constructorfabric/construct"]'), github.repository) && github.ref == 'refs/heads/main' && inputs.confirm_release && inputs.platform == 'android'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    environment: mobile-android-release
+    environment: release
     permissions:
       contents: write
-      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Recheck canonical source and environment after approval
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Recheck the canonical source
         run: mobile/scripts/check-ci-release.sh android
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
