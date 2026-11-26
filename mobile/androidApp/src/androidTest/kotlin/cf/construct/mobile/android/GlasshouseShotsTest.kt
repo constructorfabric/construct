@@ -79,6 +79,13 @@ class GlasshouseShotsTest {
         page.waitForMessage("refused the connection")
         shot("connection-refused")
 
+        // What restricted mode says when it refuses a page's own command.
+        page.go(site.trusted + "/restricted")
+        page.waitForPage("Restricted notes")
+        page.tapPage("#print")
+        page.waitForBlocked("Print is blocked")
+        shot("blocked")
+
         page.go(site.trusted + "/")
         page.waitForPage("Garden notes")
         compose.runOnUiThread { checkNotNull(page.webView()).loadUrl("chrome://crash") }

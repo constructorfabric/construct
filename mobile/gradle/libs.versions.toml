@@ -9,6 +9,8 @@ composeBom = "2026.11.01"
 # The Compose compiler plugin needs the runtime on the class path of the iPhone compiles too.
 composeRuntime = "1.13.0"
 activityCompose = "1.13.0"
+# Runs the restricted mode script before a page's own scripts, and hears what it says.
+webkit = "1.18.0"
 cameraX = "1.6.2"
 zxing = "3.5.4"
 serializationJson = "1.9.0"
@@ -45,6 +47,7 @@ compose-ui = { module = "androidx.compose.ui:ui" }
 compose-ui-test = { module = "androidx.compose.ui:ui-test-junit4" }
 compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
 compose-activity = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+webkit = { module = "androidx.webkit:webkit", version.ref = "webkit" }
 camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "cameraX" }
 camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "cameraX" }
 camera-view = { module = "androidx.camera:camera-view", version.ref = "cameraX" }
