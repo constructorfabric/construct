@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -28,16 +29,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import cf.construct.mobile.feature.status.ConnectionLine
-import cf.construct.mobile.feature.status.ConnectionStatus
+import cf.construct.mobile.feature.status.SyncNoticeRow
+import cf.construct.mobile.feature.status.SyncState
 
 /**
- * The frame every page sits in: the top app bar with the page title, the connection line under it
- * and the navigation bar. [content] draws the selected page.
+ * The frame every page sits in: the top app bar with the page title, the navigation bar, and above the page's
+ * own content the notice of the sync ("Syncing with your computer.", "not reachable"). When all is fine the
+ * notice is not there. [content] draws the selected page.
  */
 @Composable
 fun AppFrame(
-    connection: ConnectionStatus,
+    sync: SyncState,
     onTryAgain: () -> Unit,
     selected: Page,
     onSelect: (Page) -> Unit,
@@ -57,30 +59,33 @@ fun AppFrame(
             // The Glasshouse page is a browser: its address bar takes the place of the title, and it has nothing
             // to sync.
             if (selected != Page.Glasshouse) {
-                Column {
-                    TopAppBar(
-                        title = { Text(detail?.title ?: stringResource(selected.title)) },
-                        actions = { if (detail == null) pageActions() },
-                        navigationIcon = {
-                            if (detail != null) {
-                                IconButton(onClick = goBack) {
-                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                                }
+                TopAppBar(
+                    title = { Text(detail?.title ?: stringResource(selected.title)) },
+                    actions = { if (detail == null) pageActions() },
+                    navigationIcon = {
+                        if (detail != null) {
+                            IconButton(onClick = goBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-                    )
-                    if (detail == null) ConnectionLine(connection, onTryAgain, LocalControlSizes.current.dot)
-                }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                )
             }
         },
         bottomBar = { if (detail == null) PageBar(selected, onSelect) },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            if (detail == null) {
-                content(selected) { computer = ComputerPage.Overview }
-            } else {
-                computerContent(detail) { computer = it }
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            // The Glasshouse page and the pages one step down (the Computer page) tell nothing of the sync.
+            if (detail == null && selected != Page.Glasshouse) {
+                SyncNoticeRow(sync.notice, sync.lastSyncedAt, onTryAgain, Modifier.fillMaxWidth())
+            }
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                if (detail == null) {
+                    content(selected) { computer = ComputerPage.Overview }
+                } else {
+                    computerContent(detail) { computer = it }
+                }
             }
         }
     }

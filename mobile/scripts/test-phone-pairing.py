@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Runs the Computer page test of the app, and with --sync the iPhone sync test or with --dashboard the iPhone Dashboard
-test, against the phone_pairing example on a disposable Android emulator or on the shared iPhone Simulator (see
-shared_simulator.py)."""
+"""Runs the Computer page test of the app, and with --sync the sync test (on Android and on the iPhone) or with
+--dashboard the iPhone Dashboard test, against the phone_pairing example on a disposable Android emulator or on the
+shared iPhone Simulator (see shared_simulator.py)."""
 
 import argparse
 from collections import defaultdict
@@ -32,7 +32,8 @@ RUNNER_TIMEOUT = 240
 CONTROL_TIMEOUT = 10
 AGENT_START_TIMEOUT = 30
 ANDROID_PATH = f"files/{FIXTURE}"
-ANDROID_COMPUTER_TEST = "cf.construct.mobile.android.ComputerPageTest"
+ANDROID_COMPUTER_TEST = "cf.construct.mobile.android.ComputerPageTest#computerPage"
+ANDROID_SYNC_TEST = "cf.construct.mobile.android.SyncTest#sync"
 IOS_COMPUTER_TEST = "ConstructUITests/ComputerPageTests/testComputerPage"
 IOS_SYNC_TEST = "ConstructUITests/SyncTests/testSync"
 IOS_DASHBOARD_TEST = "ConstructUITests/DashboardTests/testDashboard"
@@ -40,6 +41,15 @@ IOS_DASHBOARD_TEST = "ConstructUITests/DashboardTests/testDashboard"
 COMPUTER_ZONE = "Europe/Berlin"
 # The sync test waits for a loading screen that is slowed on purpose, then for checks, so it runs longer.
 SYNC_TIMEOUT = 600
+# The emulator applies a new appearance to every app and restarts some of them. A test started in the middle of that
+# can have its app killed for a start that takes too long, so the test starts when the emulator has been idle for
+# QUIET_POLLS looks in a row, one second apart, and gives up after THEME_SETTLE_SECONDS.
+THEME_SETTLE_SECONDS = 60
+QUIET_POLLS = 5
+QUIET_IDLE_SHARE = 0.8
+COMPUTER_SCREENSHOTS = ("not-paired", "manual", "connected", "settings-connected", "unreachable",
+                        "settings-unreachable", "chat-unreachable", "confirm-unpair")
+SYNC_SCREENSHOTS = ("loading", "syncing", "justsynced", "unreachable", "computer")
 # The test logs this value; the log check must find it, or it is not reading the device log.
 CANARY = "c3" * 32
 
@@ -51,13 +61,18 @@ def read(*args):
 class Android:
     host = "10.0.2.2"
     bind = "127.0.0.1:0"
-    SCREENSHOTS = ("not-paired", "manual", "connected", "settings-connected", "unreachable", "settings-unreachable",
-                   "chat-unreachable", "confirm-unpair")
+    # The test asks for the pairing offer through a file, and the credential digest is the app's to give.
+    offer_in_command = False
 
-    def __init__(self, device, screenshots=None):
+    def __init__(self, device, screenshots=None, only_testing=ANDROID_COMPUTER_TEST, names=COMPUTER_SCREENSHOTS,
+                 theme=None):
         if not device.startswith("emulator-"):
             raise ValueError("Use a disposable Android emulator.")
         self.adb = ("adb", "-s", device)
+        self.only_testing = only_testing
+        self.names = names
+        if theme:
+            self.apply_theme(theme)
         self.screenshots = Path(screenshots) if screenshots else None
         properties = (MOBILE / "gradle.properties").read_text().splitlines()
         self.app = next(line.split("=", 1)[1] for line in properties if line.startswith("constructApplicationId="))
@@ -69,6 +84,35 @@ class Android:
         subprocess.run((*self.storage, "mkdir", "-p", ANDROID_PATH), check=True)
         self.since = read(*self.adb, "shell", "date '+%m-%d %H:%M:%S.000'")
 
+    def apply_theme(self, theme):
+        """Sets the appearance of the emulator, and returns when it has settled."""
+        subprocess.run((*self.adb, "shell", "cmd", "uimode", "night", "yes" if theme == "dark" else "no"),
+                       check=True, timeout=30)
+        deadline = time.monotonic() + THEME_SETTLE_SECONDS
+        quiet = 0
+        while quiet < QUIET_POLLS:
+            if time.monotonic() > deadline:
+                raise RuntimeError("The emulator did not settle after the change of appearance.")
+            quiet = quiet + 1 if self.idle_share() >= QUIET_IDLE_SHARE else 0
+
+    def idle_share(self):
+        """The share of the processor that was idle during the last second, from the second look of `top`."""
+        output = read(*self.adb, "shell", "top", "-b", "-n", "2", "-d", "1")
+        looks = re.findall(r"(\d+)%cpu\s.*?(\d+)%idle", output)
+        if not looks:
+            raise RuntimeError("The emulator does not say how busy it is.")
+        total, idle = looks[-1]
+        return int(idle) / int(total)
+
+    def confirm_stop(self, directory, digests):
+        confirm_credential(self, "computer", directory, digests)
+
+    def run_sync(self, name, protected, digests, serve, offer):
+        write_offer(self, "offer", offer)
+        with test(self, protected, digests, None, name, SYNC_TIMEOUT) as app:
+            serve_files(self, app, serve)
+        verify_device_logs(self, protected, digests)
+
     def write(self, name, value):
         file = f"{ANDROID_PATH}/{name}"
         command = f"umask 077; cat > {file}.part && mv {file}.part {file}"
@@ -78,6 +122,9 @@ class Android:
         return subprocess.run((*self.storage, "test", "-f", f"{ANDROID_PATH}/{name}"),
                               check=False, timeout=10).returncode == 0
 
+    def remove(self, name):
+        subprocess.run((*self.storage, "rm", "-f", f"{ANDROID_PATH}/{name}"), check=True, timeout=10)
+
     def read(self, name):
         return read(*self.storage, "cat", f"{ANDROID_PATH}/{name}")
 
@@ -85,14 +132,14 @@ class Android:
         subprocess.run((*self.adb, "shell", "am", "force-stop", self.app), check=True)
         screenshots = ("-e", "computerScreenshots", "enabled") if self.screenshots else ()
         return (*self.adb, "shell", "am", "instrument", "-w", "-e", "computerPairingFixture", "enabled", *screenshots,
-                "-e", "class", f"{ANDROID_COMPUTER_TEST}#computerPage",
+                "-e", "class", self.only_testing,
                 f"{self.app}.test/androidx.test.runner.AndroidJUnitRunner")
 
     def collect_screenshots(self):
         if self.screenshots is None:
             return
         self.screenshots.mkdir(parents=True, exist_ok=True)
-        for name in self.SCREENSHOTS:
+        for name in self.names:
             with (self.screenshots / f"{name}.png").open("wb") as image:
                 subprocess.run((*self.adb, "exec-out", "run-as", self.app, "cat", f"{ANDROID_PATH}/{name}.png"),
                                stdout=image, check=True, timeout=30)
@@ -112,6 +159,8 @@ class Ios:
 
     host = "127.0.0.1"
     bind = "127.0.0.1:0"
+    # The test asks for the offer in a command, and the host reads the credential digest from the agent.
+    offer_in_command = True
 
     def __init__(self, device, build, screenshots=None, only_testing=IOS_COMPUTER_TEST, name="ComputerPage"):
         self.device = device
@@ -127,6 +176,15 @@ class Ios:
                 raise ValueError(f"Use a screenshot directory without an earlier {name}.xcresult.")
             self.screenshots.mkdir(parents=True, exist_ok=True)
         self.since = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def confirm_stop(self, directory, digests):
+        digests.add(credential_digest(directory))
+
+    def run_sync(self, name, protected, digests, serve, offer):
+        with socket.create_server(("127.0.0.1", 0)) as listener:
+            with test(self, protected, digests, listener.getsockname()[1], name, SYNC_TIMEOUT) as app:
+                serve_socket(listener, app, serve)
+        verify_device_logs(self, protected, digests, marker="Sync fixture started")
 
     def command(self):
         result = ("-resultBundlePath", str(self.result)) if self.result else ()
@@ -299,8 +357,13 @@ def verify_computer_page(args, device):
     digests = set()
     try:
         with tempfile.TemporaryDirectory(prefix="construct-computer-test-") as temporary:
-            directory = Path(temporary)
-            with agent(args.agent, device, directory, protected) as (first, _, offer):
+            directory = Path(temporary) / "agent"
+            directory.mkdir()
+            # The first copy after the pairing has a chat and two facts to copy, as on the iPhone.
+            data = Path(temporary) / "data.json"
+            write_sync_data(data, [sync_chat("c1", "Plan my week")],
+                            sync_facts([("name", "Alex Example"), ("title", "Mobile developer")]))
+            with agent(args.agent, device, directory, protected, data=data) as (first, _, offer):
                 write_offer(device, "offer", offer)
                 with test(device, protected, digests) as app:
                     wait_for(device, "computer-stop", app)
@@ -310,7 +373,7 @@ def verify_computer_page(args, device):
                     device.write("computer-stopped", "ready")
                     wait_for(device, "computer-retry", app)
                     port = int(offer["address"].rsplit(":", 1)[1])
-                    with agent(args.agent, device, directory, protected, f"127.0.0.1:{port}"):
+                    with agent(args.agent, device, directory, protected, f"127.0.0.1:{port}", data):
                         device.write("computer-restarted", "ready")
                         if app.wait(timeout=RUNNER_TIMEOUT) != 0:
                             raise RuntimeError("The Computer page test did not complete.")
@@ -452,7 +515,33 @@ def dashboard_sessions(now=None):
     return sessions, "\n".join(f"{key}={value}" for key, value in facts.items())
 
 
-def verify_ios_sync(args, device, dashboard=False):
+def serve_socket(listener, process, answer):
+    """The Simulator test asks for each step over a loopback port: one command a connection."""
+    deadline = time.monotonic() + SYNC_TIMEOUT
+    listener.settimeout(1)
+    while process.poll() is None and time.monotonic() < deadline:
+        try:
+            client, _ = listener.accept()
+        except TimeoutError:
+            continue
+        with client, client.makefile("rb") as request:
+            client.settimeout(CONTROL_TIMEOUT)
+            client.sendall(answer(request.readline(32).decode().strip()).encode())
+
+
+def serve_files(device, process, answer):
+    """The emulator test leaves a command in a file of the app, and waits for the answer in another."""
+    deadline = time.monotonic() + SYNC_TIMEOUT
+    while process.poll() is None and time.monotonic() < deadline:
+        if not device.exists("sync-request"):
+            time.sleep(0.3)
+            continue
+        command = device.read("sync-request")
+        device.remove("sync-request")
+        device.write("sync-reply", answer(command))
+
+
+def verify_sync(args, device, dashboard=False):
     """The sync test: the program serves the data file, and the test asks the script to add a chat, stop and restart.
     With `dashboard` the file holds sessions too, and the test asks what the page must show for them (`expect`)."""
     protected = set()
@@ -460,53 +549,42 @@ def verify_ios_sync(args, device, dashboard=False):
     sessions, expectation = dashboard_sessions() if dashboard else ([], "")
     chats = [sync_chat("c1", "Plan the trip"), sync_chat("c2", "Tea notes"), sync_chat("c3", "Garden ideas"),
              sync_chat("c4", "Reading list")]
-    with tempfile.TemporaryDirectory(prefix="construct-sync-test-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="construct-sync-test-") as temporary, contextlib.ExitStack() as running:
         root = Path(temporary)
         directory = root / "agent"
         directory.mkdir()
         data = root / "data.json"
         write_sync_data(data, chats, sessions=sessions)
-        with socket.create_server(("127.0.0.1", 0)) as listener, contextlib.ExitStack() as running:
-            process, _, offer = running.enter_context(agent(args.agent, device, directory, protected, data=data))
-            current = [process]
+        process, _, offer = running.enter_context(agent(args.agent, device, directory, protected, data=data))
+        current = [process]
+        port = int(offer["address"].rsplit(":", 1)[1])
 
-            def answer(command):
-                if command == "offer":
-                    return offer["address"] + "\n" + offer["code"]
-                if command == "chat":
-                    chats.append(sync_chat("c5", "A chat from the computer"))
-                    write_sync_data(data, chats, sessions=sessions)
-                    return "ready"
-                if command == "expect" and dashboard:
-                    return expectation
-                if command == "hide" and dashboard:
-                    write_sync_data(data, chats, sessions=sessions, hidden=("/w/site",))
-                    return "ready"
-                if command == "stop":
-                    digests.add(credential_digest(directory))
-                    send(current[0], "stop")
-                    current[0].wait(timeout=CONTROL_TIMEOUT)
-                    return "ready"
-                if command == "restart":
-                    current[0] = running.enter_context(
-                        agent(args.agent, device, directory, protected, offer["address"], data)
-                    )[0]
-                    return "ready"
-                raise RuntimeError(f"The Simulator asked for {command}.")
+        def answer(command):
+            if command == "offer" and device.offer_in_command:
+                return offer["address"] + "\n" + offer["code"]
+            if command == "chat":
+                chats.append(sync_chat("c5", "A chat from the computer"))
+                write_sync_data(data, chats, sessions=sessions)
+                return "ready"
+            if command == "expect" and dashboard:
+                return expectation
+            if command == "hide" and dashboard:
+                write_sync_data(data, chats, sessions=sessions, hidden=("/w/site",))
+                return "ready"
+            if command == "stop":
+                device.confirm_stop(directory, digests)
+                send(current[0], "stop")
+                current[0].wait(timeout=CONTROL_TIMEOUT)
+                return "ready"
+            if command == "restart":
+                # The program comes back on the port the phone knows, on the loopback side of the host.
+                current[0] = running.enter_context(
+                    agent(args.agent, device, directory, protected, f"127.0.0.1:{port}", data)
+                )[0]
+                return "ready"
+            raise RuntimeError(f"The app test asked for {command}.")
 
-            name = "dashboard" if dashboard else "sync"
-            with test(device, protected, digests, listener.getsockname()[1], name, SYNC_TIMEOUT) as app:
-                deadline = time.monotonic() + SYNC_TIMEOUT
-                listener.settimeout(1)
-                while app.poll() is None and time.monotonic() < deadline:
-                    try:
-                        client, _ = listener.accept()
-                    except TimeoutError:
-                        continue
-                    with client, client.makefile("rb") as request:
-                        client.settimeout(CONTROL_TIMEOUT)
-                        client.sendall(answer(request.readline(32).decode().strip()).encode())
-        verify_device_logs(device, protected, digests, marker="Sync fixture started")
+        device.run_sync("dashboard" if dashboard else "sync", protected, digests, answer, offer)
         device.collect_screenshots()
 
 
@@ -536,7 +614,8 @@ def main():
     parser.add_argument("--ios-device-type", help="simctl device type identifier")
     parser.add_argument("--ios-runtime", help="simctl runtime identifier")
     parser.add_argument("--ios-theme", choices=("light", "dark"), help="Simulator appearance")
-    parser.add_argument("--sync", action="store_true", help="run the iPhone sync test instead of the Computer page test")
+    parser.add_argument("--android-theme", choices=("light", "dark"), help="emulator appearance")
+    parser.add_argument("--sync", action="store_true", help="run the sync test instead of the Computer page test")
     parser.add_argument("--dashboard", action="store_true", help="run the iPhone Dashboard test instead")
     parser.add_argument("--screenshots", help="optional directory for the screenshots of the test")
     args = parser.parse_args()
@@ -544,15 +623,21 @@ def main():
     if bool(args.device) == bool(args.ios_build):
         parser.error("use --device for Android or --ios-build for the iPhone, not both")
     if args.device:
-        verify_computer_page(args, Android(args.device, args.screenshots))
+        if args.dashboard:
+            parser.error("the Dashboard test runs on the iPhone only")
+        if args.sync:
+            verify_sync(args, Android(args.device, args.screenshots, ANDROID_SYNC_TEST, SYNC_SCREENSHOTS,
+                                      args.android_theme))
+        else:
+            verify_computer_page(args, Android(args.device, args.screenshots, theme=args.android_theme))
         return
     if not (args.ios_device_type and args.ios_runtime):
         parser.error("the iPhone Simulator is created from --ios-device-type and --ios-runtime, and needs both")
     with test_simulator(args.ios_device_type, args.ios_runtime, args.ios_build, args.ios_theme) as device:
         if args.dashboard:
-            verify_ios_sync(args, Ios(device, args.ios_build, args.screenshots, IOS_DASHBOARD_TEST, "Dashboard"), True)
+            verify_sync(args, Ios(device, args.ios_build, args.screenshots, IOS_DASHBOARD_TEST, "Dashboard"), True)
         elif args.sync:
-            verify_ios_sync(args, Ios(device, args.ios_build, args.screenshots, IOS_SYNC_TEST, "Sync"))
+            verify_sync(args, Ios(device, args.ios_build, args.screenshots, IOS_SYNC_TEST, "Sync"))
         else:
             verify_ios_computer_page(args, Ios(device, args.ios_build, args.screenshots))
 

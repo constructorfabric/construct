@@ -21,7 +21,7 @@ Multiplatform. This folder holds the shared Gradle project.
 | `feature/glasshouse` | What both phones share about the Glasshouse page, the page that opens a web address as on the computer: the state, its state holder, the rule for a typed address, the kinds of problem and the User-Agent. Android adds the address bar, the screen and `GlasshouseWebView`, the phone's web view set up for the page; the iPhone's web view comes with its page. See "The Glasshouse page".                                                                                                                                                                                                                                                                                                                               |
 | `feature/dashboard`  | The Dashboard page of the phone, made from the template: the state (the computer's document, each widget with the numbers the copy holds for the day or the week the person is on, and the movement between days and weeks) and its state holder. The iPhone draws it; the Android screen in the module only shows that the holder reaches Android. See "The Dashboard page".                                                                                                                                                                                                                                                                                                                                               |
 | `shared`             | The one Kotlin framework the iPhone app links (`ConstructShared`): it re-exports the modules above, adds `UiScope` (a main-thread scope Swift can create and close) and uses SKIE, which shows Kotlin flows to Swift as `AsyncSequence`. Its analytics upload is off.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `androidApp`         | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. `AppFrame.kt` is the frame of every page (top bar with the title, a connection line, the navigation bar); a page without a feature is a `PlaceholderPage` until a feature module takes it over.                                                                                                                                                                                           |
+| `androidApp`         | The Android app. `Composition.kt` is the one place its objects are built (the copy in the app; `FakeConstruct` would replace it there), `ConstructTheme.kt` maps the shared colours to the Compose theme and holds the Android text sizes and radii. Debug builds fill an empty copy with the sample data; release builds do not. `AppFrame.kt` is the frame of every page (top bar with the title, the notice of the sync, the navigation bar); a page without a feature is a `PlaceholderPage` until a feature module takes it over.                                                                                                                                                                                      |
 | `iosApp`             | The iPhone app in SwiftUI. `project.yml` generates the Xcode project (not committed); Swift files under `App/`, `Core/` and `Features/` are picked up by folder. `Composition.swift` is the one place its objects are built, `Core/FlowState.swift` is the one adapter every feature uses to watch a state holder, `Core/ConstructTheme.swift` maps the shared colours to SwiftUI and holds the iPhone text sizes, radii and control sizes. `App/AppFrame.swift` is the frame of every page (the tab bar and a navigation bar with the inline title; the sync's notice is the first row of a page, see "Sync the copy from the computer"); every page has a feature folder. The tab icons are Lucide, in the asset catalog. |
 
 The Memory holder watches the stream `Construct.memoryFacts`, so a fact changed in the copy shows by itself, and `refresh()` starts the watch again. The Chat holder also reads its list again when a sync changes the chats (`Construct.conversationChanges`). The other state holders wrap the one-shot reads of `Construct`: a change shows after `refresh()`, not by itself. A read or a watch that is still running is dropped when a new one starts. A `Construct` reports a failed read as `Outcome.Failed` and does not throw (the stream gives it as an item and goes on); run a holder's scope and call `refresh()` on the main thread.
@@ -303,8 +303,8 @@ python3 scripts/test-glasshouse-ios.py --ios-build <build folder> \
 `GlasshouseViewModel` (in `androidApp`) makes the holder and the one `GlasshouseWebView` when the person first opens
 the page, and keeps both for as long as the activity's screen lives. The screen takes the web view out of its frame when
 it leaves and puts it back when it returns, so the page, what was typed in it and its history stay while the person is
-on another page of the app; a page that was loading keeps loading. The page has no title bar and no connection line:
-its address bar takes their place.
+on another page of the app; a page that was loading keeps loading. The page has no title bar and no notice of the
+sync: its address bar takes their place.
 
 - **Address bar.** One rounded bar with the lock (only for an `https` page that opened), the host and reload. Tapped,
   it shows the whole address and a clear button, and the keyboard's Go key opens it. A refused address stays in the bar
@@ -326,8 +326,34 @@ its address bar takes their place.
   With no network the page is not asked for at all: the web view would wait on a connection it had open before the
   network went, so the page says "offline" at once and Reload asks again. A web view whose process stopped is replaced
   and the page says "stopped working" with Reload.
+- **Restricted mode.** The page is always in it, from the first moment, and nothing switches it off; a small "Restricted
+  mode" sign under the address bar says so. The system's basic way is used: `FLAG_SECURE` on the activity's window
+  (`SecureWindow`), which the phone keeps out of screenshots, screen recordings, other displays and the picture of the
+  app in the recent apps. The flag is the whole window's, so it is on for as long as the page is shown and off on the
+  other pages of the app. Beyond the window:
+  - **Touch menu.** `RestrictedWebView` filters the web view's own selection menu to Select all and Paste, so the menu
+    never offers Copy, Cut, Share or any other action that takes text out (on the emulator the web view's menu on a
+    held word is Copy, Share, Select all and Read aloud, and the person gets Select all). The items are known by their
+    titles, the system's words for them, because their ids belong to the web view's package; an item whose title is not
+    one of them is taken out. The web view has no menu on a picture, so there is no Save image. Dragging selected text
+    out of the app is not blocked.
+  - **Clipboard.** A page can write to the clipboard with its own commands and the phone has no way to refuse it. While
+    the web view has the focus and so does the app's window, which they have when a page's command runs, a change of the
+    clipboard is the page's; when the app goes to the background (`onStop`) `GlasshouseClipboard` takes it off, and puts
+    back what was there before, or clears it if nothing was, or if the phone refuses the old clip (one from another app
+    can hold an address this app may not hand on). A copy made anywhere else (the address bar, another app) is the
+    person's and is kept. Android 10 and later let an app read the clipboard only while its window has the focus, and
+    tell it nothing of a change it cannot read, so the clipboard is read when the window gets the focus
+    (`onWindowFocusChanged`), and a clip that is not the one the page put there is the person's. Android 12 and later tell
+    the person that the app pasted from the clipboard when it reads a clip another app made. Clipboard managers that
+    keep a history are not worked around.
+  - **Download, print, share.** A download (a link with `download`, or a file the server sends to be saved) is refused
+    by the web view's download listener, which starts none. A document-start script, run in every frame before the
+    page's own, makes `window.print` do nothing and `navigator.share` reject as a refusal, and tells the app, which
+    says so in one line under the sign for six seconds. The script needs `androidx.webkit`'s document-start script and
+    web message listener; a web view without them does not open the page.
 
-The page tests (`GlasshouseTest`, `GlasshouseRestartTest`) open real pages from a test server on the computer over
+The page tests (`GlasshouseTest`, `GlasshouseRestrictedTest`, `GlasshouseRestartTest`) open real pages from a test server on the computer over
 `https`. The debug build, and only the debug build, trusts that server's certificate: `./gradlew :androidApp:assembleDebug`
 makes two certificates with `keytool` (`generateGlasshouseTestCertificates`), puts the public part of the first into the
 debug resources, and `src/debug/res/xml/network_security_config.xml` trusts it through `debug-overrides`, which an app
@@ -493,7 +519,7 @@ storage.
 
 `feature/status` watches the connection while the app is in the foreground. A paired phone pings on
 the authenticated channel. A revocation received on that channel clears the pairing; a lost route or
-a computer that does not answer keeps the pairing and shows the last contact.
+a computer that does not answer keeps the pairing and shows the time of the last sync.
 
 On both phones, Settings opens the Computer page: scan the QR code with the camera, or type the
 address and the code. Android's scanner uses CameraX and the ZXing core QR reader, the iPhone's uses
@@ -505,7 +531,8 @@ and keeps the chats started on the phone.
 
 Run the page on a disposable emulator against the test program of the computer's endpoint. The test
 slows the app's checks of the computer to two minutes, so that only the Try again button can bring a
-lost link back; a debug build has that setting and a release build does not:
+lost link back; a debug build has that setting and a release build does not. The program serves a chat and
+two facts, so the first copy after the pairing has something to copy:
 
 ```sh
 cargo build --locked -p construct-agent --example phone_pairing
@@ -515,6 +542,17 @@ python3 scripts/test-phone-pairing.py --device <serial> \
   --agent <path to the phone_pairing example> --screenshots <folder>
 python3 -I scripts/test_phone_pairing_checks.py   # the script's check of the device log
 ```
+
+`--sync` runs the sync test (`androidApp/src/androidTest/.../SyncTest.kt`) on the emulator, and `--android-theme dark`
+(or `light`) sets the emulator's appearance first, for the screenshots of both themes. The test is the twin of the
+iPhone one below: it follows the loading screen of the first copy (the steps and their counts), the pages with the
+computer's chats and facts, the notices, the checks that say nothing, a new chat in the open list, "Sync now" and a
+computer that does not answer. In a debug build `SyncTesting` lets a test set how often the app
+checks the computer, and makes the sync wait before it starts and after each report of progress, so the test can see
+"Syncing" and the counts rise. A release build has the same object with the one-minute check and no waits, as it has
+`PhonePolling`, so nothing there can change them. The test asks the script for a new chat, a stop and a start of the
+computer through files in the app's own folder, and the script reads them with `adb run-as`, so no pairing secret is
+passed as an argument.
 
 The iPhone page runs the same way in the shared test Simulator (see [The test Simulator](#the-test-simulator)). Build
 the app and its tests once, then give the script the folder of that build:
@@ -592,7 +630,12 @@ ends: three steps with their counts, a bar filled a third for each step, no time
 page (`Core/SyncNoticeRow.swift`) is the first row of the Chat, Memory and Settings pages, so it goes away with the
 page when they scroll; the frame gives it to every page but the Glasshouse page, which has nothing to sync, and
 nothing shows while all is fine. "Sync now" and the time of the last sync are on the Computer page. A pairing that
-completes starts the first copy at once. The Android app does not build the holder yet. The holder runs a sync when
+completes starts the first copy at once. The Android app builds the same holder (`SyncViewModel`) and shows it the
+same way, with two differences from the iPhone: the loading screen (`FirstCopyScreen` in `feature/status`) is drawn over
+the app, which stays composed under it, with its semantics cleared so that neither a touch nor a screen reader reaches
+the tabs, and the system's Back does nothing there; and the notice (`SyncNoticeRow`) is a fixed row between the top bar and the page, because the pages of the
+Android app are not one list, so it stays while a page scrolls. "Up to date. Synced just now." is a polite live region.
+The holder runs a sync when
 the app comes to the front, every minute while it
 stays there, and when a person asks for one. It says "syncing" and "just synced" only for a sync the person
 waits for, and "not reachable" once when the computer stops answering. A sync that is cut shows no notice and

@@ -34,6 +34,7 @@ internal fun GlasshouseMessage(
     modifier: Modifier = Modifier,
     error: Boolean = false,
     onReload: (() -> Unit)? = null,
+    textTag: String = MESSAGE_TAG,
 ) {
     val scheme = MaterialTheme.colorScheme
     val color = if (error) scheme.error else scheme.onSurfaceVariant
@@ -49,7 +50,7 @@ internal fun GlasshouseMessage(
                 text,
                 style = MaterialTheme.typography.bodyMedium,
                 color = color,
-                modifier = Modifier.testTag(MESSAGE_TAG),
+                modifier = Modifier.testTag(textTag),
             )
             if (onReload != null) {
                 TextButton(onClick = onReload, modifier = Modifier.heightIn(min = actionHeight).testTag(RELOAD_TAG)) {
@@ -62,6 +63,9 @@ internal fun GlasshouseMessage(
 
 /** The tag of the message text, for tests. */
 const val MESSAGE_TAG = "glasshouse-message"
+
+/** The tag of the line that says restricted mode refused something, for tests. */
+const val BLOCKED_TAG = "glasshouse-blocked"
 
 /** The tag of the Reload button of a message, for tests. */
 const val RELOAD_TAG = "glasshouse-message-reload"

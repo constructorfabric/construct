@@ -5,16 +5,19 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager.LayoutParams.FLAG_SECURE
 import android.webkit.CookieManager
 import android.webkit.WebView
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextReplacement
@@ -23,6 +26,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.platform.app.InstrumentationRegistry
 import cf.construct.mobile.feature.glasshouse.ADDRESS_TAG
+import cf.construct.mobile.feature.glasshouse.BLOCKED_TAG
 import cf.construct.mobile.feature.glasshouse.MESSAGE_TAG
 import org.json.JSONArray
 import org.json.JSONObject
@@ -38,6 +42,9 @@ internal const val PAGE_WAIT_MS = 40_000L
 private const val POLL_MS = 250L
 private const val JS_WAIT_SECONDS = 10L
 private const val FOCUS_WAIT_MS = 10_000L
+private const val LONG_PRESS_MS = 1_100
+private const val DRAW_WAIT_MS = 5_000L
+private const val GRID = 12
 
 /** One request the test server was asked for, as it saw it. */
 internal data class ServedRequest(
@@ -120,8 +127,10 @@ internal class PageDriver(
 
     val appId: String get() = instrumentation.targetContext.packageName
 
+    /** Taps the tab of the navigation bar with this name, not the title of a page that has the same one. */
     fun openTab(name: String) {
-        compose.onNodeWithText(name).performClick()
+        val tab = SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab)
+        compose.onNode(hasText(name) and tab).performClick()
     }
 
     fun openGlasshouse() = openTab("Glasshouse")
@@ -230,15 +239,35 @@ internal class PageDriver(
     }
 
     /** The text of the page's message, or an empty text when it shows none. */
-    fun message(): String =
+    fun message(): String = textOf(MESSAGE_TAG)
+
+    /** The line restricted mode shows after it refuses something, or an empty text when it shows none. */
+    fun blocked(): String = textOf(BLOCKED_TAG)
+
+    /** Waits until the line of a refusal contains [text]. */
+    fun waitForBlocked(
+        text: String,
+        timeoutMs: Long = PAGE_WAIT_MS,
+    ) {
+        waitUntil(timeoutMs, "the refusal \"$text\"") { blocked().contains(text) }
+    }
+
+    private fun textOf(tag: String): String =
         compose
-            .onAllNodesWithTag(MESSAGE_TAG)
+            .onAllNodesWithTag(tag)
             .fetchSemanticsNodes()
             .firstOrNull()
             ?.config
             ?.getOrNull(SemanticsProperties.Text)
             ?.joinToString("") { it.text }
             .orEmpty()
+
+    /** Whether the app's window is marked secure, which keeps it out of screenshots, recordings and the recent apps. */
+    fun secure(): Boolean {
+        var flag = false
+        compose.runOnUiThread { flag = compose.activity.window.attributes.flags and FLAG_SECURE != 0 }
+        return flag
+    }
 
     fun waitUntil(
         timeoutMs: Long,
@@ -261,6 +290,17 @@ internal class PageDriver(
 
     /** Taps the page element that matches [selector] the way a person's finger does: a touch of the screen. */
     fun tapPage(selector: String) {
+        val (x, y) = screenPointOf(selector)
+        shell("input tap $x $y")
+    }
+
+    /** Presses the page element that matches [selector] and holds the finger there, as a person does to select. */
+    fun longPressPage(selector: String) {
+        val (x, y) = screenPointOf(selector)
+        shell("input swipe $x $y $x $y $LONG_PRESS_MS")
+    }
+
+    private fun screenPointOf(selector: String): Pair<Int, Int> {
         compose.waitForIdle()
         val web = checkNotNull(webView())
         val box =
@@ -276,7 +316,7 @@ internal class PageDriver(
         val x = (origin[0] + box.getDouble("x") * box.getDouble("d")).roundToInt()
         val y = (origin[1] + box.getDouble("y") * box.getDouble("d")).roundToInt()
         lastTap = "$selector at $x,$y (the page at ${origin[0]},${origin[1]}, ratio ${box.getDouble("d")})"
-        shell("input tap $x $y")
+        return x to y
     }
 
     private var lastTap = "none"
@@ -290,8 +330,65 @@ internal class PageDriver(
             ).apply {
                 mkdirs()
             }
-        val bitmap = instrumentation.uiAutomation.takeScreenshot() ?: return
+        val bitmap = screenshot(secureShown = false) ?: return
         File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
+    /**
+     * A picture of the screen as the system gives it. The phone leaves a secure window out of it, so with
+     * [secureShown] false the flag is lifted for the moment of the picture, to see what the page looks like, and put
+     * back; with it true the picture is what a screenshot of the app gets.
+     */
+    fun screenshot(secureShown: Boolean): Bitmap? {
+        val lift = !secureShown && secure()
+        if (lift) compose.runOnUiThread { compose.activity.window.clearFlags(FLAG_SECURE) }
+        try {
+            return if (lift) waitForTheWindowToDraw() else instrumentation.uiAutomation.takeScreenshot()
+        } finally {
+            if (lift) compose.runOnUiThread { compose.activity.window.addFlags(FLAG_SECURE) }
+        }
+    }
+
+    // The window draws again a moment after the flag is lifted; until it has, the app's place in the picture is black.
+    private fun waitForTheWindowToDraw(): Bitmap? {
+        val box = contentBox()
+        val end = SystemClock.uptimeMillis() + DRAW_WAIT_MS
+        var picture: Bitmap?
+        do {
+            compose.waitForIdle()
+            picture = instrumentation.uiAutomation.takeScreenshot()
+            if (picture != null && coloursIn(picture, box) > 1) break
+            Thread.sleep(POLL_MS)
+        } while (SystemClock.uptimeMillis() < end)
+        return picture
+    }
+
+    /** The place of the app's content on the screen: left, top, width and height. */
+    fun contentBox(): List<Int> {
+        val origin = IntArray(2)
+        var size = 0 to 0
+        compose.runOnUiThread {
+            val content = compose.activity.findViewById<View>(android.R.id.content)
+            content.getLocationOnScreen(origin)
+            size = content.width to content.height
+        }
+        return listOf(origin[0], origin[1], size.first, size.second)
+    }
+
+    /** How many different colours a grid of points over [box] (left, top, width, height) of [bitmap] has. */
+    fun coloursIn(
+        bitmap: Bitmap,
+        box: List<Int>,
+    ): Int {
+        val colours = mutableSetOf<Int>()
+        for (row in 0 until GRID) {
+            for (column in 0 until GRID) {
+                val x = (box[0] + box[2] * (column + 0.5) / GRID).toInt().coerceIn(0, bitmap.width - 1)
+                val y = (box[1] + box[3] * (row + 0.5) / GRID).toInt().coerceIn(0, bitmap.height - 1)
+                colours += bitmap.getPixel(x, y)
+            }
+        }
+        return colours.size
     }
 
     /**

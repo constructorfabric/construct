@@ -3,10 +3,12 @@ package cf.construct.mobile.android
 import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -15,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
@@ -28,7 +31,11 @@ import cf.construct.mobile.feature.memory.MemoryScreen
 import cf.construct.mobile.feature.settings.SettingsActions
 import cf.construct.mobile.feature.settings.SettingsHolder
 import cf.construct.mobile.feature.settings.SettingsScreen
+import cf.construct.mobile.feature.status.ComputerOperation
+import cf.construct.mobile.feature.status.ConnectionStatus
 import cf.construct.mobile.feature.status.ConnectionStatusKind
+import cf.construct.mobile.feature.status.FirstCopyScreen
+import cf.construct.mobile.feature.status.SyncState
 
 class MainActivity : ComponentActivity() {
     private val connection: ConnectionViewModel by viewModels {
@@ -42,8 +49,13 @@ class MainActivity : ComponentActivity() {
     private val localNetworkPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             connection.holder.tryAgain()
+            sync.holder.syncNow()
             if (granted) connection.clearOperation()
         }
+
+    private val sync: SyncViewModel by viewModels {
+        viewModelFactory { initializer { SyncViewModel((application as ConstructApp).syncer) } }
+    }
 
     private val chat: ChatViewModel by viewModels {
         viewModelFactory {
@@ -54,7 +66,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Made when the person first opens the page; the activity flushes its cookies only if it exists.
+    // Made when the person first opens the page; the activity flushes its cookies and takes the page's text off the
+    // clipboard only if it exists.
     private val glasshouseModel =
         viewModels<GlasshouseViewModel> {
             viewModelFactory {
@@ -64,6 +77,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+    private val glasshouseRestriction
+        get() = if (glasshouseModel.isInitialized()) glasshouseModel.value.web.restriction else null
 
     private val memory: MemoryViewModel by viewModels {
         viewModelFactory { initializer { MemoryViewModel((application as ConstructApp).construct) } }
@@ -81,42 +97,32 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContent {
-            ConstructTheme {
-                val state by memory.holder.state.collectAsState()
-                val settingsState by settings.holder.state.collectAsState()
-                val connectionState by connection.holder.state.collectAsState()
-                val operation by connection.operation.collectAsState()
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        setContent { ConstructTheme { AppContent() } }
+    }
+
+    @Composable
+    private fun AppContent() {
+        val state by memory.holder.state.collectAsState()
+        val settingsState by settings.holder.state.collectAsState()
+        val connectionState by connection.holder.state.collectAsState()
+        val operation by connection.operation.collectAsState()
+        val syncState by sync.holder.state.collectAsState()
+        // A pairing that is done is followed by the first copy at once, not at the next check.
+        LaunchedEffect(operation.paired) { if (operation.paired) sync.holder.syncNow() }
+        // The first copy has a screen of its own over the whole app, until the copy is whole.
+        val firstCopy =
+            syncState.firstCopy?.takeIf { it.running && connectionState.kind == ConnectionStatusKind.Connected }
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Box(Modifier.fillMaxSize()) {
+                // The app stays composed under the loading screen, which keeps the page the person was on. TalkBack
+                // does not see it, and the loading screen takes the touches, so no tab can be reached.
+                Box(if (firstCopy != null) Modifier.clearAndSetSemantics {} else Modifier) {
                     ChatRoute(
                         chat,
-                        connectionState,
+                        syncState,
                         onTryAgain = ::retryConnection,
                         computerContent = { page, open ->
-                            LaunchedEffect(page) { connection.clearOperation() }
-                            LaunchedEffect(operation.paired) {
-                                if (operation.paired && page != ComputerPage.Overview) open(ComputerPage.Overview)
-                            }
-                            when (page) {
-                                ComputerPage.Overview -> {
-                                    ComputerScreen(connectionState, operation, open, ::retryConnection) {
-                                        connection.unpair(::refreshAfterUnpair)
-                                    }
-                                }
-
-                                ComputerPage.Manual -> {
-                                    ManualPairingScreen(operation, connection::pairByCode, ::requestLocalNetwork)
-                                }
-
-                                ComputerPage.Scan -> {
-                                    ScanPairingScreen(
-                                        operation,
-                                        connection::pairByQr,
-                                        connection::clearOperation,
-                                        ::requestLocalNetwork,
-                                    ) { open(ComputerPage.Manual) }
-                                }
-                            }
+                            ComputerPageContent(page, open, connectionState, syncState, operation)
                         },
                     ) { page, openComputer ->
                         when (page) {
@@ -136,6 +142,53 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                if (firstCopy != null) {
+                    // Back does nothing here: the pages under the loading screen must not go back unseen.
+                    BackHandler {}
+                    FirstCopyScreen(firstCopy)
+                }
+            }
+        }
+    }
+
+    /** The Computer page and the two pages of pairing one step below it. */
+    @Composable
+    private fun ComputerPageContent(
+        page: ComputerPage,
+        open: (ComputerPage) -> Unit,
+        connectionState: ConnectionStatus,
+        syncState: SyncState,
+        operation: ComputerOperation,
+    ) {
+        LaunchedEffect(page) { connection.clearOperation() }
+        LaunchedEffect(operation.paired) {
+            if (operation.paired && page != ComputerPage.Overview) open(ComputerPage.Overview)
+        }
+        when (page) {
+            ComputerPage.Overview -> {
+                ComputerScreen(
+                    connectionState,
+                    syncState,
+                    operation,
+                    open,
+                    retry = ::retryConnection,
+                    syncNow = sync.holder::syncNow,
+                ) {
+                    connection.unpair(::refreshAfterUnpair)
+                }
+            }
+
+            ComputerPage.Manual -> {
+                ManualPairingScreen(operation, connection::pairByCode, ::requestLocalNetwork)
+            }
+
+            ComputerPage.Scan -> {
+                ScanPairingScreen(
+                    operation,
+                    connection::pairByQr,
+                    connection::clearOperation,
+                    ::requestLocalNetwork,
+                ) { open(ComputerPage.Manual) }
             }
         }
     }
@@ -143,11 +196,19 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         connection.holder.setForeground(true)
+        sync.holder.setForeground(true)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) glasshouseRestriction?.rememberClipboard()
     }
 
     private fun refreshAfterUnpair() {
         memory.holder.refresh()
         chat.holder.refresh()
+        // The notice of a computer that is no longer paired goes now, not at the next check.
+        sync.holder.checkNow()
     }
 
     private fun retryConnection() {
@@ -157,6 +218,7 @@ class MainActivity : ComponentActivity() {
             requestLocalNetwork()
         } else {
             connection.holder.tryAgain()
+            sync.holder.syncNow()
         }
     }
 
@@ -170,8 +232,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         connection.holder.setForeground(false)
+        // A turn of the screen stops and starts the activity, but the app does not leave: its sync goes on in the
+        // view model, so a first copy that is under way is not started again from its first step.
+        if (!isChangingConfigurations) sync.holder.setForeground(false)
         // A sign-in made in the page must be on the disk if the app is closed now.
         if (glasshouseModel.isInitialized()) glasshouseModel.value.web.flushCookies()
+        // Restricted mode: the page's text does not go with the app to another app.
+        glasshouseRestriction?.restoreClipboard()
         super.onStop()
     }
 }
