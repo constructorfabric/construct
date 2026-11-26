@@ -27,6 +27,12 @@ variables and files; the variables are listed at the top of the script. Run it a
 the repository. It can be run again at any time to restore the environment, and `DRY_RUN=1` checks the
 inputs and changes nothing.
 
+The environment allows `v*` tags so that a release tag builds the signed disk image. Anyone who can
+create a tag can run the workflow of the tagged commit with the credentials, so restrict who can create
+`v*` tags with a tag ruleset (Settings, Rules). The script removes other deployment rules from the
+environment and names secrets of the same names at the level of the repository or the organisation, and
+the three older environments, which reach workflows of any branch: delete them.
+
 Use an App Store Connect team key with access to the app, its build and upload history, and
 the intended internal group. Set `TESTFLIGHT_INTERNAL_GROUP` to the exact group name and enable
 automatic distribution of new builds to it. The workflow verifies the unsigned and signed

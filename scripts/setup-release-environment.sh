@@ -111,6 +111,34 @@ for wanted in branch:main 'tag:v*'; do
       -f "name=${wanted#*:}" -f "type=${wanted%%:*}" >/dev/null
   fi
 done
+# Any other rule opens the credentials to more refs, so it goes: the environment ends up with these two only.
+while read -r id rule; do
+  case "$rule" in
+    branch:main | 'tag:v*') ;;
+    *)
+      gh api -X DELETE "repos/$repo/environments/$environment/deployment-branch-policies/$id" >/dev/null
+      echo "removed the deployment rule $rule"
+      ;;
+  esac
+done < <(gh api --paginate "repos/$repo/environments/$environment/deployment-branch-policies" \
+  --jq '.branch_policies[] | "\(.id) \(.type):\(.name)"')
+
+# Secrets of the same names at the level of the repository or the organisation, or in the three environments
+# this one replaces, reach workflows of any branch. They are not removed here, but they are named.
+shared=$( { gh api --paginate "repos/$repo/actions/secrets" --jq '.secrets[].name' 2>/dev/null || true
+  gh api --paginate "repos/$repo/actions/organization-secrets" --jq '.secrets[].name' 2>/dev/null || true; } | sort -u)
+for item in "${planned[@]}"; do
+  rest=${item#*:}
+  name=${rest%%:*}
+  if grep -qxF "$name" <<<"$shared"; then
+    echo "warning: $name also exists as a secret of the repository or the organisation; delete it there" >&2
+  fi
+done
+for old in mobile-ios-release mobile-android-release desktop-release; do
+  if gh api "repos/$repo/environments/$old" --silent 2>/dev/null; then
+    echo "warning: the environment $old still exists and holds credentials; delete it" >&2
+  fi
+done
 
 for item in "${planned[@]}"; do
   kind=${item%%:*}
