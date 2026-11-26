@@ -57,7 +57,7 @@ pub struct ToolStatus {
     /// saved position moves on, and nothing is stored. After an erasure nothing is read from
     /// the tool at all until it is switched on. As of the last pass.
     pub off: bool,
-    /// The app of a snapshot source is not installed, as of the last pass.
+    /// The app of the source is not installed, as of the last pass.
     pub not_installed: bool,
     /// Why this tool is not followed fully: its files cannot be listed (or some directories
     /// cannot), the records cannot be written, the progress cannot be saved, the follower did
@@ -566,7 +566,11 @@ impl<S: Sink> Follower<S> {
         let mut failure = None;
         for tool in tools.iter() {
             let off = !is_on(switch.as_ref(), tool.name());
-            stats.update(tool.name(), |s| s.off = off);
+            let installed = tool.installed(home);
+            stats.update(tool.name(), |s| {
+                s.off = off;
+                s.not_installed = !installed;
+            });
             let root = tool.root(home);
             let listing = match tool.find_files(&root) {
                 Ok(listing) => listing,

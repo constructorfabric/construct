@@ -22,6 +22,10 @@ impl<T: Tool> Tool for Under<T> {
         home.join(self.1)
     }
 
+    fn installed(&self, home: &Path) -> bool {
+        self.0.installed(home)
+    }
+
     fn find_files(&self, root: &Path) -> io::Result<Listing> {
         self.0.find_files(root)
     }

@@ -19,6 +19,15 @@ impl Tool for ChatGpt {
         sessions_root(home)
     }
 
+    /// The app (bundle `com.openai.codex`, which is also Codex Desktop) keeps its own data
+    /// under the name Codex; the Codex command line tool has no such folder.
+    fn installed(&self, home: &Path) -> bool {
+        home.join("Library")
+            .join("Application Support")
+            .join("Codex")
+            .is_dir()
+    }
+
     fn find_files(&self, root: &Path) -> io::Result<Listing> {
         find_sessions(root, Sessions::ChatGpt)
     }
@@ -236,5 +245,15 @@ mod tests {
     fn the_root_is_the_one_of_codex() {
         let home = Path::new("/h");
         assert_eq!(ChatGpt.root(home), Codex.root(home));
+    }
+
+    #[test]
+    fn the_app_is_installed_when_it_has_its_data_folder() {
+        let (home, _) = day("installed");
+        assert!(!ChatGpt.installed(&home));
+        fs::create_dir_all(home.join("Library/Application Support/Codex")).unwrap();
+        assert!(ChatGpt.installed(&home));
+        assert!(Codex.installed(Path::new("/nowhere")));
+        let _ = fs::remove_dir_all(home);
     }
 }

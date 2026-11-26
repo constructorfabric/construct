@@ -280,7 +280,7 @@ fn chat_history(data: &Path) {
 }
 
 #[test]
-fn a_backfill_counts_and_sends_the_chat_and_claude_app_prompts_and_follows_the_master_switch() {
+fn a_backfill_counts_and_sends_the_chat_and_app_prompts_and_follows_each_switch() {
     let stand = Stand::new();
     let host = FakeHost::start();
     history(stand.data(), 2, 1);
@@ -290,6 +290,8 @@ fn a_backfill_counts_and_sends_the_chat_and_claude_app_prompts_and_follows_the_m
         &[
             turn("claude-app", "a1", &ago(2, 20), Role::User, "app prompt"),
             turn("claude-app", "a1", &ago(2, 21), Role::Assistant, "ok"),
+            turn("chatgpt", "g1", &ago(2, 30), Role::User, "chatgpt prompt"),
+            turn("chatgpt", "g1", &ago(2, 31), Role::Assistant, "ok"),
         ],
     );
     let manage = stand.manager();
@@ -299,18 +301,31 @@ fn a_backfill_counts_and_sends_the_chat_and_claude_app_prompts_and_follows_the_m
     let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
     assert_eq!(
         reply["prompts"],
-        json!({ "chat": 2, "chatgpt": 0, "claude-app": 1, "claude-code": 1, "codex": 1 })
+        json!({ "chat": 2, "chatgpt": 1, "claude-app": 1, "claude-code": 1, "codex": 1 })
     );
-    assert_eq!(reply["total"], 5);
+    assert_eq!(reply["total"], 6);
 
-    // The chat and the Claude app have no switch of their own: the tools' switches do not change
-    // their counts.
+    // The chat has no switch of its own: the tools' switches do not change its count, and each
+    // switch takes its own source out, Codex and ChatGPT apart although they share a folder.
     set_collection(&stand, r#"{"claude_code":false,"codex":false}"#);
     let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
     assert_eq!(
         reply["prompts"],
-        json!({ "chat": 2, "chatgpt": 0, "claude-app": 1, "claude-code": 0, "codex": 0 })
+        json!({ "chat": 2, "chatgpt": 1, "claude-app": 1, "claude-code": 0, "codex": 0 })
     );
+    set_collection(&stand, r#"{"codex":true,"chatgpt":false}"#);
+    let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
+    assert_eq!(
+        reply["prompts"],
+        json!({ "chat": 2, "chatgpt": 0, "claude-app": 1, "claude-code": 0, "codex": 1 })
+    );
+    set_collection(&stand, r#"{"codex":false,"claude_app":false}"#);
+    let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
+    assert_eq!(
+        reply["prompts"],
+        json!({ "chat": 2, "chatgpt": 0, "claude-app": 0, "claude-code": 0, "codex": 0 })
+    );
+    set_collection(&stand, r#"{"claude_app":true,"chatgpt":true}"#);
     // With collection off nothing is counted.
     set_collection(&stand, r#"{"enabled":false}"#);
     let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
@@ -318,11 +333,16 @@ fn a_backfill_counts_and_sends_the_chat_and_claude_app_prompts_and_follows_the_m
 
     set_collection(&stand, r#"{"enabled":true}"#);
     let reply: Value = serde_json::from_str(&manage.backfill("{}")).unwrap();
-    assert_eq!(reply["queued"], 3, "{reply}");
+    assert_eq!(reply["queued"], 4, "{reply}");
     wait_for("the run", || backfill_state(&manage) == "done");
     assert_eq!(
         host.messages(),
-        ["chat prompt one", "chat prompt two", "app prompt"]
+        [
+            "chat prompt one",
+            "chat prompt two",
+            "app prompt",
+            "chatgpt prompt"
+        ]
     );
 }
 

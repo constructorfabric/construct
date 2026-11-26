@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use connectors::{Author, ClaudeCode, Codex, Registry, Role, Turn};
+use connectors::{Author, ChatGpt, ClaudeCode, Codex, Registry, Role, Turn};
 use construct_agent::activity::Feed;
 use construct_agent::chat::{Chat, Link};
 use construct_agent::dashboard_setup::SetupJob;
@@ -28,8 +28,10 @@ mod common;
 
 use common::fake_host::FakeHost;
 use common::scripted::{Turn as Scripted, provider};
-use common::stand::{deadlines, timing, wait_for};
-use common::tools::{Under, claude_user, codex_meta, codex_user, recent_claude, recent_codex};
+use common::stand::{deadlines, set_collection, timing, wait_for};
+use common::tools::{
+    Under, claude_user, codex_item, codex_meta, codex_user, recent_claude, recent_codex,
+};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -40,11 +42,14 @@ const ERASING: &str =
 const CLAUDE_LOG: &str = ".claude/projects/project/sess-1.jsonl";
 const CODEX_ID: &str = "01a0bee2-6260-73a3-b389-43c86bb8930f";
 const CODEX_LOG: &str = ".codex/sessions/2026/11/11/rollout-2026-11-11T10-15-00-01a0bee2-6260-73a3-b389-43c86bb8930f.jsonl";
+const CHATGPT_ID: &str = "01a20dea-9b83-7943-8e6b-22aa40b51e64";
+const CHATGPT_LOG: &str = ".codex/sessions/2026/11/11/rollout-2026-11-11T11-00-00-01a20dea-9b83-7943-8e6b-22aa40b51e64.jsonl";
 
 fn registry() -> Registry {
     Registry::new(vec![
         Box::new(Under(ClaudeCode, ".claude/projects")),
         Box::new(Under(Codex, ".codex/sessions")),
+        Box::new(Under(ChatGpt, ".codex/sessions")),
     ])
 }
 
@@ -205,8 +210,26 @@ impl Stand {
         self.follower_with(Erase::new(&self.data, &sources()))
     }
 
-    /// The Claude app has its cache (the test one of the reader).
-    fn fill_app(&self, follower: &mut Follower<FileSink>) {
+    /// The ChatGPT app has a chat, in the folder of the Codex sessions.
+    fn write_chatgpt(&self) {
+        let workspace = self.home.join("Documents/Codex");
+        let meta = codex_item(
+            "session_meta",
+            &format!(
+                r#"{{"id":"{CHATGPT_ID}","originator":"Codex Desktop","cwd":"{}","runtime_workspace_roots":["{}"]}}"#,
+                workspace.join("2026-11-11/1").display(),
+                workspace.display()
+            ),
+        );
+        append(
+            &self.home.join(CHATGPT_LOG),
+            &format!("{meta}\n{}\n", codex_user("chatgpt old")),
+        );
+    }
+
+    /// The ChatGPT app has a chat, and the Claude app its cache (the test one of the reader).
+    fn fill_apps(&self, follower: &mut Follower<FileSink>) {
+        self.write_chatgpt();
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../connectors/tests/fixtures/claude-app/IndexedDB");
         copy_dir(&fixture, &connectors::claude_app_cache(&self.home));
@@ -368,25 +391,72 @@ fn the_erase_command_leaves_no_record_no_position_no_journal_and_no_conversation
 }
 
 #[test]
-fn the_erase_command_takes_the_claude_app_sessions_and_a_switch_on_collects_them_again() {
+fn the_erase_command_takes_the_sessions_of_both_apps_and_a_switch_on_collects_them_again() {
     let stand = Stand::new("http://127.0.0.1:9/v1");
     let mut follower = stand.follower();
-    stand.fill_app(&mut follower);
+    stand.fill_apps(&mut follower);
     let short = ["Готово: файл создан.", "Создай файл cowork-test.txt"];
+    assert_eq!(stand.stored_texts("chatgpt", CHATGPT_ID), ["chatgpt old"]);
     assert_eq!(stand.stored_texts("claude-app", "cse_fixture_short"), short);
     let progress = FileSink::new(&stand.data).load_progress().unwrap();
     assert!(progress.seen.contains_key("claude-app"));
+    assert!(stand.read_to_the_end(&stand.home.join(CHATGPT_LOG)));
+    // The test home has the Claude app's data folder and not the ChatGPT app's.
+    let status = stand.stats.to_json();
+    assert_eq!(status["chatgpt"]["not_installed"], true);
+    assert_eq!(status["claude-app"].get("not_installed"), None);
 
     stand.erase_command();
     assert!(stand.records().is_empty());
     assert!(!stand.progress_file().exists());
-    // While collection is off after the erasure, the app is not read again.
+    // While collection is off after the erasure, nothing of either app is read again.
     follower.pass().unwrap();
     assert!(stand.records().is_empty());
 
     stand.switch_on();
     follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("chatgpt", CHATGPT_ID), ["chatgpt old"]);
     assert_eq!(stand.stored_texts("claude-app", "cse_fixture_short"), short);
+}
+
+#[test]
+fn codex_and_chatgpt_each_follow_their_own_switch_although_they_share_a_folder() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    set_collection(&stand.settings, r#"{"chatgpt":false}"#);
+    append(
+        &stand.codex(),
+        &format!("{}\n{}\n", codex_meta(CODEX_ID), codex_user("codex old")),
+    );
+    stand.write_chatgpt();
+    follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("codex", CODEX_ID), ["codex old"]);
+    assert!(stand.stored_texts("chatgpt", CHATGPT_ID).is_empty());
+    let status = stand.stats.to_json();
+    assert_eq!(status["chatgpt"]["off"], true);
+    assert_eq!(status["codex"].get("off"), None);
+
+    // What a tool wrote while it was off is dropped, so each side gets a new line.
+    set_collection(&stand.settings, r#"{"chatgpt":true,"codex":false}"#);
+    append(
+        &stand.home.join(CHATGPT_LOG),
+        &format!("{}\n", codex_user("chatgpt new")),
+    );
+    append(&stand.codex(), &format!("{}\n", codex_user("codex new")));
+    follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("chatgpt", CHATGPT_ID), ["chatgpt new"]);
+    assert_eq!(stand.stored_texts("codex", CODEX_ID), ["codex old"]);
+    let status = stand.stats.to_json();
+    assert_eq!(status["chatgpt"].get("off"), None);
+    assert_eq!(status["codex"]["off"], true);
+
+    set_collection(&stand.settings, r#"{"codex":true}"#);
+    append(&stand.codex(), &format!("{}\n", codex_user("codex newer")));
+    follower.pass().unwrap();
+    assert_eq!(
+        stand.stored_texts("codex", CODEX_ID),
+        ["codex newer", "codex old"]
+    );
 }
 
 #[test]
