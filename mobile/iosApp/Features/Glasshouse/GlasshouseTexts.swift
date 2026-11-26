@@ -7,6 +7,7 @@ enum GlasshouseTexts {
     static let noStartAddress = "No start address is set. Type an address above to open a page."
 
     static let restricted = "Restricted mode"
+    static let restrictedAndHidden = "Restricted mode: hidden from screenshots and recordings"
     static let screenshotOpen = "A screenshot of this page cannot be blocked on this iPhone."
     static let understood = "OK"
     static let pageHidden = "The page is hidden while the screen is recorded or shown on another screen."

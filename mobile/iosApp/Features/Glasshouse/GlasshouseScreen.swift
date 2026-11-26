@@ -11,6 +11,8 @@ struct GlasshouseActions {
     let forward: () -> Void
     /// The person has read the line that says a screenshot cannot be blocked.
     let dismissScreenshotNotice: () -> Void
+    /// The page was put out of screenshots and recordings, or could not be.
+    let screenshotProtection: (Bool) -> Void
 }
 
 /// The Glasshouse page: the address bar under the status area, the web page, and back and forward above the tab
@@ -36,7 +38,7 @@ struct GlasshouseScreen: View {
                     edited: actions.edited,
                     reload: actions.reload
                 )
-                RestrictedSign()
+                RestrictedSign(hiddenFromScreenshots: restricted.screenshotProtected)
                 if current.addressRefused {
                     InlineNotice(text: GlasshouseTexts.notWeb, error: true)
                         .accessibilityIdentifier("glasshouse-message")
@@ -74,7 +76,7 @@ struct GlasshouseScreen: View {
         let message = messageText(current)
         return ZStack(alignment: .topLeading) {
             if let webView {
-                GlasshouseWebContainer(webView: webView)
+                GlasshouseWebContainer(webView: webView, screenshotProtection: actions.screenshotProtection)
                     .accessibilityHidden(message != nil || restricted.covered)
             }
             if restricted.covered {
@@ -116,12 +118,15 @@ struct GlasshouseScreen: View {
     }
 }
 
-/// The small sign that the page is in restricted mode, which nothing switches off.
+/// The small sign that the page is in restricted mode, which nothing switches off. It also says when the page is
+/// hidden from screenshots and recordings.
 private struct RestrictedSign: View {
+    let hiddenFromScreenshots: Bool
+
     var body: some View {
         HStack(spacing: ConstructTheme.Space.small) {
             FeatureIcon("GlasshouseLock", size: ConstructTheme.TextSize.caption)
-            Text(GlasshouseTexts.restricted)
+            Text(hiddenFromScreenshots ? GlasshouseTexts.restrictedAndHidden : GlasshouseTexts.restricted)
                 .font(.system(size: ConstructTheme.TextSize.caption))
         }
         .foregroundStyle(ConstructTheme.color(.mutedForeground))

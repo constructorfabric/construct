@@ -73,22 +73,52 @@ final class GlasshouseRestrictedTests: GlasshouseTestCase {
         return offered
     }
 
-    // MARK: The sign and the line about screenshots
+    // MARK: The sign and the page out of screenshots
 
-    func testTheSignAndTheLineAboutScreenshotsShowBeforeThePageOpens() {
+    /// The sign says what the page is kept out of once the page is in the secure canvas, and there is no line that
+    /// asks the person to read anything. The Simulator draws the page as it always does, so this shows the page was
+    /// put in the canvas and the state followed; whether a screenshot is black is for a real iPhone.
+    func testTheSignSaysThePageIsHiddenFromScreenshotsAndNoLineAsksToReadAnything() {
         launch()
         openGlasshouse()
         XCTAssertTrue(sign().waitForExistence(timeout: 10), "no sign of restricted mode")
-        XCTAssertEqual(sign().label, "Restricted mode")
-        let line = app.staticTexts[Message.screenshot]
-        XCTAssertTrue(line.waitForExistence(timeout: 10), "no line about screenshots")
+        wait("the sign to say the page is hidden") { self.sign().label == Message.restrictedAndHidden }
         go(site.trusted + "/restricted")
         waitForPage("Restricted notes")
-        XCTAssertTrue(sign().exists, "the sign is gone after the page opened")
-        XCTAssertTrue(line.exists, "the line is gone before the person read it")
-        app.buttons["OK"].tap()
-        XCTAssertTrue(line.waitForNonExistence(timeout: 5), "the line stays after OK")
-        XCTAssertTrue(sign().exists, "the sign went with the line")
+        XCTAssertEqual(sign().label, Message.restrictedAndHidden, "the sign changed after the page opened")
+        XCTAssertFalse(app.staticTexts[Message.screenshot].exists, "a line says a screenshot cannot be blocked")
+        XCTAssertFalse(app.buttons["OK"].exists, "a line waits to be read")
+    }
+
+    // MARK: The page with its layer moved
+
+    func testThePageScrollsAndTakesATapAtTheEnd() {
+        launch()
+        openGlasshouse()
+        go(site.trusted + "/long")
+        waitForPage("Top of the long page")
+        let button = app.webViews.buttons["Tap at the end"]
+        for _ in 0 ..< 20 where !button.isHittable {
+            app.webViews.firstMatch.swipeUp()
+        }
+        XCTAssertTrue(button.isHittable, "the page did not scroll to its end")
+        button.tap()
+        waitForPage("tapped at the end")
+    }
+
+    func testThePageKeepsWorkingAfterThePersonLeavesItAndComesBack() {
+        openRestrictedPage()
+        app.tabBars.buttons["Chat"].tap()
+        XCTAssertTrue(app.navigationBars["Chat"].waitForExistence(timeout: 10))
+        app.tabBars.buttons["Glasshouse"].tap()
+        XCTAssertTrue(app.buttons["glasshouse-host"].waitForExistence(timeout: 10))
+        wait("the sign to say the page is hidden") { self.sign().label == Message.restrictedAndHidden }
+        waitForPage("Restricted notes")
+        app.webViews.buttons["Select the words"].tap()
+        page("Basil likes warmth").tap()
+        let labels = menuOffer()
+        XCTAssertTrue(labels.contains("Look Up"), "no menu on the selected text after coming back: \(labels)")
+        XCTAssertFalse(app.staticTexts[Message.screenshot].exists)
     }
 
     // MARK: The touch menu

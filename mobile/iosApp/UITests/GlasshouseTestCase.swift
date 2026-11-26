@@ -14,6 +14,7 @@ enum Message {
     static let noStart = "No start address is set. Type an address above to open a page."
     static let onlyWeb = "Only http and https addresses open here."
     static let screenshot = "A screenshot of this page cannot be blocked on this iPhone."
+    static let restrictedAndHidden = "Restricted mode: hidden from screenshots and recordings"
     static let downloadBlocked = "Download is blocked in restricted mode."
     static let printBlocked = "Print is blocked in restricted mode."
     static let shareBlocked = "Share is blocked in restricted mode."

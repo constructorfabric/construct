@@ -24,10 +24,9 @@ final class GlasshouseRestrictionTests: XCTestCase {
     }
 
     private func restriction(
-        _ board: Board = Board(), blockable: Bool = false, active: Bool = true, seconds: Double = 6
+        _ board: Board = Board(), active: Bool = true, seconds: Double = 6
     ) -> GlasshouseRestriction {
         GlasshouseRestriction(
-            screenshotCanBeBlocked: blockable,
             clipboard: GlasshouseClipboard(pasteboard: board),
             center: center,
             appActive: active,
@@ -38,20 +37,40 @@ final class GlasshouseRestrictionTests: XCTestCase {
 
     // MARK: The line about screenshots
 
-    func testALineSaysAScreenshotCannotBeBlockedWhereTheWayIsNotThereAndGoesWhenTheyReadIt() {
+    func testNothingIsSaidAboutScreenshotsBeforeThePageTriedToKeepItselfOutOfThem() {
+        let state = restriction().state
+        XCTAssertFalse(state.screenshotNotice)
+        XCTAssertFalse(state.screenshotProtected)
+    }
+
+    func testALineSaysAScreenshotCannotBeBlockedAfterATryThatFailedAndGoesWhenTheyReadIt() {
         let restriction = restriction()
+        restriction.screenshotProtection(worked: false)
         XCTAssertTrue(restriction.state.screenshotNotice)
+        XCTAssertFalse(restriction.state.screenshotProtected)
         restriction.dismissScreenshotNotice()
         XCTAssertFalse(restriction.state.screenshotNotice)
     }
 
-    func testNoLineWhereAScreenshotCanBeBlocked() {
-        XCTAssertFalse(restriction(blockable: true).state.screenshotNotice)
+    func testNoLineAndTheSignSaysHiddenAfterATryThatWorked() {
+        let restriction = restriction()
+        restriction.screenshotProtection(worked: true)
+        XCTAssertFalse(restriction.state.screenshotNotice)
+        XCTAssertTrue(restriction.state.screenshotProtected)
     }
 
-    func testThisBuildDoesNotRelyOnTheSecureFieldWayAndSaysSo() {
-        XCTAssertFalse(GlasshouseScreenshot.canBeBlocked)
-        XCTAssertTrue(restriction().state.screenshotNotice)
+    func testTheLineFollowsTheLastTryAndDoesNotComeBackAfterItWasRead() {
+        let restriction = restriction()
+        restriction.screenshotProtection(worked: false)
+        restriction.screenshotProtection(worked: true)
+        XCTAssertFalse(restriction.state.screenshotNotice, "the line stayed after a try that worked")
+        XCTAssertTrue(restriction.state.screenshotProtected)
+        restriction.screenshotProtection(worked: false)
+        XCTAssertTrue(restriction.state.screenshotNotice)
+        restriction.dismissScreenshotNotice()
+        restriction.screenshotProtection(worked: false)
+        XCTAssertFalse(restriction.state.screenshotNotice, "the line came back after it was read")
+        XCTAssertFalse(restriction.state.screenshotProtected)
     }
 
     // MARK: A recording or another screen

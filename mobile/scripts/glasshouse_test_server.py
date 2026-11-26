@@ -22,6 +22,7 @@ task `generateGlasshouseTestCertificates` writes. The pages:
   /permissions      asks for the camera and the location and writes what it was told
   /restricted       the page of the restricted mode tests: text, a picture, a link that asks for a download, a file the
                     server sends to save, and buttons for the page's own copy, print and share commands
+  /long             a page much taller than the screen, with a button and a line that says it was tapped at its end
   /notes.txt        a plain text file
   /attachment       the same file, sent with a header that asks to save it
   /slow             answers after thirty seconds
@@ -100,6 +101,15 @@ document.getElementById('share').addEventListener('click', async () => {
 });
 </script>
 """
+
+
+LONG = (
+    "<h1>Top of the long page</h1>"
+    + "".join(f"<p>Row {number} of the long page.</p>" for number in range(1, 81))
+    + '<p><button id="end">Tap at the end</button></p><p id="status">waiting</p>'
+    "<script>document.getElementById('end').addEventListener('click', () => {"
+    "document.getElementById('status').textContent = 'tapped at the end';});</script>"
+)
 
 
 def page(title, body):
@@ -250,6 +260,8 @@ navigator.geolocation.getCurrentPosition(() => { lines.location = 'granted'; sho
                 return self.send(200, page("Permissions", body))
             if path == "/restricted":
                 return self.send(200, page("Restricted notes", RESTRICTED))
+            if path == "/long":
+                return self.send(200, page("Long page", LONG))
             if path == "/notes.txt":
                 return self.send(200, b"Basil likes warmth.\n", "text/plain; charset=utf-8")
             if path == "/attachment":
