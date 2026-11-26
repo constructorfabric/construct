@@ -69,6 +69,11 @@ impl Tool for Fake {
         home.join(".fake")
     }
 
+    /// Installed unless the home holds `.fake-uninstalled`.
+    fn installed(&self, home: &Path) -> bool {
+        !home.join(".fake-uninstalled").exists()
+    }
+
     fn find_files(&self, root: &Path) -> io::Result<Listing> {
         let mut listing = Listing::default();
         match &self.list {
@@ -320,6 +325,22 @@ fn a_missing_root_is_not_an_error_and_the_scan_is_over() {
     append(&s.log("a.log"), "hello\n");
     follower.pass().unwrap();
     assert_eq!(s.texts("a"), ["hello"]);
+}
+
+#[test]
+fn a_tool_whose_app_is_not_installed_says_so_and_no_more_once_it_is() {
+    let s = Setup::new("not-installed");
+    fs::write(s.home.join(".fake-uninstalled"), "").unwrap();
+    let stats = Stats::default();
+    let mut follower = s.follower(&stats);
+    follower.pass().unwrap();
+    assert_eq!(
+        tool_status(&stats),
+        serde_json::json!({ "turns": 0, "skipped": 0, "scanning": false, "not_installed": true })
+    );
+    fs::remove_file(s.home.join(".fake-uninstalled")).unwrap();
+    follower.pass().unwrap();
+    assert_eq!(tool_status(&stats).get("not_installed"), None);
 }
 
 #[test]

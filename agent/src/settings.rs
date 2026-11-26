@@ -32,13 +32,17 @@ pub const TOOLS: [&str; 4] = ["claude-code", "codex", "chatgpt", connectors::CLA
 
 /// What the readers collect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "StoredCollection")]
 // One flag per switch: these are the field names of the settings file and of the answer.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Collection {
     pub enabled: bool,
     pub claude_code: bool,
     pub codex: bool,
+    /// The chats of the ChatGPT app.
+    pub chatgpt: bool,
+    /// The chats and Cowork sessions of the Claude app.
+    pub claude_app: bool,
     /// The screen samples (see `screen`): off until the person switches them on.
     pub screen: bool,
 }
@@ -49,7 +53,58 @@ impl Default for Collection {
             enabled: true,
             claude_code: true,
             codex: true,
+            chatgpt: true,
+            claude_app: true,
             screen: false,
+        }
+    }
+}
+
+/// The switches as a settings file holds them; one the file lacks takes its default, and a value
+/// that is not a boolean makes the file unreadable. A file written before the ChatGPT app had a
+/// switch of its own collected its chats with Codex, so there the Codex switch answers for it: a
+/// person who turned Codex off does not start collecting ChatGPT chats.
+#[derive(Deserialize)]
+#[serde(default)]
+#[allow(clippy::struct_excessive_bools)]
+struct StoredCollection {
+    enabled: bool,
+    claude_code: bool,
+    codex: bool,
+    #[serde(deserialize_with = "present_bool")]
+    chatgpt: Option<bool>,
+    claude_app: bool,
+    screen: bool,
+}
+
+impl Default for StoredCollection {
+    fn default() -> Self {
+        let c = Collection::default();
+        Self {
+            enabled: c.enabled,
+            claude_code: c.claude_code,
+            codex: c.codex,
+            chatgpt: None,
+            claude_app: c.claude_app,
+            screen: c.screen,
+        }
+    }
+}
+
+/// A boolean that the file has; `null` is no boolean.
+fn present_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(d).map(Some)
+}
+
+impl From<StoredCollection> for Collection {
+    fn from(stored: StoredCollection) -> Self {
+        Self {
+            enabled: stored.enabled,
+            claude_code: stored.claude_code,
+            codex: stored.codex,
+            chatgpt: stored.chatgpt.unwrap_or(stored.codex),
+            claude_app: stored.claude_app,
+            screen: stored.screen,
         }
     }
 }
@@ -177,6 +232,8 @@ struct CollectionUpdate {
     enabled: Option<bool>,
     claude_code: Option<bool>,
     codex: Option<bool>,
+    chatgpt: Option<bool>,
+    claude_app: Option<bool>,
     screen: Option<bool>,
 }
 
@@ -262,6 +319,8 @@ fn merged(data: &Data, update: Update) -> Result<Data, Error> {
         target.enabled = c.enabled.unwrap_or(target.enabled);
         target.claude_code = c.claude_code.unwrap_or(target.claude_code);
         target.codex = c.codex.unwrap_or(target.codex);
+        target.chatgpt = c.chatgpt.unwrap_or(target.chatgpt);
+        target.claude_app = c.claude_app.unwrap_or(target.claude_app);
         target.screen = c.screen.unwrap_or(target.screen);
     }
     Ok(next)
@@ -342,17 +401,18 @@ impl Settings {
 
     /// Whether the sessions of the source called `tool` (a connector's name, or the chat's) may be stored:
     /// collection is on, and so is the tool's own switch. A tool the settings do not know is off.
-    /// The chat and the Claude app have no switch of their own: they follow collection alone.
+    /// The chat has no switch of its own: it follows collection alone.
     #[must_use]
     pub fn collects(&self, tool: &str) -> bool {
         let c = self.collection();
         c.enabled
             && match tool {
                 "claude-code" => c.claude_code,
-                // The Codex switch also answers for the ChatGPT app's chats.
-                "codex" | "chatgpt" => c.codex,
+                "codex" => c.codex,
+                "chatgpt" => c.chatgpt,
+                connectors::CLAUDE_APP => c.claude_app,
                 crate::screen::SOURCE => c.screen,
-                crate::chat::SOURCE | connectors::CLAUDE_APP => true,
+                crate::chat::SOURCE => true,
                 _ => false,
             }
     }
@@ -471,33 +531,91 @@ mod tests {
     fn a_tool_is_collected_only_while_collection_and_its_switch_are_on() {
         let dir = scratch("collects");
         let s = Settings::open(&dir).unwrap();
-        assert!(s.collects("claude-code") && s.collects("codex"));
+        assert!(TOOLS.iter().all(|tool| s.collects(tool)));
+        assert!(s.tools_off().is_empty());
         assert!(!s.collects("unknown-tool"));
         assert!(s.collects("chat"));
-        s.apply(update(
-            r#"{"collection":{"claude_code":false,"codex":false}}"#,
-        ))
-        .unwrap();
-        assert!(s.collects("chat") && s.collects("claude-app"));
-        s.apply(update(
-            r#"{"collection":{"claude_code":true,"codex":true}}"#,
-        ))
-        .unwrap();
-        assert!(s.collects("chatgpt"));
-        s.apply(update(r#"{"collection":{"codex":false}}"#))
+        // Each switch stops its own source and no other.
+        for (field, tool) in [
+            ("claude_code", "claude-code"),
+            ("codex", "codex"),
+            ("chatgpt", "chatgpt"),
+            ("claude_app", "claude-app"),
+        ] {
+            s.apply(update(&format!(r#"{{"collection":{{"{field}":false}}}}"#)))
+                .unwrap();
+            assert_eq!(s.tools_off(), [tool], "{field}");
+            assert!(s.collects("chat"), "{field}");
+            s.apply(update(&format!(r#"{{"collection":{{"{field}":true}}}}"#)))
+                .unwrap();
+        }
+        s.apply(update(r#"{"collection":{"enabled":false}}"#))
             .unwrap();
-        assert!(s.collects("claude-code") && !s.collects("codex"));
-        // The ChatGPT app's chats follow the Codex switch.
-        assert!(!s.collects("chatgpt"));
-        assert_eq!(s.tools_off(), ["codex", "chatgpt"]);
-        s.apply(update(r#"{"collection":{"enabled":false,"codex":true}}"#))
-            .unwrap();
-        assert!(!s.collects("claude-code") && !s.collects("codex") && !s.collects("chatgpt"));
-        assert!(!s.collects("claude-app"));
+        assert!(!s.collects("chat"));
         assert_eq!(
             s.tools_off(),
             ["claude-code", "codex", "chatgpt", "claude-app"]
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_from_before_the_app_switches_reads_chatgpt_as_its_codex_switch_and_claude_app_as_on()
+    {
+        for (codex, chatgpt) in [(false, false), (true, true)] {
+            let dir = scratch(&format!("before-apps-{codex}"));
+            fs::write(
+                dir.join(FILE_NAME),
+                format!(r#"{{"version":1,"collection":{{"enabled":true,"codex":{codex}}}}}"#),
+            )
+            .unwrap();
+            let c = Settings::open(&dir).unwrap().collection();
+            assert_eq!((c.codex, c.chatgpt, c.claude_app), (codex, chatgpt, true));
+            let _ = fs::remove_dir_all(dir);
+        }
+        // A file that has the switches keeps them, whatever Codex says.
+        let dir = scratch("with-apps");
+        fs::write(
+            dir.join(FILE_NAME),
+            r#"{"version":1,"collection":{"codex":false,"chatgpt":true,"claude_app":false}}"#,
+        )
+        .unwrap();
+        let c = Settings::open(&dir).unwrap().collection();
+        assert_eq!((c.codex, c.chatgpt, c.claude_app), (false, true, false));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_switch_that_is_not_a_boolean_makes_the_file_unreadable_and_collection_off() {
+        for field in ["enabled", "codex", "chatgpt", "claude_app"] {
+            let dir = scratch(&format!("null-{field}"));
+            fs::write(
+                dir.join(FILE_NAME),
+                format!(r#"{{"version":1,"collection":{{"{field}":null}}}}"#),
+            )
+            .unwrap();
+            let s = Settings::open(&dir).unwrap();
+            assert!(!s.collection().enabled, "{field}");
+            assert!(dir.join("settings.json.corrupt").exists(), "{field}");
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn the_app_switches_are_answered_and_kept_across_a_restart() {
+        let dir = scratch("app-switches");
+        let s = Settings::open(&dir).unwrap();
+        s.apply(update(
+            r#"{"collection":{"chatgpt":false,"claude_app":false}}"#,
+        ))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&s.get_response()).unwrap();
+        assert_eq!(
+            (&v["collection"]["chatgpt"], &v["collection"]["claude_app"]),
+            (&serde_json::json!(false), &serde_json::json!(false))
+        );
+        let c = Settings::open(&dir).unwrap().collection();
+        assert_eq!((c.codex, c.chatgpt, c.claude_app), (true, false, false));
         let _ = fs::remove_dir_all(dir);
     }
 

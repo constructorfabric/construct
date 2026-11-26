@@ -34,6 +34,12 @@ pub trait Tool: Send + Sync {
     /// Where the tool keeps its session files, for a user's home directory.
     fn root(&self, home: &Path) -> PathBuf;
 
+    /// Whether the app of the tool is installed for `home`, when the tool is an app that can
+    /// be told apart from the folder of its sessions; a tool that cannot be told apart is.
+    fn installed(&self, _home: &Path) -> bool {
+        true
+    }
+
     /// The session files under `root`. A directory below `root` that cannot be read is left
     /// out of the files and named in [`Listing::problems`], so one bad directory does not
     /// hide the other files.

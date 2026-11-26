@@ -161,7 +161,7 @@ async fn the_socket_answers_the_details_of_a_dashboard_from_the_store() {
         .unwrap();
     assert_eq!(
         call(&stand.socket, "dashboard-state".to_owned()).await,
-        json!({ "state": "ready", "tools_off": ["codex", "chatgpt"] })
+        json!({ "state": "ready", "tools_off": ["codex"] })
     );
 
     let page = call(&stand.socket, sessions).await;
