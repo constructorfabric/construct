@@ -17,8 +17,7 @@ struct GlasshouseActions {
 
 /// The Glasshouse page: the address bar under the status area, the web page, and back and forward above the tab
 /// bar. It draws the state and the web view it is given, and loads nothing itself. The page is always in restricted
-/// mode, so the sign of it is always under the address bar, and behind the page is a sign that a screenshot shows where
-/// the page is, when the page is kept out of it.
+/// mode, so the sign of it is always under the address bar.
 struct GlasshouseScreen: View {
     @ObservedObject var state: FlowState<GlasshouseState>
     let progress: Double
@@ -76,7 +75,6 @@ struct GlasshouseScreen: View {
     private func page(_ current: GlasshouseState) -> some View {
         let message = messageText(current)
         return ZStack(alignment: .topLeading) {
-            RestrictedPageSign()
             if let webView {
                 GlasshouseWebContainer(webView: webView, screenshotProtection: actions.screenshotProtection)
                     .accessibilityHidden(message != nil || restricted.covered)
@@ -134,23 +132,6 @@ private struct RestrictedSign: View {
         .foregroundStyle(ConstructTheme.color(.mutedForeground))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("glasshouse-restricted")
-    }
-}
-
-/// The sign behind the web view: the lock and a short line. The page covers it, and a screenshot or a recording does
-/// not show the page, so it shows this where the page is and not an empty area. VoiceOver skips it: it is not on the
-/// screen for the person.
-private struct RestrictedPageSign: View {
-    var body: some View {
-        VStack(spacing: ConstructTheme.Space.small) {
-            FeatureIcon("GlasshouseLock", size: ConstructTheme.ControlSize.iconLarge)
-            Text(GlasshouseTexts.restrictedPage)
-                .font(.system(size: ConstructTheme.TextSize.secondary))
-        }
-        .foregroundStyle(ConstructTheme.color(.mutedForeground))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ConstructTheme.color(.background))
-        .accessibilityHidden(true)
     }
 }
 

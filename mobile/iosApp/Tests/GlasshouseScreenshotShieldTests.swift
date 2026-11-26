@@ -1,90 +1,11 @@
 @testable import Construct
 import UIKit
-import WebKit
 import XCTest
 
-/// A layer that counts the times it was asked to draw again.
-private final class CountingLayer: CALayer {
-    private(set) var redraws = 0
-
-    override func setNeedsDisplay() {
-        redraws += 1
-        super.setNeedsDisplay()
-    }
-}
-
-/// A field made of plain layers, with a canvas layer or, as when the system changes, without one.
-@MainActor
-private final class FakeField: SecureCanvasField {
-    let layer = CALayer()
-    let canvasLayer: CALayer?
-    private(set) var fitted = CGRect.zero
-
-    init(canvas: Bool = true) {
-        canvasLayer = canvas ? CALayer() : nil
-        if let canvasLayer { layer.addSublayer(canvasLayer) }
-    }
-
-    func fit(to bounds: CGRect) {
-        fitted = bounds
-    }
-}
-
-/// A parent with the layer to protect between two others.
-@MainActor
-private struct Tree {
-    let parent = CALayer()
-    let before = CALayer()
-    let content: CALayer
-    let after = CALayer()
-
-    init(content: CALayer = CALayer()) {
-        self.content = content
-        parent.bounds = CGRect(x: 0, y: 0, width: 300, height: 500)
-        [before, content, after].forEach(parent.addSublayer)
-    }
-
-    var children: [CALayer] { parent.sublayers ?? [] }
-}
-
-/// What a host told about the page being out of screenshots.
-private final class Told {
-    var results: [Bool] = []
-}
-
-/// A host with a web view in a window, the way the page has it, and what the host told.
-@MainActor
-private struct Page {
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-    let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
-    let host: GlasshouseWebHost
-    let told: Told
-
-    init(shield: GlasshouseScreenshotShield? = nil) {
-        host = GlasshouseWebHost(webView: webView, shield: shield)
-        let told = Told()
-        self.told = told
-        host.screenshotProtection = { told.results.append($0) }
-        host.frame = CGRect(x: 0, y: 100, width: 390, height: 600)
-    }
-
-    /// The view that holds the web view, whose layer is the one that moves.
-    var content: UIView { webView.superview ?? UIView() }
-
-    func show() {
-        window.addSubview(host)
-        host.layoutIfNeeded()
-    }
-
-    func leave() {
-        host.removeFromSuperview()
-    }
-}
-
-/// Keeping the page out of screenshots: the layer move of `GlasshouseScreenshotShield` on plain layers, on the
-/// system's own secure field, and the host view that does it for the web view. The Simulator draws what is in the
-/// canvas layer as it draws everything else, so none of these can show that a screenshot is black; they show that the
-/// layer tree is changed and changed back the way it should be.
+/// Keeping a layer out of screenshots: the layer move of `GlasshouseScreenshotShield` on plain layers and on the
+/// system's own secure field. The Simulator draws what is in the canvas layer as it draws everything else, so none of
+/// these can show that a screenshot is black; they show that the layer tree is changed and changed back the way it
+/// should be.
 @MainActor
 final class GlasshouseScreenshotShieldTests: XCTestCase {
     private func shield(_ fields: FakeField...) -> (GlasshouseScreenshotShield, made: () -> Int) {
@@ -231,6 +152,36 @@ final class GlasshouseScreenshotShieldTests: XCTestCase {
         XCTAssertEqual(content.redraws, 0)
     }
 
+    // MARK: A layer that something else took out of the canvas
+
+    func testALayerThatWasTakenOutOfTheCanvasIsLeftWhereItIsAndTheFieldGoes() {
+        let tree = Tree()
+        let field = FakeField()
+        let (shield, _) = shield(field)
+        shield.protect(tree.content)
+        tree.content.removeFromSuperlayer()
+        XCTAssertFalse(shield.isProtecting)
+        shield.restore()
+        XCTAssertNil(tree.content.superlayer, "a layer its view had removed was put back")
+        XCTAssertEqual(tree.children, [tree.before, tree.after])
+        XCTAssertNil(field.layer.superlayer)
+    }
+
+    func testProtectingAgainMovesALayerThatWasTakenOutAndPutBackByItsView() {
+        let tree = Tree()
+        let first = FakeField()
+        let second = FakeField()
+        let (shield, made) = shield(first, second)
+        shield.protect(tree.content)
+        tree.content.removeFromSuperlayer()
+        tree.parent.insertSublayer(tree.content, at: 1)
+        XCTAssertTrue(shield.protect(tree.content))
+        XCTAssertEqual(made(), 2)
+        XCTAssertTrue(tree.content.superlayer === second.canvasLayer)
+        XCTAssertNil(first.layer.superlayer, "the first field stayed")
+        XCTAssertEqual(tree.children, [tree.before, second.layer, tree.after])
+    }
+
     // MARK: The system's own secure field
 
     func testTheSystemsSecureFieldGivesACanvasLayerAndTheLayerKeepsItsPlaceInIt() throws {
@@ -244,76 +195,5 @@ final class GlasshouseScreenshotShieldTests: XCTestCase {
         XCTAssertEqual(tree.content.frame, CGRect(x: 10, y: 20, width: 100, height: 200))
         shield.restore()
         XCTAssertEqual(tree.children, [tree.before, tree.content, tree.after])
-    }
-}
-
-/// The host that holds the web view and moves its layer into the secure canvas while it is on the screen.
-@MainActor
-final class GlasshouseWebHostTests: XCTestCase {
-    func testTheHostMovesTheLayerWhenItIsOnTheScreenAndPutsItBackWhenItLeaves() {
-        let page = Page()
-        XCTAssertTrue(page.content.layer.superlayer === page.host.layer, "moved before the page was on the screen")
-        XCTAssertEqual(page.told.results, [])
-        page.show()
-        XCTAssertEqual(page.told.results, [true])
-        XCTAssertFalse(page.content.layer.superlayer === page.host.layer)
-        page.leave()
-        XCTAssertTrue(page.content.layer.superlayer === page.host.layer, "left in the canvas after the page left")
-        XCTAssertEqual(page.host.layer.sublayers?.count, 1)
-        page.show()
-        XCTAssertEqual(page.told.results, [true, true])
-        XCTAssertFalse(page.content.layer.superlayer === page.host.layer)
-    }
-
-    func testTheHostPutsTheLayerBackWhenRestrictedModeEndsAndMovesItWhenItReturns() {
-        let page = Page()
-        page.show()
-        page.host.restricted = false
-        XCTAssertTrue(page.content.layer.superlayer === page.host.layer)
-        XCTAssertEqual(page.host.layer.sublayers?.count, 1)
-        page.host.restricted = true
-        XCTAssertFalse(page.content.layer.superlayer === page.host.layer)
-        XCTAssertEqual(page.told.results, [true, true])
-    }
-
-    func testTheWebViewFillsTheHostAndKeepsItsPlaceInTheCanvasWhenTheHostChangesSize() throws {
-        let page = Page()
-        page.show()
-        XCTAssertEqual(page.webView.frame.size, CGSize(width: 390, height: 600))
-        let canvas = try XCTUnwrap(page.content.layer.superlayer)
-        XCTAssertEqual(page.host.layer.convert(CGPoint.zero, from: page.content.layer), .zero)
-
-        page.host.frame = CGRect(x: 0, y: 100, width: 844, height: 300)
-        page.host.layoutIfNeeded()
-        XCTAssertEqual(page.webView.frame.size, CGSize(width: 844, height: 300))
-        XCTAssertEqual(page.content.frame, page.host.bounds)
-        XCTAssertEqual(canvas.superlayer?.bounds.size, CGSize(width: 844, height: 300), "the field did not follow")
-        XCTAssertEqual(page.host.layer.convert(CGPoint.zero, from: page.content.layer), .zero)
-    }
-
-    func testAHostWhoseSystemGivesNoCanvasLayerTellsSoAndLeavesTheHierarchyAsItWas() {
-        let page = Page(shield: GlasshouseScreenshotShield { FakeField(canvas: false) })
-        page.show()
-        XCTAssertEqual(page.told.results, [false])
-        XCTAssertTrue(page.content.layer.superlayer === page.host.layer)
-        XCTAssertEqual(page.host.layer.sublayers?.count, 1)
-        XCTAssertTrue(page.webView.superview === page.content)
-        XCTAssertTrue(page.content.superview === page.host)
-    }
-
-    func testTheStateHolderFollowsWhatTheHostTold() {
-        let restriction = GlasshouseRestriction(center: NotificationCenter(), appActive: true, isCaptured: { false })
-        let page = Page(shield: GlasshouseScreenshotShield { FakeField(canvas: false) })
-        page.host.screenshotProtection = { restriction.screenshotProtection(worked: $0) }
-        XCTAssertFalse(restriction.state.screenshotNotice, "a line before any try")
-        page.show()
-        XCTAssertFalse(restriction.state.screenshotProtected)
-        XCTAssertTrue(restriction.state.screenshotNotice, "no line after a try that failed")
-
-        let working = Page()
-        working.host.screenshotProtection = { restriction.screenshotProtection(worked: $0) }
-        working.show()
-        XCTAssertTrue(restriction.state.screenshotProtected)
-        XCTAssertFalse(restriction.state.screenshotNotice, "the line stays where the page is protected")
     }
 }

@@ -221,23 +221,33 @@ its address bar takes their place.
   system's basic way and no more; it does not look for clipboard managers or other tricks, and it does not stop the
   person dragging text out.
   - *Screenshots.* Apple has no function that keeps a page out of a screenshot or a recording; the page uses what a
-    secure text field does with its canvas layer, which apps rely on and Apple does not document. `GlasshouseWebHost`
-    holds the web view in a content view, and while the page is on the screen `GlasshouseScreenshotShield` moves that
-    view's **layer** (not a view) into the canvas layer of a secure `UITextField` (`isSecureTextEntry`, not
-    interactive, clear) that takes its place under the same parent layer, at the same size and index. The view
-    hierarchy does not change, so touches, scrolling, text selection and layout are the web view's own. A screenshot
-    or a recording then shows what is behind the page, a lock and "Restricted page", and the sign under the address bar
-    says "Restricted mode: hidden from screenshots and recordings". The layer is put back, to the parent and index it
-    came from, when the page leaves the screen. If the field has no canvas layer, as on a system that changed, nothing is
-    changed and the page says in one line, with "OK", that a screenshot cannot be blocked. The way is the one of the
-    secure window layer in Expo's `expo-screen-capture` (`SecureWindowCanvas.swift`, `ScreenCaptureModule.swift`),
-    written again here for one layer, with its lessons: the moved tree is asked to draw again right after the move, one
-    turn of the run loop later and 0.1 s later; protecting twice, and putting back twice, change nothing; and what was
-    moved is what is put back. A view put inside a secure field, instead of a layer, is reported not to work on iOS 18
-    and later. The Simulator does not apply the protection to what it draws, so a screenshot of it shows the page; the
-    check that a screenshot and a recording of a real iPhone show no page is done from a TestFlight build. Pull to
-    refresh and a turn of the phone are not in the app (it is portrait only, and has no pull to refresh), so nothing
-    tests them.
+    secure text field does with its canvas layer, which apps rely on and Apple does not document. While the page is on
+    the screen in restricted mode, `GlasshouseScreenshotShield` moves the **layer of the page's window** (a layer, not a
+    view) into the canvas layer of a secure `UITextField` (`isSecureTextEntry`, not interactive, clear) that takes its
+    place under the same parent layer, at the same size and index. `GlasshouseWebHost`, the view SwiftUI shows for the
+    page, starts the move when it gets a window and ends it when it leaves the window or restricted mode ends. The
+    view hierarchy does not change, so touches, scrolling, text selection and layout are the web view's own. A
+    screenshot or a recording of a real iPhone then shows no page, and the sign under the address bar says "Restricted
+    mode: hidden from screenshots and recordings".
+    **The cost is that everything the window shows is out of screenshots and recordings while the page is on the
+    screen: the address bar and the tab bar too, not the page alone.** No sign can be shown in the picture in place of
+    the page, because it would be in the window as well.
+    The window's layer, and not the page's, because the others were tried and do not work: a web view takes no keyboard
+    focus while the layer of one of its own views, or of a view above it, is out of its superview's layer (UIKit
+    refuses `becomeFirstResponder()`, and nothing can be typed into a field of the page); and with the layer of a view
+    in the canvas UIKit no longer knows that view's real parent, so a window that is freed, or a parent that is removed,
+    while the layer is there crashes UIKit. The window has no superview, so neither happens.
+    The layer is put back, to the parent and index it came from, when the page leaves the screen or restricted mode
+    ends; a layer that is no longer in the canvas then is left alone and only the field goes. If the field has no canvas
+    layer, as on a system that changed, nothing is changed and the page says in one line, with "OK", that a screenshot
+    cannot be blocked. The way is the one of the secure window layer in Expo's `expo-screen-capture`
+    (`SecureWindowCanvas.swift`, `ScreenCaptureModule.swift`), written again here with its lessons: the moved tree is
+    asked to draw again right after the move, one turn of the run loop later and 0.1 s later; protecting twice, and
+    putting back twice, change nothing; and what was moved is what is put back. A view put inside a secure field,
+    instead of a layer, is reported not to work on iOS 18 and later. The Simulator does not apply the protection to
+    what it draws, so a screenshot of it shows the page; the check that a screenshot and a recording of a real iPhone
+    show no page is done from a TestFlight build. Pull to refresh and a turn of the phone are not in the app (it is
+    portrait only, and has no pull to refresh), so nothing tests them.
   - *Recording and mirroring.* While the screen is recorded or shown on another screen (`UIScreen.isCaptured`), the
     page is covered by "The page is hidden while the screen is recorded or shown on another screen." and the web view
     is hidden from accessibility too. It is back when the recording ends.
@@ -271,9 +281,9 @@ second certificate is trusted by nothing and stands for a site that cannot be tr
 The restricted mode tests are in `UITests/GlasshouseRestrictedTests`, and `iosApp/Tests` has unit tests of the touch menu
 answers, the page's script (run in a real web view), the clipboard (on a fake pasteboard, and one round trip on the real
 one), the state of the screen, and the layer move that keeps the page out of screenshots (on plain layers, on the system's
-secure field, and in the host of the web view, with a field that has no canvas layer to show the line and an unchanged
-hierarchy). The test server has pages for them (`/restricted`, and `/long` for scrolling), and the runner sets and reads
-the Simulator's pasteboard for the clipboard tests, from outside the app, as another app would. Three things cannot be
+secure field, and in the host of the web view on a window, with a field that has no canvas layer to show the line and an
+unchanged hierarchy; the host tests move a layer of their own, and the window's real layer is moved in the UI tests). The test server has pages for them (`/restricted`, and `/long` for scrolling), and the runner
+sets and reads the Simulator's pasteboard for the clipboard tests, from outside the app, as another app would. Three things cannot be
 tested in a Simulator: whether a screenshot or a recording shows no page (the Simulator draws the secure canvas like any
 layer), the recording cover (a Simulator cannot be made to report a recorded screen, so it is a unit
 test of the state) and what the pasteboard holds that another app put there (the app cannot read it in a Simulator).

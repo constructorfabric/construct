@@ -49,6 +49,7 @@ final class GlasshouseScreenshotShield {
         let parent: CALayer
         let index: Int
         let field: SecureCanvasField
+        let canvas: CALayer
     }
 
     /// Moving a layer can drop the drawing that was waiting for it, so its tree is asked to draw again right after
@@ -62,16 +63,21 @@ final class GlasshouseScreenshotShield {
         self.makeField = makeField
     }
 
-    /// Whether a layer is in the canvas now.
-    var isProtecting: Bool { move != nil }
+    /// Whether a layer is in the canvas now. A layer that something took out of it since, as removing its view does,
+    /// is not.
+    var isProtecting: Bool {
+        guard let move else { return false }
+        return move.content.superlayer === move.canvas
+    }
 
     /// Moves [content] into the canvas of a new secure field. Says whether it is there now: false when the layer has
     /// no parent or the system gave the field no canvas layer, and then the layer tree is as it was. Called again for
-    /// the layer that is in the canvas, it changes nothing; called for another layer, it puts the first one back.
+    /// the layer that is in the canvas, it changes nothing; called for another layer, or for one that was taken out of
+    /// the canvas, it puts the first one back or lets it go first.
     @discardableResult
     func protect(_ content: CALayer) -> Bool {
         if let move {
-            if move.content === content { return true }
+            if move.content === content && isProtecting { return true }
             restore()
         }
         guard let parent = content.superlayer else { return false }
@@ -85,18 +91,21 @@ final class GlasshouseScreenshotShield {
         }
         content.removeFromSuperlayer()
         canvas.addSublayer(content)
-        move = Move(content: content, parent: parent, index: index, field: field)
+        move = Move(content: content, parent: parent, index: index, field: field, canvas: canvas)
         redraw(content)
         return true
     }
 
-    /// Puts the moved layer back under the parent it came from, at its place there. Changes nothing when no layer is
-    /// in the canvas.
+    /// Takes the field away and puts the moved layer back under the parent it came from, at its place there. A layer
+    /// that is no longer in the canvas, because its view was removed or put somewhere else, is left where it is: it is
+    /// not this shield's any more. Changes nothing when nothing was moved.
     func restore() {
         guard let move else { return }
         self.move = nil
-        move.content.removeFromSuperlayer()
+        let inCanvas = move.content.superlayer === move.canvas
         move.field.layer.removeFromSuperlayer()
+        guard inCanvas else { return }
+        move.content.removeFromSuperlayer()
         let place = min(move.index, move.parent.sublayers?.count ?? 0)
         move.parent.insertSublayer(move.content, at: UInt32(place))
         redraw(move.content)
