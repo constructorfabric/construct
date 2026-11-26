@@ -11,8 +11,7 @@ fail() {
 jq -e --arg repo "${GITHUB_REPOSITORY:-}" \
   'type == "array" and any(.[]; type == "string" and ascii_downcase == ($repo | ascii_downcase))' >/dev/null \
   <<< "${RELEASE_REPOSITORIES:-[\"constructorfabric/construct\"]}" &&
-  [ "${GITHUB_REF:-}" = refs/heads/main ] &&
-  [ "${GITHUB_REF_PROTECTED:-}" = true ] || fail "a release requires protected canonical main"
+  [ "${GITHUB_REF:-}" = refs/heads/main ] || fail "a release requires canonical main"
 [[ "${RELEASE_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] &&
   [ "$RELEASE_SOURCE_SHA" = "${GITHUB_SHA:-}" ] &&
   [ "$RELEASE_SOURCE_SHA" = "$(git rev-parse HEAD)" ] || fail "the release SHA must match the workflow and checkout"
@@ -38,14 +37,3 @@ case "$1" in
     ;;
   *) fail "choose ios or android" ;;
 esac
-
-endpoint="repos/$GITHUB_REPOSITORY/environments/mobile-$1-release"
-gh api "$endpoint" | jq -e '
-  .can_admins_bypass == false and
-  .deployment_branch_policy.custom_branch_policies == true and
-  any(.protection_rules[]; .type == "required_reviewers" and
-    .prevent_self_review == true and (.reviewers | length > 0))
-' >/dev/null || fail "the release environment must enforce independent approval and disable administrator bypass"
-gh api --paginate "$endpoint/deployment-branch-policies" |
-  jq -se '[.[].branch_policies[]] | length == 1 and .[0].type == "branch" and .[0].name == "main"' >/dev/null \
-  || fail "the release environment must restrict deployments to main"

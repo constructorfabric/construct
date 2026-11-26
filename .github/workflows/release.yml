@@ -145,7 +145,7 @@ jobs:
           if-no-files-found: error
 
   # The disk image signed with the Developer ID certificate and notarized. It runs for a release tag or a manual
-  # run, in the protected `desktop-release` environment that holds the certificate and the notarization login,
+  # run, in the `release` environment that holds the certificate and the notarization login,
   # and a pull request skips it. Without it, or when it fails, `publish` ships the ad hoc image of `build`.
   build-macos-signed:
     needs: version
@@ -155,7 +155,7 @@ jobs:
       contains(fromJSON(vars.RELEASE_REPOSITORIES || '["constructorfabric/construct"]'), github.repository)
     name: Build (macos-arm64, signed and notarized)
     runs-on: macos-15
-    environment: desktop-release
+    environment: release
     timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: '0'
@@ -176,7 +176,7 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::The desktop-release environment lacks these secrets: ${missing[*]}"
+            echo "::error::The release environment lacks these secrets: ${missing[*]}"
             exit 1
           fi
       - name: Install macOS build dependencies

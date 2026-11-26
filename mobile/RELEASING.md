@@ -8,18 +8,30 @@ The desktop publish job and the mobile release jobs run only in repositories nam
 `RELEASE_REPOSITORIES` Actions variable: a JSON array of exact `owner/name` strings, such as
 `["constructorfabric/construct"]`. Unset, it allows only the canonical repository. Use an array
 and nothing else: the mobile guard rejects any other value, and the workflow condition would
-match a plain string by substring. A malformed value fails those workflow runs. A listed repository is treated as canonical: its own protected
-`main` is the release source, and it needs the environments below.
+match a plain string by substring. A malformed value fails those workflow runs. A listed repository
+is treated as canonical: its own `main` is the release source, and it needs the environment below.
 
-Configure these GitHub Actions environments on each listed repository before adding any
-secrets. Restrict deployments to the protected `main` branch, require an independent reviewer,
-enable prevention of self-review, and disable bypassing the environment protection rules.
-Keep these credentials as environment secrets.
+All signed releases (iPhone, Android and the desktop disk image) run in one GitHub Actions
+environment, `release`. Allow deployments from the `main` branch and from `v*` tags only, so that
+the credentials are not available to workflows of other branches. Keep the credentials as
+environment secrets.
 
-| Environment              | Secrets                                                                                                      | Variable                    |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------ | --------------------------- |
-| `mobile-ios-release`     | `APP_STORE_CONNECT_KEY_P8_BASE64`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`                 | `TESTFLIGHT_INTERNAL_GROUP` |
-| `mobile-android-release` | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEYSTORE_PASSWORD`, optional `ANDROID_KEY_PASSWORD` |                             |
+| Release | Secrets                                                                                                          | Variable                    |
+| ------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| iPhone  | `APP_STORE_CONNECT_KEY_P8_BASE64`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`                     | `TESTFLIGHT_INTERNAL_GROUP` |
+| Android | `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEYSTORE_PASSWORD`, optional `ANDROID_KEY_PASSWORD`     |                             |
+| Desktop | `MAC_CERTIFICATE_BASE64`, `MAC_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` |                             |
+
+`scripts/setup-release-environment.sh` creates the environment and sets these secrets from environment
+variables and files; the variables are listed at the top of the script. Run it as an administrator of
+the repository. It can be run again at any time to restore the environment, and `DRY_RUN=1` checks the
+inputs and changes nothing.
+
+The environment allows `v*` tags so that a release tag builds the signed disk image. Anyone who can
+create a tag can run the workflow of the tagged commit with the credentials, so restrict who can create
+`v*` tags with a tag ruleset (Settings, Rules). The script removes other deployment rules from the
+environment and names secrets of the same names at the level of the repository or the organisation, and
+the three older environments, which reach workflows of any branch: delete them.
 
 Use an App Store Connect team key with access to the app, its build and upload history, and
 the intended internal group. Set `TESTFLIGHT_INTERNAL_GROUP` to the exact group name and enable

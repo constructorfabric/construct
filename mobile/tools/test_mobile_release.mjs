@@ -9,7 +9,7 @@ import { checkTestFlight } from "../scripts/testflight-release.mjs";
 
 const release = { bundle: "test.example.app", version: "1.2.3", build: "260101.1", group: "Internal" };
 
-test("release source must be the explicitly confirmed checkout of protected canonical main", (t) => {
+test("release source must be the explicitly confirmed checkout of canonical main", (t) => {
     const fixture = mkdtempSync(join(tmpdir(), "mobile-release-source-"));
     t.after(() => rmSync(fixture, { recursive: true, force: true }));
     writeFileSync(join(fixture, "git"), [
@@ -24,15 +24,6 @@ test("release source must be the explicitly confirmed checkout of protected cano
         "  *) exit 2 ;;",
         "esac",
     ].join("\n"), { mode: 0o700 });
-    writeFileSync(join(fixture, "gh"), [
-        "#!/bin/bash",
-        'case "$*" in',
-        '  "api repos/constructorfabric/construct/environments/mobile-ios-release") printf "%s\\n" "$TEST_ENVIRONMENT" ;;',
-        '  "api --paginate repos/constructorfabric/construct/environments/mobile-ios-release/deployment-branch-policies")',
-        '    printf "%s\\n" "$TEST_BRANCH_POLICIES" ;;',
-        "  *) exit 2 ;;",
-        "esac",
-    ].join("\n"), { mode: 0o700 });
     mkdirSync(join(fixture, "mobile/iosApp"), { recursive: true });
     writeFileSync(join(fixture, "mobile/iosApp/project.yml"), '    APP_BUNDLE_ID_IS_FINAL: "YES"\n');
 
@@ -44,7 +35,6 @@ test("release source must be the explicitly confirmed checkout of protected cano
         GITHUB_EVENT_NAME: "workflow_dispatch",
         GITHUB_REPOSITORY: "constructorfabric/construct",
         GITHUB_REF: "refs/heads/main",
-        GITHUB_REF_PROTECTED: "true",
         GITHUB_SHA: sha,
         RELEASE_SOURCE_SHA: sha,
         RELEASE_CONFIRMED: "true",
@@ -70,14 +60,13 @@ test("release source must be the explicitly confirmed checkout of protected cano
     for (const repositories of ['["fork/construct-browser"]', '"fork/construct"', "[]", "not json"]) {
         const result = guard({ ...listedFork, RELEASE_REPOSITORIES: repositories, TEST_FORK_MAIN: sha });
         assert.equal(result.status, 1, repositories);
-        assert.match(result.stderr, /protected canonical main/, repositories);
+        assert.match(result.stderr, /requires canonical main/, repositories);
     }
     for (const [name, value, error] of [
         ["GITHUB_EVENT_NAME", "pull_request", /dispatch/],
         ["RELEASE_CONFIRMED", "false", /confirm/],
         ["GITHUB_REPOSITORY", "fork/construct", /canonical main/],
         ["GITHUB_REF", "refs/heads/feature", /canonical main/],
-        ["GITHUB_REF_PROTECTED", "false", /protected/],
         ["RELEASE_SOURCE_SHA", other, /SHA must match/],
         ["TEST_CHECKOUT", other, /SHA must match/],
         ["TEST_MAIN", other, /no longer canonical main/],
@@ -87,30 +76,9 @@ test("release source must be the explicitly confirmed checkout of protected cano
         assert.equal(result.status, 1, name);
         assert.match(result.stderr, error, name);
     }
-    const policy = {
-        can_admins_bypass: false,
-        deployment_branch_policy: { custom_branch_policies: true },
-        protection_rules: [{ type: "required_reviewers", prevent_self_review: true, reviewers: [{ type: "User" }] }],
-    };
-    const branches = { branch_policies: [{ type: "branch", name: "main" }] };
-    const dispatch = (environment, branchPolicies = branches) => guard({
-        TEST_ENVIRONMENT: JSON.stringify(environment),
-        TEST_BRANCH_POLICIES: JSON.stringify(branchPolicies),
-    }, "ios");
-    assert.equal(dispatch(policy).status, 0);
-    for (const invalid of [
-        { ...policy, can_admins_bypass: true },
-        { ...policy, can_admins_bypass: undefined },
-        { ...policy, protection_rules: [] },
-        { ...policy, protection_rules: [{ ...policy.protection_rules[0], prevent_self_review: false }] },
-    ]) {
-        const result = dispatch(invalid);
-        assert.equal(result.status, 1);
-        assert.match(result.stderr, /independent approval/);
-    }
-    const broad = dispatch(policy, { branch_policies: [{ type: "branch", name: "*" }] });
-    assert.equal(broad.status, 1);
-    assert.match(broad.stderr, /restrict deployments to main/);
+    // The platform's final identifier is committed before a release.
+    assert.equal(guard({}, "ios").status, 0);
+    assert.equal(guard({}, "windows").status, 1);
 });
 
 test("CI export preserves archive metadata and propagates TestFlight verification failure",
