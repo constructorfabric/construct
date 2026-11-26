@@ -13,6 +13,8 @@ struct GlasshouseActions {
     let dismissScreenshotNotice: () -> Void
     /// The page was put out of screenshots and recordings, or could not be.
     let screenshotProtection: (Bool) -> Void
+    /// The page is no longer out of screenshots, because it left the screen.
+    let screenshotProtectionEnded: () -> Void
 }
 
 /// The Glasshouse page: the address bar under the status area, the web page, and back and forward above the tab
@@ -76,8 +78,12 @@ struct GlasshouseScreen: View {
         let message = messageText(current)
         return ZStack(alignment: .topLeading) {
             if let webView {
-                GlasshouseWebContainer(webView: webView, screenshotProtection: actions.screenshotProtection)
-                    .accessibilityHidden(message != nil || restricted.covered)
+                GlasshouseWebContainer(
+                    webView: webView,
+                    screenshotProtection: actions.screenshotProtection,
+                    screenshotProtectionEnded: actions.screenshotProtectionEnded
+                )
+                .accessibilityHidden(message != nil || restricted.covered)
             }
             if restricted.covered {
                 // The screen is being recorded or shown on another screen: nothing of the page is on it.

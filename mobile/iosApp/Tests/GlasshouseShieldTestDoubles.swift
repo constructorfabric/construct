@@ -46,9 +46,11 @@ struct Tree {
     var children: [CALayer] { parent.sublayers ?? [] }
 }
 
-/// What a host told about the page being out of screenshots.
+/// What a host told about the page being out of screenshots: each try's result, and how many times it said the
+/// protection ended.
 final class Told {
     var results: [Bool] = []
+    var ended = 0
 }
 
 /// A host with a web view, a window it can be shown in, a layer tree standing in for the window's layer, and what the
@@ -69,6 +71,7 @@ struct HostedPage {
         let told = Told()
         self.told = told
         host.screenshotProtection = { told.results.append($0) }
+        host.screenshotProtectionEnded = { told.ended += 1 }
         host.frame = CGRect(x: 0, y: 100, width: 390, height: 600)
     }
 

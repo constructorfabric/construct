@@ -50,6 +50,28 @@ final class GlasshouseWebHostTests: XCTestCase {
         XCTAssertEqual(page.told.results, [true, true])
     }
 
+    func testTheHostTellsTheProtectionEndedWhenItLeavesAndWhenRestrictedModeEnds() {
+        let page = makePage()
+        page.show()
+        XCTAssertEqual(page.told.ended, 0, "told before the layer was put back")
+        page.leave()
+        XCTAssertEqual(page.told.ended, 1)
+        page.show()
+        page.host.restricted = false
+        XCTAssertEqual(page.told.ended, 2)
+        XCTAssertEqual(page.told.results, [true, true], "a put back was told as a try")
+    }
+
+    func testSwiftUIDismantlingTheHostPutsTheLayerBackWhileTheHostIsStillOnTheWindow() {
+        let page = makePage()
+        page.show()
+        XCTAssertFalse(page.tree.content.superlayer === page.tree.parent)
+        GlasshouseWebContainer.dismantleUIView(page.host, coordinator: ())
+        XCTAssertTrue(page.host.window === page.window, "the host left the window by itself")
+        assertInPlace(page, "the layer stayed in the canvas")
+        XCTAssertEqual(page.told.ended, 1)
+    }
+
     func testTheHostGivesTheLayerOfItsOwnWindowToProtect() {
         var seen: UIWindow?
         let page = makePage { window in
@@ -107,5 +129,19 @@ final class GlasshouseWebHostTests: XCTestCase {
         working.show()
         XCTAssertTrue(restriction.state.screenshotProtected)
         XCTAssertFalse(restriction.state.screenshotNotice, "the line stays where the page is protected")
+    }
+
+    func testTheSignStopsSayingHiddenWhenTheHostLeavesAndSaysItAgainWhenTheHostComesBack() {
+        let restriction = GlasshouseRestriction(center: NotificationCenter(), appActive: true, isCaptured: { false })
+        let page = makePage()
+        page.host.screenshotProtection = { restriction.screenshotProtection(worked: $0) }
+        page.host.screenshotProtectionEnded = { restriction.screenshotProtectionEnded() }
+        page.show()
+        XCTAssertTrue(restriction.state.screenshotProtected)
+        page.leave()
+        XCTAssertFalse(restriction.state.screenshotProtected, "the sign said hidden while the page was not")
+        XCTAssertFalse(restriction.state.screenshotNotice, "leaving raised the line")
+        page.show()
+        XCTAssertTrue(restriction.state.screenshotProtected)
     }
 }
