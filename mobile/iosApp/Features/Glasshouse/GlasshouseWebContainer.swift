@@ -10,6 +10,8 @@ struct GlasshouseWebContainer: UIViewRepresentable {
     var restricted = true
     /// Told whether the page is out of screenshots, each time the host tries to put it there.
     let screenshotProtection: (Bool) -> Void
+    /// Told when the page is no longer out of screenshots, because the host left the screen.
+    let screenshotProtectionEnded: () -> Void
 
     func makeUIView(context: Context) -> GlasshouseWebHost {
         GlasshouseWebHost(webView: webView)
@@ -17,6 +19,7 @@ struct GlasshouseWebContainer: UIViewRepresentable {
 
     func updateUIView(_ host: GlasshouseWebHost, context: Context) {
         host.screenshotProtection = screenshotProtection
+        host.screenshotProtectionEnded = screenshotProtectionEnded
         host.restricted = restricted
     }
 
@@ -44,6 +47,10 @@ final class GlasshouseWebHost: UIView {
 
     /// Told whether the page is out of screenshots after each try to put it there.
     var screenshotProtection: (Bool) -> Void = { _ in }
+
+    /// Told each time the layer is put back, because the host left its window or restricted mode ended, so what the
+    /// page's owner keeps does not go on saying the page is out of screenshots.
+    var screenshotProtectionEnded: () -> Void = {}
 
     var restricted = true {
         didSet {
@@ -87,6 +94,7 @@ final class GlasshouseWebHost: UIView {
     private func updateProtection() {
         guard restricted, let window else {
             shield.restore()
+            screenshotProtectionEnded()
             return
         }
         screenshotProtection(layerToProtect(window).map { shield.protect($0) } ?? false)

@@ -73,6 +73,24 @@ final class GlasshouseRestrictionTests: XCTestCase {
         XCTAssertFalse(restriction.state.screenshotProtected)
     }
 
+    func testTheSignStopsSayingHiddenWhenTheProtectionEndsAndNoLineComesOfIt() {
+        let restriction = restriction()
+        restriction.screenshotProtection(worked: true)
+        restriction.screenshotProtectionEnded()
+        XCTAssertFalse(restriction.state.screenshotProtected)
+        XCTAssertFalse(restriction.state.screenshotNotice, "the end of the protection was taken for a failed try")
+    }
+
+    func testTheProtectionEndingBeforeAnyTryOrAfterAFailedOneSaysNothingNew() {
+        let restriction = restriction()
+        restriction.screenshotProtectionEnded()
+        XCTAssertEqual(restriction.state, GlasshouseRestrictedState())
+        restriction.screenshotProtection(worked: false)
+        restriction.screenshotProtectionEnded()
+        XCTAssertTrue(restriction.state.screenshotNotice, "a line that was not read went away")
+        XCTAssertFalse(restriction.state.screenshotProtected)
+    }
+
     // MARK: A recording or another screen
 
     func testThePageIsHiddenWhileTheScreenIsRecordedAndShownAgainAfterwards() {

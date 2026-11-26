@@ -97,6 +97,15 @@ final class GlasshouseRestriction: ObservableObject {
         state.screenshotNotice = !worked && !noticeRead
     }
 
+    /// The page is no longer out of screenshots, because it left the screen or restricted mode ended. Nothing failed,
+    /// so no line is raised and one that was not read stays as it is; the sign stops saying "hidden" until the next
+    /// try says it again.
+    func screenshotProtectionEnded() {
+        if state.screenshotProtected {
+            state.screenshotProtected = false
+        }
+    }
+
     func dismissScreenshotNotice() {
         noticeRead = true
         state.screenshotNotice = false
