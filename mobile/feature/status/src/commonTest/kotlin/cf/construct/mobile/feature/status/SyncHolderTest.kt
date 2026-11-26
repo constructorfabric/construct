@@ -271,6 +271,35 @@ class SyncHolderTest {
         }
 
     @Test
+    fun aCheckNowAfterUnpairClearsTheNoticeWithoutShowingSyncingAndStartsNoSecondSync() =
+        runTest {
+            val syncer = FakeSyncer()
+            syncer.result = SyncResult.Missed(ComputerLink.Unreachable)
+            val holder = holder(syncer)
+            holder.setForeground(true)
+            runCurrent()
+            assertEquals(SyncNotice.NotReachable, holder.state.value.notice)
+            val seen = watch(holder)
+            runCurrent()
+            seen.clear()
+
+            syncer.result = SyncResult.Missed(ComputerLink.NotPaired)
+            holder.checkNow()
+            runCurrent()
+            assertEquals(SyncNotice.None, holder.state.value.notice)
+            assertTrue(seen.none { it.notice == SyncNotice.Syncing }, "nobody waits for this check")
+
+            // While a sync runs, the check does not start another one.
+            syncer.next = CompletableDeferred()
+            holder.checkNow()
+            runCurrent()
+            val started = syncer.started
+            holder.checkNow()
+            runCurrent()
+            assertEquals(started, syncer.started)
+        }
+
+    @Test
     fun nothingSyncsInTheBackgroundAndASyncThatRunsIsStopped() =
         runTest {
             val syncer = FakeSyncer()

@@ -11,6 +11,9 @@ import androidx.compose.ui.unit.dp
 private const val VIEWPORT = 24f
 private const val STROKE = 2f
 
+/** The circle that the Lucide icons "info", "circle-alert", "circle-check" and "circle" start from. */
+const val LUCIDE_CIRCLE = "M22 12a10 10 0 1 1-20 0a10 10 0 1 1 20 0"
+
 /** Builds a stroked vector from Lucide (ISC licence) paths. The caller supplies the tint. */
 fun lucide(
     name: String,

@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import cf.construct.mobile.core.designsystem.SmallControls
 import cf.construct.mobile.core.designsystem.Spacing
 
 private val composerHeight = 54.dp
@@ -108,10 +109,10 @@ private fun ComposerButtons(
 ) {
     val scheme = MaterialTheme.colorScheme
     val button = Modifier.minimumInteractiveComponentSize().size(composerCircle)
-    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides chatActionHeight) {
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides SmallControls.action) {
         if (answering) {
             OutlinedIconButton(onClick = onStop, enabled = canStop, modifier = button, shape = CircleShape) {
-                Icon(ChatIcons.stop, contentDescription = "Stop", modifier = Modifier.size(chatSmallIcon))
+                Icon(ChatIcons.stop, contentDescription = "Stop", modifier = Modifier.size(SmallControls.icon))
             }
         }
         if (canSend) {

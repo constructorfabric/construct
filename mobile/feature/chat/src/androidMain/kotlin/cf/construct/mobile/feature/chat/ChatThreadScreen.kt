@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import cf.construct.mobile.core.designsystem.SmallControls
 import cf.construct.mobile.core.designsystem.Spacing
 import cf.construct.mobile.core.model.ChatMessage
 import cf.construct.mobile.core.model.ChatRole
@@ -171,7 +172,7 @@ private fun NewThread(
             OutlinedButton(
                 onClick = { onSend(example) },
                 enabled = canSend,
-                modifier = Modifier.heightIn(min = chatActionHeight),
+                modifier = Modifier.heightIn(min = SmallControls.action),
             ) { Text(example) }
         }
     }

@@ -125,6 +125,12 @@ class SyncHolder(
     fun syncNow() = request(waits = true)
 
     /**
+     * A check like the one every [interval], now. The app asks for it after the phone is unpaired: the check finds
+     * no computer to miss, so a "not reachable" of the old computer goes now and not at the next check.
+     */
+    fun checkNow() = request(waits = false)
+
+    /**
      * What the copy remembers, or null when the copy cannot be read (a full disk, a damaged file). Then the state
      * stays as it was: it is not guessed, and the next check reads again.
      */
@@ -204,7 +210,10 @@ class SyncHolder(
             }
 
             SyncResult.Cut -> {
-                mutable.update { it.copy(firstCopy = it.firstCopy?.copy(running = false), notice = noticeAfterCut(it)) }
+                mutable.update {
+                    val notice = if (it.notice == SyncNotice.Syncing) SyncNotice.None else it.notice
+                    it.copy(firstCopy = it.firstCopy?.copy(running = false), notice = notice)
+                }
             }
         }
     }
@@ -223,9 +232,6 @@ class SyncHolder(
             link == ComputerLink.NotPaired || current.notice == SyncNotice.Syncing -> SyncNotice.None
             else -> current.notice
         }
-
-    private fun noticeAfterCut(current: SyncState): SyncNotice =
-        if (current.notice == SyncNotice.Syncing) SyncNotice.None else current.notice
 
     private fun hideJustSyncedLater() {
         hiding =

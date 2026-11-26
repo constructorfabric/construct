@@ -3,6 +3,7 @@ package cf.construct.mobile.android
 import android.app.Application
 import android.util.Log
 import cf.construct.mobile.core.chat.initChatCore
+import cf.construct.mobile.core.sync.Syncer
 
 /** Holds the app's one [cf.construct.mobile.core.construct.Construct], so a new screen reuses its open copy. */
 class ConstructApp : Application() {
@@ -12,6 +13,7 @@ class ConstructApp : Application() {
     val chatCore by lazy { createChatCore() }
     val versionName: String by lazy { packageManager.getPackageInfo(packageName, 0).versionName.orEmpty() }
     val phoneConnection by lazy { createPhoneConnection(this, PhonePolling.intervalMillis, copy) }
+    internal val syncer: Syncer by lazy { createSyncer(phoneConnection, copy) }
 
     // The init throws a plain RuntimeException from Java when the check cannot start.
     @Suppress("TooGenericExceptionCaught")

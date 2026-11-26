@@ -8,6 +8,7 @@ import importlib.util
 import io
 from pathlib import Path
 import unittest
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 SPEC = importlib.util.spec_from_file_location("phone_pairing_harness", Path(__file__).with_name("test-phone-pairing.py"))
@@ -100,6 +101,43 @@ class DashboardSessionsCheck(unittest.TestCase):
         self.assertEqual(sessions[0]["minutes"][0], "2026-11-25T09:00:00Z")
         self.assertEqual(sessions[0]["minutes"][-1], "2026-11-25T09:44:00Z")
         self.assertEqual({session["project"] for session in sessions}, {"/w/app", "/w/site"})
+
+
+class ThemeSettleCheck(unittest.TestCase):
+    """The emulator test starts when the emulator has gone quiet after a change of appearance, not after a fixed wait."""
+
+    @staticmethod
+    def top(idle):
+        # `top` looks twice: the first look is the average since the start, and the second is the last second.
+        return f"400%cpu  30%user  0%nice  20%sys 300%idle\nTasks: 1\n400%cpu  10%user  0%nice  10%sys {idle}%idle\n"
+
+    @staticmethod
+    def device():
+        device = object.__new__(harness.Android)
+        device.adb = ("adb", "-s", "emulator-5554")
+        return device
+
+    def test_the_idle_share_is_the_one_of_the_last_look(self):
+        with mock.patch.object(harness, "read", return_value=self.top(380)):
+            self.assertAlmostEqual(self.device().idle_share(), 0.95)
+
+    def test_a_busy_emulator_is_waited_for_until_it_is_quiet_poll_after_poll(self):
+        looks = [self.top(100), self.top(300), *[self.top(390)] * harness.QUIET_POLLS]
+        with mock.patch.object(harness.subprocess, "run"), mock.patch.object(harness, "read", side_effect=looks) as read:
+            self.device().apply_theme("dark")
+        self.assertEqual(read.call_count, len(looks))
+
+    def test_one_busy_look_starts_the_count_again(self):
+        looks = [*[self.top(390)] * (harness.QUIET_POLLS - 1), self.top(100), *[self.top(390)] * harness.QUIET_POLLS]
+        with mock.patch.object(harness.subprocess, "run"), mock.patch.object(harness, "read", side_effect=looks) as read:
+            self.device().apply_theme("light")
+        self.assertEqual(read.call_count, len(looks))
+
+    def test_an_emulator_that_does_not_settle_fails_the_run(self):
+        with mock.patch.object(harness.subprocess, "run"), mock.patch.object(harness, "THEME_SETTLE_SECONDS", 0):
+            with mock.patch.object(harness, "read", return_value=self.top(0)):
+                with self.assertRaisesRegex(RuntimeError, "did not settle"):
+                    self.device().apply_theme("dark")
 
 
 if __name__ == "__main__":
