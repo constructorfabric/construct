@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -51,8 +50,10 @@ import cf.construct.mobile.core.designsystem.Spacing
 import cf.construct.mobile.feature.status.ComputerOperation
 import cf.construct.mobile.feature.status.ConnectionStatus
 import cf.construct.mobile.feature.status.ConnectionStatusKind
+import cf.construct.mobile.feature.status.SyncNotice
+import cf.construct.mobile.feature.status.SyncState
 import cf.construct.mobile.feature.status.dotColor
-import cf.construct.mobile.feature.status.lastContactText
+import cf.construct.mobile.feature.status.lastSyncText
 
 @Composable
 internal fun ComputerSettingsRow(
@@ -75,9 +76,11 @@ internal fun ComputerSettingsRow(
 @Composable
 internal fun ComputerScreen(
     connection: ConnectionStatus,
+    sync: SyncState,
     operation: ComputerOperation,
     open: (ComputerPage) -> Unit,
     retry: () -> Unit,
+    syncNow: () -> Unit,
     unpair: () -> Unit,
 ) {
     var confirming by rememberSaveable { mutableStateOf(false) }
@@ -111,7 +114,7 @@ internal fun ComputerScreen(
             }
 
             else -> {
-                ComputerDetails(connection, retry, operation.busy)
+                ComputerDetails(connection, sync, retry, syncNow, operation.busy)
                 if (connection.kind != ConnectionStatusKind.Connected) {
                     TextButton(onClick = { replacing = !replacing }, enabled = !operation.busy) { Text("Pair again") }
                     if (replacing) PairingChoices(open, enabled = !operation.busy)
@@ -168,7 +171,9 @@ private fun PairingChoices(
 @Composable
 private fun ComputerDetails(
     connection: ConnectionStatus,
+    sync: SyncState,
     retry: () -> Unit,
+    syncNow: () -> Unit,
     busy: Boolean,
 ) {
     val connected = connection.kind == ConnectionStatusKind.Connected
@@ -183,7 +188,7 @@ private fun ComputerDetails(
     }
     Column {
         connection.endpoint?.let { ComputerDetail("Paired computer", it) }
-        ComputerDetail("Connection", connection.label, lastContactText(connection.lastContactMillis), dot)
+        ComputerDetail("Connection", connection.label, lastSyncText(sync.lastSyncedAt), dot)
         ComputerDetail(
             "Agent",
             if (connected) "Running" else "Unknown",
@@ -191,13 +196,12 @@ private fun ComputerDetails(
             if (connected) dot else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+    // One button for a state: "Sync now" when the computer answers, "Try again" when it does not.
+    if (connected) {
+        SyncNowButton(syncing = sync.notice == SyncNotice.Syncing, enabled = !busy, onClick = syncNow)
+    }
     if (connection.kind.canRetry) {
-        OutlinedButton(
-            onClick = retry,
-            enabled = !busy,
-            shape = MaterialTheme.shapes.medium,
-            modifier = Modifier.fillMaxWidth().heightIn(min = LocalControlSizes.current.outlinedButton),
-        ) { Text("Try again") }
+        WideButton(onClick = retry, enabled = !busy) { Text("Try again") }
     }
 }
 

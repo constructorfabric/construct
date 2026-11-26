@@ -7,6 +7,7 @@ import android.net.ConnectivityManager
 import android.os.Build
 import cf.construct.mobile.core.chat.ChatCore
 import cf.construct.mobile.core.chat.nativeChatCore
+import cf.construct.mobile.core.connection.PhoneConnection
 import cf.construct.mobile.core.connection.defaultPhoneConnection
 import cf.construct.mobile.core.construct.Construct
 import cf.construct.mobile.core.database.CopyStore
@@ -15,6 +16,8 @@ import cf.construct.mobile.core.database.androidCopyDriver
 import cf.construct.mobile.core.keys.ModelSettingsStore
 import cf.construct.mobile.core.keys.androidModelSettingsStore
 import cf.construct.mobile.core.keys.androidPairingSecret
+import cf.construct.mobile.core.sync.SyncEngine
+import cf.construct.mobile.core.sync.Syncer
 import kotlinx.coroutines.Dispatchers
 
 /**
@@ -48,6 +51,12 @@ internal fun createPhoneConnection(
     pollIntervalMillis = pollIntervalMillis,
     adoptComputer = copy::adoptComputer,
 )
+
+/** The sync copies from the paired computer into [copy]. A debug build lets a test pace it (see [SyncTesting]). */
+internal fun createSyncer(
+    connection: PhoneConnection,
+    copy: CopyStore,
+): Syncer = SyncTesting.wrap(SyncEngine(connection, copy))
 
 internal fun Context.hasLocalNetworkPermission() =
     Build.VERSION.SDK_INT < LOCAL_NETWORK_PERMISSION_API ||

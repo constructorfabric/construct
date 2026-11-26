@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import cf.construct.mobile.core.designsystem.SmallControls
 import cf.construct.mobile.core.designsystem.Spacing
 
 internal const val NO_MODEL_TEXT = "No model is set yet. Set one in Settings to chat."
@@ -54,7 +55,7 @@ internal fun ChatNotice(
         Icon(
             icon,
             contentDescription = null,
-            modifier = Modifier.size(chatSmallIcon),
+            modifier = Modifier.size(SmallControls.icon),
             tint = if (error) scheme.error else scheme.onSurfaceVariant,
         )
         Column {
@@ -84,7 +85,7 @@ private fun NoticeButton(
     label: String,
     onClick: () -> Unit,
 ) {
-    TextButton(onClick = onClick, modifier = Modifier.heightIn(min = chatActionHeight)) {
+    TextButton(onClick = onClick, modifier = Modifier.heightIn(min = SmallControls.action)) {
         Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
     }
 }

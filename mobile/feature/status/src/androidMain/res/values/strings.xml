@@ -1,5 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="connection_last_contact">Last contact: %1$s</string>
-    <string name="connection_try_again">Try again</string>
+    <string name="sync_syncing">Syncing with your computer.</string>
+    <string name="sync_just_synced">Up to date. Synced just now.</string>
+    <string name="sync_not_reachable">The computer is not reachable.</string>
+    <string name="sync_not_reachable_last">The computer is not reachable. Last sync %1$s. The copy on this phone is shown.</string>
+    <string name="sync_try_again">Try again</string>
+    <string name="sync_last_sync">Last sync %1$s</string>
+
+    <string name="first_copy_title">Copying from your computer</string>
+    <string name="first_copy_text">The first copy takes a moment. The app opens when it is done.</string>
+    <string name="first_copy_progress">Copy progress</string>
+    <string name="first_copy_percent">%1$d percent</string>
+    <string name="first_copy_step">Step %1$d of %2$d</string>
+    <string name="first_copy_memory">Memory</string>
+    <string name="first_copy_chats">Chats</string>
+    <string name="first_copy_dashboard">Dashboard</string>
+    <string name="first_copy_copying">copying</string>
+    <string name="first_copy_waiting">waiting</string>
+    <string name="first_copy_of">%1$s of %2$s</string>
+    <plurals name="first_copy_facts">
+        <item quantity="one">%1$s fact</item>
+        <item quantity="other">%1$s facts</item>
+    </plurals>
+    <plurals name="first_copy_chats_count">
+        <item quantity="one">%1$s chat</item>
+        <item quantity="other">%1$s chats</item>
+    </plurals>
+    <plurals name="first_copy_numbers">
+        <item quantity="one">%1$s number</item>
+        <item quantity="other">%1$s numbers</item>
+    </plurals>
 </resources>

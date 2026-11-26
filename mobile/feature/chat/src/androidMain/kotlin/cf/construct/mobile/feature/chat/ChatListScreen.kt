@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import cf.construct.mobile.core.designsystem.SmallControls
 import cf.construct.mobile.core.designsystem.Spacing
 import cf.construct.mobile.core.model.ConversationOrigin
 import cf.construct.mobile.core.model.ConversationSummary
@@ -142,7 +143,7 @@ private fun ConversationRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(Spacing.XS.dp),
                 ) {
-                    CircularProgressIndicator(Modifier.size(chatSmallIcon), strokeWidth = chatStroke)
+                    CircularProgressIndicator(Modifier.size(SmallControls.icon), strokeWidth = chatStroke)
                     Text("Answering", style = type.bodyMedium, fontWeight = FontWeight.SemiBold)
                 }
             } else {
@@ -165,7 +166,7 @@ private fun OriginLabel(origin: ConversationOrigin) {
     val phone = origin == ConversationOrigin.PHONE
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.XS.dp)) {
-        Icon(if (phone) ChatIcons.phone else ChatIcons.computer, null, Modifier.size(chatSmallIcon), tint = color)
+        Icon(if (phone) ChatIcons.phone else ChatIcons.computer, null, Modifier.size(SmallControls.icon), tint = color)
         Text(if (phone) "This phone" else "Desktop", style = MaterialTheme.typography.bodySmall, color = color)
     }
 }
@@ -188,8 +189,8 @@ private fun EmptyChats(
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
         )
-        OutlinedButton(onClick = onNew, modifier = Modifier.heightIn(min = chatActionHeight)) {
-            Icon(ChatIcons.plus, null, Modifier.size(chatSmallIcon))
+        OutlinedButton(onClick = onNew, modifier = Modifier.heightIn(min = SmallControls.action)) {
+            Icon(ChatIcons.plus, null, Modifier.size(SmallControls.icon))
             Text("New chat", Modifier.padding(start = Spacing.S.dp))
         }
     }

@@ -18,12 +18,12 @@ import cf.construct.mobile.feature.chat.ChatListMenu
 import cf.construct.mobile.feature.chat.ChatListScreen
 import cf.construct.mobile.feature.chat.ChatThreadActions
 import cf.construct.mobile.feature.chat.ChatThreadScreen
-import cf.construct.mobile.feature.status.ConnectionStatus
+import cf.construct.mobile.feature.status.SyncState
 
 @Composable
 internal fun ChatRoute(
     chat: ChatViewModel,
-    connection: ConnectionStatus,
+    sync: SyncState,
     onTryAgain: () -> Unit,
     computerContent: @Composable (ComputerPage, (ComputerPage) -> Unit) -> Unit,
     otherPage: @Composable (Page, () -> Unit) -> Unit,
@@ -58,7 +58,7 @@ internal fun ChatRoute(
         ChatThreadScreen(state, thread, actions)
     } else {
         AppFrame(
-            connection = connection,
+            sync = sync,
             onTryAgain = onTryAgain,
             selected = selected,
             onSelect = {

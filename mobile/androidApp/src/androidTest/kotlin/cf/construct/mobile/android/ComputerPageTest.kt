@@ -1,80 +1,63 @@
 package cf.construct.mobile.android
 
-import android.graphics.Bitmap
-import android.os.SystemClock
-import android.util.Log
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
-import cf.construct.mobile.core.database.seedWithSampleData
-import cf.construct.mobile.core.keys.androidPairingSecret
-import cf.construct.mobile.feature.status.ConnectionStatusKind
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
-import java.io.File
-import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Run against the current agent example with scripts/test-phone-pairing.py. The app checks the computer every
- * [SLOW_POLL_MILLIS] here, much longer than the test waits, so the Try again button is the only way the state
- * can come back after the computer returns.
+ * Run against the current agent example with scripts/test-phone-pairing.py. The example serves a chat and two facts,
+ * so the first copy after the pairing has something to copy. The app checks the computer much less often here than
+ * the test waits (see [PairingFixture.start]), so the Try again button is the only way the state can come back
+ * after the computer returns.
  */
 class ComputerPageTest {
     @get:Rule
     val compose = createEmptyComposeRule()
 
-    private val instrumentation = InstrumentationRegistry.getInstrumentation()
-    private val context = instrumentation.targetContext
-    private val directory = File(context.filesDir, "computer-pairing-test")
-    private val store = androidPairingSecret(context)
+    private val fixture = PairingFixture(compose)
+    private val store = fixture.store
+    private val app = fixture.app
 
     @Test
     fun computerPage() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("computerPairingFixture") == "enabled")
-        // The canary: the script must find this line in the device log, or its check for pairing material
-        // is not looking at the log. It is the SHA-256 path of that check; the unit test of the script
-        // covers the plain-text path.
-        Log.i("PhonePairingFixture", "c3".repeat(32))
-        store.clear()
-        PhonePolling.intervalMillis = SLOW_POLL_MILLIS
-        val app = context.applicationContext as ConstructApp
+        fixture.start()
         try {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-                openSettings()
-                openComputerRow()
+                fixture.openSettings()
+                fixture.openComputerRow()
                 pairFromSettings()
-                app.copy.seedWithSampleData()
-                assertTrue(app.copy.conversations().isNotEmpty())
+                // What the first copy brought is in the copy of the phone.
+                compose.waitUntil(WAIT_MILLIS) { app.copy.conversations().isNotEmpty() }
                 assertTrue(
                     app.copy
                         .facts()
                         .facts
                         .isNotEmpty(),
                 )
-                backToSettings()
-                capture("settings-connected")
-                openComputerRow()
+                fixture.backToSettings()
+                fixture.capture("settings-connected")
+                fixture.openComputerRow()
                 verifyOutage(scenario)
 
                 compose.onNodeWithText("Unpair").performClick()
-                capture("confirm-unpair")
+                fixture.capture("confirm-unpair")
                 compose.onNodeWithTag("confirm-unpair").performClick()
-                waitForText("Not paired")
+                fixture.waitForText("Not paired")
                 assertNull(store.read())
                 assertTrue(app.copy.conversations().isEmpty())
                 assertTrue(
@@ -83,7 +66,7 @@ class ComputerPageTest {
                         .facts
                         .isEmpty(),
                 )
-                backToSettings()
+                fixture.backToSettings()
             }
         } finally {
             store.clear()
@@ -91,51 +74,43 @@ class ComputerPageTest {
     }
 
     private fun pairFromSettings() {
-        val offer = File(directory, "offer").readLines()
-        check(offer.size == 2) { "The pairing fixture is incomplete." }
-        waitForText("Not paired")
-        capture("not-paired")
-        compose.onNodeWithText("Enter address and code").assertIsEnabled().performClick()
-        waitForText("Pair with a computer")
-        capture("manual")
-        compose.onNodeWithTag("computer-address").performTextInput(offer[0])
-        compose.onNodeWithTag("computer-code").performTextInput(offer[1])
-        compose.onNodeWithText("Pair").performScrollTo().performClick()
-        waitForText("Paired computer")
-        waitForText("Connected")
-        recordDigest()
-        capture("connected")
+        fixture.pairByCode()
+        // The first copy follows the pairing, and the page comes back when it is whole.
+        fixture.waitForText("Paired computer")
+        fixture.waitForText("Connected")
+        fixture.recordDigest(store, "computer-digest")
+        fixture.capture("connected")
     }
 
     private fun verifyOutage(scenario: ActivityScenario<MainActivity>) {
-        signal("computer-stop")
-        waitForFile("computer-stopped")
+        fixture.signal("computer-stop")
+        fixture.waitForFile("computer-stopped")
         showOutage(scenario)
-        waitUntilDisplayed(checkNotNull(ConnectionStatusKind.Unreachable.detail))
-        waitUntilDisplayed("Last contact:")
+        fixture.waitUntilDisplayed("The computer is not reachable")
+        fixture.waitUntilDisplayed("Last sync")
         compose.onAllNodesWithText("Try again").assertCountEquals(1)
-        capture("unreachable")
+        fixture.capture("unreachable")
         compose.onNodeWithText("Pair again").performClick()
         compose.onNodeWithText("Scan QR code").assertIsDisplayed().assertIsEnabled()
         compose.onNodeWithText("Pair again").performClick()
 
-        // The connection line shows the same state on the other pages.
-        backToSettings()
-        capture("settings-unreachable")
+        // The pages with something to sync tell the same: the notice at the top of the page.
+        fixture.backToSettings()
+        fixture.capture("settings-unreachable")
         compose.onNodeWithText("Chat").performClick()
-        waitForText(ConnectionStatusKind.Unreachable.title)
-        capture("chat-unreachable")
+        fixture.waitForTextContaining("The computer is not reachable. Last sync")
+        fixture.capture("chat-unreachable")
         compose.onNodeWithText("Settings").performClick()
-        waitForText("Computer")
-        openComputerRow()
+        fixture.waitForText("Computer")
+        fixture.openComputerRow()
 
-        signal("computer-retry")
-        waitForFile("computer-restarted")
+        fixture.signal("computer-retry")
+        fixture.waitForFile("computer-restarted")
         retryUntilConnected()
     }
 
     /**
-     * The checks come every [SLOW_POLL_MILLIS], so the outage is found when the app comes back to the front
+     * The checks are minutes apart, so the outage is found when the app comes back to the front
      * and checks at once. The first check can still reach the computer while it is shutting down, so go again.
      */
     private fun showOutage(scenario: ActivityScenario<MainActivity>) {
@@ -158,31 +133,6 @@ class ComputerPageTest {
         error("Try again did not bring the connection back.")
     }
 
-    private fun openSettings() {
-        compose.onNodeWithText("Settings").performClick()
-        waitForText("Computer")
-    }
-
-    private fun openComputerRow() {
-        compose.onNodeWithTag("open-computer").performScrollTo().performClick()
-    }
-
-    private fun backToSettings() {
-        compose.onNodeWithContentDescription("Back").performClick()
-        waitForText("Model")
-    }
-
-    private fun waitForText(text: String) {
-        compose.waitUntil(60_000) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }
-    }
-
-    /** The page is laid out again when the app comes back to the front, so wait until the text is on screen. */
-    private fun waitUntilDisplayed(text: String) {
-        compose.waitUntil(60_000) {
-            runCatching { compose.onNodeWithText(text, substring = true).assertIsDisplayed() }.isSuccess
-        }
-    }
-
     private fun shown(
         text: String,
         timeoutMillis: Long,
@@ -193,49 +143,10 @@ class ComputerPageTest {
         false
     }
 
-    private fun signal(name: String) = File(directory, name).writeText("ready")
-
-    private fun waitForFile(name: String) {
-        val end = SystemClock.uptimeMillis() + HOST_MILLIS
-        while (!File(directory, name).exists()) {
-            check(SystemClock.uptimeMillis() < end) { "The host did not signal $name." }
-            Thread.sleep(200)
-        }
-    }
-
-    private fun recordDigest() {
-        val token =
-            checkNotNull(
-                store
-                    .read()
-                    ?.lineSequence()
-                    ?.drop(2)
-                    ?.firstOrNull(),
-            ) {
-                "The pairing credential was not saved."
-            }
-        val digest = MessageDigest.getInstance("SHA-256").digest(token.encodeToByteArray()).toHexString()
-        File(directory, "computer-digest").writeText(digest)
-    }
-
-    private fun capture(name: String) {
-        if (InstrumentationRegistry.getArguments().getString("computerScreenshots") != "enabled") return
-        compose.waitForIdle()
-        val screenshot = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
-        try {
-            File(directory, "$name.png").outputStream().use {
-                check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, it))
-            }
-        } finally {
-            screenshot.recycle()
-        }
-    }
-
     private companion object {
-        const val SLOW_POLL_MILLIS = 120_000L
         const val ATTEMPT_MILLIS = 5_000L
+        const val WAIT_MILLIS = 60_000L
         const val OUTAGE_TRIES = 6
         const val RETRY_TRIES = 6
-        const val HOST_MILLIS = 60_000L
     }
 }
