@@ -27,8 +27,8 @@ pub const FILE_NAME: &str = "settings.json";
 /// Format version written into the file.
 pub const VERSION: u32 = 1;
 
-/// The tools that have a switch of their own, by the name their sessions carry in the store.
-pub const TOOLS: [&str; 2] = ["claude-code", "codex"];
+/// The tools whose sessions are read, by the name their sessions carry in the store.
+pub const TOOLS: [&str; 4] = ["claude-code", "codex", "chatgpt", connectors::CLAUDE_APP];
 
 /// What the readers collect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,16 +342,17 @@ impl Settings {
 
     /// Whether the sessions of the source called `tool` (a connector's name, or the chat's) may be stored:
     /// collection is on, and so is the tool's own switch. A tool the settings do not know is off.
-    /// The chat has no switch of its own: it follows collection alone.
+    /// The chat and the Claude app have no switch of their own: they follow collection alone.
     #[must_use]
     pub fn collects(&self, tool: &str) -> bool {
         let c = self.collection();
         c.enabled
             && match tool {
                 "claude-code" => c.claude_code,
-                "codex" => c.codex,
+                // The Codex switch also answers for the ChatGPT app's chats.
+                "codex" | "chatgpt" => c.codex,
                 crate::screen::SOURCE => c.screen,
-                crate::chat::SOURCE => true,
+                crate::chat::SOURCE | connectors::CLAUDE_APP => true,
                 _ => false,
             }
     }
@@ -467,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_is_collected_only_while_collection_and_its_own_switch_are_on() {
+    fn a_tool_is_collected_only_while_collection_and_its_switch_are_on() {
         let dir = scratch("collects");
         let s = Settings::open(&dir).unwrap();
         assert!(s.collects("claude-code") && s.collects("codex"));
@@ -477,19 +478,26 @@ mod tests {
             r#"{"collection":{"claude_code":false,"codex":false}}"#,
         ))
         .unwrap();
-        assert!(s.collects("chat"));
+        assert!(s.collects("chat") && s.collects("claude-app"));
         s.apply(update(
             r#"{"collection":{"claude_code":true,"codex":true}}"#,
         ))
         .unwrap();
+        assert!(s.collects("chatgpt"));
         s.apply(update(r#"{"collection":{"codex":false}}"#))
             .unwrap();
         assert!(s.collects("claude-code") && !s.collects("codex"));
-        assert_eq!(s.tools_off(), ["codex"]);
+        // The ChatGPT app's chats follow the Codex switch.
+        assert!(!s.collects("chatgpt"));
+        assert_eq!(s.tools_off(), ["codex", "chatgpt"]);
         s.apply(update(r#"{"collection":{"enabled":false,"codex":true}}"#))
             .unwrap();
-        assert!(!s.collects("claude-code") && !s.collects("codex"));
-        assert_eq!(s.tools_off(), ["claude-code", "codex"]);
+        assert!(!s.collects("claude-code") && !s.collects("codex") && !s.collects("chatgpt"));
+        assert!(!s.collects("claude-app"));
+        assert_eq!(
+            s.tools_off(),
+            ["claude-code", "codex", "chatgpt", "claude-app"]
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

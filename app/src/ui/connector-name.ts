@@ -6,5 +6,9 @@ export function connectorName(name: string): string {
     ? t('StatusPage.Connector.claude-code')
     : name === 'codex'
       ? t('StatusPage.Connector.codex')
-      : name;
+      : name === 'chatgpt'
+        ? t('StatusPage.Connector.chatgpt')
+        : name === 'claude-app'
+          ? t('StatusPage.Connector.claude-app')
+          : name;
 }
