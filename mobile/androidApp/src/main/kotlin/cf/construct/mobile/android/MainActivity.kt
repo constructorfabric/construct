@@ -54,7 +54,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Made when the person first opens the page; the activity flushes its cookies only if it exists.
+    // Made when the person first opens the page; the activity flushes its cookies and takes the page's text off the
+    // clipboard only if it exists.
     private val glasshouseModel =
         viewModels<GlasshouseViewModel> {
             viewModelFactory {
@@ -64,6 +65,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+    private val glasshouseRestriction
+        get() = if (glasshouseModel.isInitialized()) glasshouseModel.value.web.restriction else null
 
     private val memory: MemoryViewModel by viewModels {
         viewModelFactory { initializer { MemoryViewModel((application as ConstructApp).construct) } }
@@ -145,6 +149,11 @@ class MainActivity : ComponentActivity() {
         connection.holder.setForeground(true)
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) glasshouseRestriction?.rememberClipboard()
+    }
+
     private fun refreshAfterUnpair() {
         memory.holder.refresh()
         chat.holder.refresh()
@@ -172,6 +181,8 @@ class MainActivity : ComponentActivity() {
         connection.holder.setForeground(false)
         // A sign-in made in the page must be on the disk if the app is closed now.
         if (glasshouseModel.isInitialized()) glasshouseModel.value.web.flushCookies()
+        // Restricted mode: the page's text does not go with the app to another app.
+        glasshouseRestriction?.restoreClipboard()
         super.onStop()
     }
 }

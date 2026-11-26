@@ -9,7 +9,8 @@ then start an emulator and run:
 
     python3 scripts/test-glasshouse.py --device emulator-5554 [--screenshots <folder>]
 
-The script starts `glasshouse_test_server.py`, installs both APKs, runs the page tests, runs the restart test (sign in,
+The script starts `glasshouse_test_server.py`, installs both APKs, runs the page tests and the restricted mode tests
+(a secure window, the touch menu, the clipboard, the refusals), runs the restart test (sign in,
 stop the app's process, check the sign-in is still there) and, with --screenshots, takes a screenshot of each state of the
 page in the light and the dark theme. The tests turn the emulator's network off and on, so use an emulator that is
 yours alone. The exit status is 0 when every test passed.
@@ -32,7 +33,7 @@ PACKAGE = "cf.construct.mobile.android"
 RUNNER = "cf.construct.mobile.test/androidx.test.runner.AndroidJUnitRunner"
 RUN_TIMEOUT = 2400
 STATES = ("nostart", "refused", "ready", "typing", "loading", "notfound", "certificate", "connection-refused",
-          "stopped", "offline")
+          "blocked", "stopped", "offline")
 
 
 def application_id():
@@ -99,6 +100,7 @@ def main():
         passed = True
         if not args.screenshots_only:
             passed = emulator.instrument("GlasshouseTest", **arguments)
+            passed &= emulator.instrument("GlasshouseRestrictedTest", **arguments)
 
             emulator.run("shell", "pm", "clear", emulator.app)
             passed &= emulator.instrument("GlasshouseRestartTest", glasshouseRestart="signin", **arguments)

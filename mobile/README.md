@@ -301,8 +301,34 @@ its address bar takes their place.
   With no network the page is not asked for at all: the web view would wait on a connection it had open before the
   network went, so the page says "offline" at once and Reload asks again. A web view whose process stopped is replaced
   and the page says "stopped working" with Reload.
+- **Restricted mode.** The page is always in it, from the first moment, and nothing switches it off; a small "Restricted
+  mode" sign under the address bar says so. The system's basic way is used: `FLAG_SECURE` on the activity's window
+  (`SecureWindow`), which the phone keeps out of screenshots, screen recordings, other displays and the picture of the
+  app in the recent apps. The flag is the whole window's, so it is on for as long as the page is shown and off on the
+  other pages of the app. Beyond the window:
+  - **Touch menu.** `RestrictedWebView` filters the web view's own selection menu to Select all and Paste, so the menu
+    never offers Copy, Cut, Share or any other action that takes text out (on the emulator the web view's menu on a
+    held word is Copy, Share, Select all and Read aloud, and the person gets Select all). The items are known by their
+    titles, the system's words for them, because their ids belong to the web view's package; an item whose title is not
+    one of them is taken out. The web view has no menu on a picture, so there is no Save image. Dragging selected text
+    out of the app is not blocked.
+  - **Clipboard.** A page can write to the clipboard with its own commands and the phone has no way to refuse it. While
+    the web view has the focus and so does the app's window, which they have when a page's command runs, a change of the
+    clipboard is the page's; when the app goes to the background (`onStop`) `GlasshouseClipboard` takes it off, and puts
+    back what was there before, or clears it if nothing was, or if the phone refuses the old clip (one from another app
+    can hold an address this app may not hand on). A copy made anywhere else (the address bar, another app) is the
+    person's and is kept. Android 10 and later let an app read the clipboard only while its window has the focus, and
+    tell it nothing of a change it cannot read, so the clipboard is read when the window gets the focus
+    (`onWindowFocusChanged`), and a clip that is not the one the page put there is the person's. Android 12 and later tell
+    the person that the app pasted from the clipboard when it reads a clip another app made. Clipboard managers that
+    keep a history are not worked around.
+  - **Download, print, share.** A download (a link with `download`, or a file the server sends to be saved) is refused
+    by the web view's download listener, which starts none. A document-start script, run in every frame before the
+    page's own, makes `window.print` do nothing and `navigator.share` reject as a refusal, and tells the app, which
+    says so in one line under the sign for six seconds. The script needs `androidx.webkit`'s document-start script and
+    web message listener; a web view without them does not open the page.
 
-The page tests (`GlasshouseTest`, `GlasshouseRestartTest`) open real pages from a test server on the computer over
+The page tests (`GlasshouseTest`, `GlasshouseRestrictedTest`, `GlasshouseRestartTest`) open real pages from a test server on the computer over
 `https`. The debug build, and only the debug build, trusts that server's certificate: `./gradlew :androidApp:assembleDebug`
 makes two certificates with `keytool` (`generateGlasshouseTestCertificates`), puts the public part of the first into the
 debug resources, and `src/debug/res/xml/network_security_config.xml` trusts it through `debug-overrides`, which an app

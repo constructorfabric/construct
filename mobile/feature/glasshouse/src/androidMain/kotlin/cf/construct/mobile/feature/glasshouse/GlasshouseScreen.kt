@@ -29,6 +29,9 @@ private const val NO_START_ADDRESS = "No start address is set. Type an address a
  * why with a Reload button, in the place of the page; a refused address is told under the bar. It loads nothing
  * itself: the web view is the one it is given, and what the person does goes out through [actions].
  *
+ * The page is always in restricted mode, so the window is secure while this is shown and a small sign says so under
+ * the address bar. What the page asked for and restricted mode refused is told in one line for a few seconds.
+ *
  * The system back goes back in the page when it can.
  */
 @Composable
@@ -39,6 +42,7 @@ fun GlasshouseScreen(
     modifier: Modifier = Modifier,
 ) {
     val progress by webView.progress.collectAsState()
+    SecureWindow()
     val problem = state.problem
     val notice = state.noStartAddress && state.address.isEmpty()
     val text =
@@ -55,10 +59,15 @@ fun GlasshouseScreen(
             actions,
             Modifier.padding(horizontal = Spacing.L.dp, vertical = Spacing.S.dp),
         )
+        RestrictedSign(Modifier.padding(start = Spacing.L.dp, end = Spacing.L.dp, bottom = Spacing.S.dp))
         if (state.addressRefused) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             GlasshouseMessage(REFUSED, Modifier.padding(Spacing.L.dp), error = true)
         }
+        BlockedLine(
+            webView.restriction,
+            Modifier.padding(start = Spacing.L.dp, end = Spacing.L.dp, bottom = Spacing.S.dp),
+        )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             GlasshousePageView(webView, hidden = text != null)
             if (text != null) {

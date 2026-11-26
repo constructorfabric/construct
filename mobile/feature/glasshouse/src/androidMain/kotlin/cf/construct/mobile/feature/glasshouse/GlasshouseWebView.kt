@@ -21,6 +21,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,7 +39,9 @@ class GlasshouseWebEvents(
 /**
  * The phone's web view for the Glasshouse page, set up as the page needs it, and kept alive by whoever owns
  * this object (a view model) while the screen comes and goes: the page, what was typed in it and its history stay.
- * What the page opens, refuses and keeps is set out in the README, "The Glasshouse page on Android".
+ * What the page opens, refuses and keeps is set out in the README, "The Glasshouse page on Android". The page is
+ * always in restricted mode: [restriction] says what it refused, and takes the page's text off the clipboard as
+ * the app goes away.
  *
  * Use it on the main thread. Call [attach] when the screen shows the web view and [detach] when it leaves.
  */
@@ -53,6 +57,9 @@ class GlasshouseWebView(
     val view: StateFlow<WebView> = mutableView.asStateFlow()
 
     private val mutableProgress = MutableStateFlow(FULL)
+
+    /** What restricted mode refused and took back: the page is always in it. */
+    val restriction = GlasshouseRestriction(appContext) { mutableView.value.run { hasFocus() && hasWindowFocus() } }
 
     /** How much of the page has loaded, 0 to 100. */
     val progress: StateFlow<Int> = mutableProgress.asStateFlow()
@@ -71,7 +78,10 @@ class GlasshouseWebView(
                 mainPage.clear()
                 mainPage += command.address
                 address = command.address
-                if (isOffline(appContext)) {
+                if (!canRestrict) {
+                    // A page that cannot be held in restricted mode is not opened.
+                    events.onPageFailed(command.address, GlasshouseProblem.Other)
+                } else if (isOffline(appContext)) {
                     noNetwork(command.address)
                 } else {
                     web.loadUrl(command.address)
@@ -124,6 +134,7 @@ class GlasshouseWebView(
     }
 
     fun destroy() {
+        restriction.stop()
         detach()
         mutableView.value.destroy()
     }
@@ -138,7 +149,7 @@ class GlasshouseWebView(
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun newWebView(base: Context): WebView {
-        val web = WebView(MutableContextWrapper(base))
+        val web = RestrictedWebView(MutableContextWrapper(base))
         with(web.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -156,7 +167,14 @@ class GlasshouseWebView(
             userAgentString = GlasshouseUserAgent.of(userAgentString, version)
         }
         CookieManager.getInstance().setAcceptCookie(true)
-        web.setDownloadListener { _, _, _, _, _ -> }
+        // A file to save is never saved.
+        web.setDownloadListener { _, _, _, _, _ -> restriction.block(GlasshouseBlockedAction.Download) }
+        if (canRestrict) {
+            WebViewCompat.addDocumentStartJavaScript(web, GlasshouseRestrictions.SCRIPT, ALL_ORIGINS)
+            WebViewCompat.addWebMessageListener(web, GlasshouseRestrictions.BRIDGE, ALL_ORIGINS) { _, said, _, _, _ ->
+                GlasshouseRestrictions.actionIn(said.data)?.let(restriction::block)
+            }
+        }
         web.webViewClient = PageClient()
         web.webChromeClient = PageChrome()
         return web
@@ -313,6 +331,12 @@ class GlasshouseWebView(
     private companion object {
         const val FULL = 100
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+        val ALL_ORIGINS = setOf("*")
+
+        // The script that refuses a page's print and share runs before the page's own and talks to the app.
+        val canRestrict =
+            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) &&
+                WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
     }
 }
 
