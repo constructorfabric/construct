@@ -125,6 +125,7 @@ dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":core:keys"))
     implementation(project(":feature:chat"))
+    implementation(project(":feature:dashboard"))
     implementation(project(":feature:glasshouse"))
     implementation(project(":feature:memory"))
     implementation(project(":feature:settings"))

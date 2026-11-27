@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -51,6 +52,7 @@ import kotlin.time.Instant
  * @param now the time, for "today".
  * @param storage where [record] is read.
  */
+@Suppress("TooManyFunctions")
 class DashboardHolder(
     private val construct: Construct,
     private val record: () -> SyncRecord,
@@ -89,7 +91,12 @@ class DashboardHolder(
         mutableState.update { it.copy(loading = true, failure = null) }
         watching =
             scope.launch {
-                combine(choice, construct.dashboardChanges) { chosen, _ -> chosen }.collectLatest { show(it) }
+                combine(choice, construct.dashboardChanges) { chosen, _ -> chosen }.collectLatest { chosen ->
+                    // "Today" follows the clock: read again when the computer's day ends, whatever the page shows.
+                    while (true) {
+                        delay(show(chosen))
+                    }
+                }
             }
     }
 
@@ -121,7 +128,8 @@ class DashboardHolder(
         }
     }
 
-    private suspend fun show(chosen: Choice) {
+    /** Reads the copy and shows it. Returns how long to wait, in milliseconds, before today may have changed. */
+    private suspend fun show(chosen: Choice): Long {
         val read = construct.getDashboardDocument()
         val remembered = remembered(record, storage)
         when {
@@ -129,6 +137,19 @@ class DashboardHolder(
             remembered == null -> mutableState.fail(UNREADABLE)
             read is Outcome.Ok -> showPage(chosen, read.value.document, remembered)
         }
+        return untilMidnight(zoneOf(remembered?.zone))
+    }
+
+    /** The time to the start of the next day of [zone], at least a second so that a failing read is not a busy loop. */
+    private fun untilMidnight(zone: TimeZone): Long {
+        val moment = now()
+        val next =
+            moment
+                .toLocalDateTime(zone)
+                .date
+                .plus(1, DateTimeUnit.DAY)
+                .atStartOfDayIn(zone)
+        return (next - moment).inWholeMilliseconds.coerceAtLeast(MIN_WAIT_MILLIS)
     }
 
     private suspend fun showPage(
@@ -199,6 +220,7 @@ class DashboardHolder(
     private companion object {
         const val UNREADABLE = "the copy could not be read"
         const val DAYS_PER_WEEK = 7
+        const val MIN_WAIT_MILLIS = 1_000L
 
         fun length(span: DashboardSpan) = if (span == DashboardSpan.WEEK) DAYS_PER_WEEK else 1
 

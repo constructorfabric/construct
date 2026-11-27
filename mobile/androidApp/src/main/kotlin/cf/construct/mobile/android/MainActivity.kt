@@ -24,7 +24,11 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import cf.construct.mobile.core.chat.ChatCore
 import cf.construct.mobile.core.construct.Construct
+import cf.construct.mobile.core.database.CopyStore
 import cf.construct.mobile.core.keys.ModelSettingsStore
+import cf.construct.mobile.feature.dashboard.DashboardActions
+import cf.construct.mobile.feature.dashboard.DashboardHolder
+import cf.construct.mobile.feature.dashboard.DashboardScreen
 import cf.construct.mobile.feature.glasshouse.GlasshouseScreen
 import cf.construct.mobile.feature.memory.MemoryHolder
 import cf.construct.mobile.feature.memory.MemoryScreen
@@ -85,6 +89,15 @@ class MainActivity : ComponentActivity() {
         viewModelFactory { initializer { MemoryViewModel((application as ConstructApp).construct) } }
     }
 
+    private val dashboard: DashboardViewModel by viewModels {
+        viewModelFactory {
+            initializer {
+                val app = application as ConstructApp
+                DashboardViewModel(app.construct, app.copy)
+            }
+        }
+    }
+
     private val settings: SettingsViewModel by viewModels {
         viewModelFactory {
             initializer {
@@ -107,6 +120,9 @@ class MainActivity : ComponentActivity() {
         val connectionState by connection.holder.state.collectAsState()
         val operation by connection.operation.collectAsState()
         val syncState by sync.holder.state.collectAsState()
+        val dashboardState by dashboard.holder.state.collectAsState()
+        // A sync that only brings the copy up to date changes no number, so the time of the update is read again.
+        LaunchedEffect(syncState.lastSyncedAt) { dashboard.holder.refresh() }
         // A pairing that is done is followed by the first copy at once, not at the next check.
         LaunchedEffect(operation.paired) { if (operation.paired) sync.holder.syncNow() }
         // The first copy has a screen of its own over the whole app, until the copy is whole.
@@ -128,6 +144,10 @@ class MainActivity : ComponentActivity() {
                         when (page) {
                             Page.Memory -> {
                                 MemoryScreen(state, onRefresh = memory.holder::refresh)
+                            }
+
+                            Page.Dashboard -> {
+                                DashboardScreen(dashboardState, dashboard.actions)
                             }
 
                             Page.Settings -> {
@@ -250,6 +270,22 @@ internal class MemoryViewModel(
     val holder = MemoryHolder(construct, viewModelScope)
 }
 
+/** Keeps the Dashboard holder across a turn of the screen. It reads only the copy on the phone. */
+internal class DashboardViewModel(
+    construct: Construct,
+    copy: CopyStore,
+) : ViewModel() {
+    val holder = DashboardHolder(construct, copy::syncRecord, viewModelScope)
+    val actions =
+        DashboardActions(
+            onSpan = holder::showSpan,
+            onPrevious = holder::previous,
+            onNext = holder::next,
+            onToday = holder::showToday,
+            onPick = holder::pick,
+        )
+}
+
 /** Keeps the model setup across a turn of the screen. */
 internal class SettingsViewModel(
     store: ModelSettingsStore,
@@ -268,8 +304,8 @@ internal class SettingsViewModel(
 }
 
 /**
- * The pages that are not Memory or Settings: the Glasshouse page, and a placeholder for the rest. The Glasshouse
- * view model is made when its page is first shown, not before.
+ * The pages that are not Memory, Dashboard or Settings: the Glasshouse page, and a placeholder for the rest. The
+ * Glasshouse view model is made when its page is first shown, not before.
  */
 @Composable
 private fun OtherPage(
