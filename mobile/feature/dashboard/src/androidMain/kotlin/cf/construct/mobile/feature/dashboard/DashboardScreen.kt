@@ -69,7 +69,23 @@ fun DashboardScreen(
     actions: DashboardActions,
     modifier: Modifier = Modifier,
 ) {
+    var opened by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val open =
+        opened?.let { (id, key) ->
+            state.widgets.firstOrNull { it.widget.id == id }?.let { shown ->
+                shown.numbers
+                    ?.groups
+                    ?.firstOrNull { it.key == key }
+                    ?.let { row -> shown to row }
+            }
+        }
     when {
+        open != null -> {
+            DashboardSessionsPage(open.first, open.second, actions.sessionsOf(open.first, open.second), modifier) {
+                opened = null
+            }
+        }
+
         state.loading && !state.hasDashboard && state.failure == null -> {
             Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         }
@@ -95,7 +111,9 @@ fun DashboardScreen(
                         )
                     } else {
                         val dates = DashboardDates()
-                        state.widgets.forEach { WidgetCard(it, state, dates) }
+                        state.widgets.forEach { shown ->
+                            WidgetCard(shown, state, dates) { row -> opened = shown.widget.id to row.key }
+                        }
                     }
                 }
             }

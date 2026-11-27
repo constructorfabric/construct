@@ -26,6 +26,10 @@ class FakeComputer(
     var facts = listOf<JsonObject>()
     var chats = linkedMapOf<String, FakeChat>()
     var numbers = listOf<JsonObject>()
+
+    /** The `sessions` items; an older computer does not know the command, and answers an error for it. */
+    var sessions = listOf<JsonObject>()
+    var knowsSessions = true
     var document: JsonObject? = null
     var zone = "Europe/Berlin"
     var reset: String? = "marker-1"
@@ -117,6 +121,10 @@ class FakeComputer(
 
             "sync-dashboard" -> {
                 part(request, dashboardToken(), numbers)
+            }
+
+            "sync-dashboard-sessions" -> {
+                if (knowsSessions) part(request, dashboardToken(), sessions) else failure("invalid sync request")
             }
 
             else -> {
@@ -268,5 +276,33 @@ fun numbersItem(
                 ),
             )
         },
+    )
+}
+
+/** The sessions behind one group of a day's numbers: each row is (start, end, minutes) of one session. */
+fun sessionsItem(
+    widget: String,
+    day: String,
+    group: String,
+    rows: List<Triple<String, String, Int>>,
+) = buildJsonObject {
+    put("kind", "sessions")
+    put("input", numbersItem(widget, day, 0)["input"]!!)
+    put("group", group)
+    put(
+        "rows",
+        JsonArray(
+            rows.map { (start, end, minutes) ->
+                buildJsonObject {
+                    put("start", start)
+                    put("end", end)
+                    put("minutes", minutes)
+                    put("tool", "claude")
+                    put("project", "shop")
+                    put("ticket", "No ticket")
+                    put("session", "abcd1234")
+                }
+            },
+        ),
     )
 }

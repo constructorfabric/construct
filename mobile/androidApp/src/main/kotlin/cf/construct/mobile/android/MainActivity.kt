@@ -283,6 +283,7 @@ internal class DashboardViewModel(
             onNext = holder::next,
             onToday = holder::showToday,
             onPick = holder::pick,
+            sessionsOf = holder::sessionsOf,
         )
 }
 

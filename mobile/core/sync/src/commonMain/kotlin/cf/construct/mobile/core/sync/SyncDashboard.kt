@@ -85,7 +85,7 @@ internal fun dashboardNumbers(item: JsonObject): Pair<DashboardInput, DashboardN
             )
     }
 
-private fun dayBounds(day: JsonObject) =
+internal fun dayBounds(day: JsonObject) =
     DayBounds(day.text("label").required(), day.text("start").required(), day.text("end").required())
 
 private fun dayMinutes(day: JsonObject) = DayMinutes(day.text("label").required(), day.minutes("minutes").required())

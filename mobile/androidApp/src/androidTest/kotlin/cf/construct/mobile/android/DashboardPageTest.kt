@@ -29,6 +29,7 @@ import cf.construct.mobile.core.model.DayBounds
 import cf.construct.mobile.core.model.DayMinutes
 import cf.construct.mobile.core.model.GroupBy
 import cf.construct.mobile.core.model.GroupMinutes
+import cf.construct.mobile.core.model.GroupSession
 import cf.construct.mobile.core.model.Period
 import cf.construct.mobile.core.model.Position
 import cf.construct.mobile.core.model.Whose
@@ -98,6 +99,31 @@ class DashboardPageTest {
         compose.onNodeWithTag("dashboard-line-end-of-day-app").assertExists()
         compose.onNodeWithTag("dashboard-updated").assertTextStartsWith("Updated ")
         compose.onAllNodesWithTag("dashboard-hidden-total").assertCountEquals(0)
+    }
+
+    @Test
+    fun aRowOpensItsSessionsAddingUpToTheRowAndARowOfADayWithNoSessionsSaysSo() {
+        copyOf(todayMinutes = 95, hidden = 0)
+        show()
+        compose.waitUntil(WAIT_MS) { has("dashboard-row-by-project-app") }
+
+        compose.onNodeWithTag("dashboard-row-by-project-app").performClick()
+        compose.waitUntil(WAIT_MS) { has("dashboard-sessions") }
+        compose.onNodeWithTag("dashboard-sessions-total").assertTextIs("1 h 0 min · 2 sessions")
+        compose.onNodeWithTag("dashboard-session-0").assert(hasText("40 min", substring = true))
+        compose.onNodeWithTag("dashboard-session-1").assert(hasText("20 min", substring = true))
+        compose.onAllNodesWithTag("dashboard-sessions-not-sent").assertCountEquals(0)
+
+        compose.onNodeWithTag("dashboard-sessions-back").performClick()
+        compose.waitUntil(WAIT_MS) { has("dashboard-previous") }
+        compose.onNodeWithTag("dashboard-previous").performClick()
+        compose.waitUntil(WAIT_MS) { has("dashboard-row-by-project-site") }
+        compose.onNodeWithTag("dashboard-row-by-project-site").performClick()
+        compose.waitUntil(WAIT_MS) { has("dashboard-sessions-not-sent") }
+        compose
+            .onNodeWithTag("dashboard-sessions-not-sent")
+            .assertTextIs("Your computer has not sent the sessions for this day.")
+        compose.onAllNodesWithTag("dashboard-session-0").assertCountEquals(0)
     }
 
     @Test
@@ -196,7 +222,14 @@ class DashboardPageTest {
         val construct = PhoneConstruct(store, FakeModelSettingsStore(), Dispatchers.IO)
         val holder = DashboardHolder(construct, store::syncRecord, scope)
         val actions =
-            DashboardActions(holder::showSpan, holder::previous, holder::next, holder::showToday, holder::pick)
+            DashboardActions(
+                holder::showSpan,
+                holder::previous,
+                holder::next,
+                holder::showToday,
+                holder::pick,
+                holder::sessionsOf,
+            )
         compose.setContent {
             ConstructTheme {
                 val state by holder.state.collectAsState()
@@ -234,7 +267,7 @@ class DashboardPageTest {
                 if (widget.kind != WidgetKind.DAY_SUMMARY || days.size == 1) {
                     numbers +=
                         DashboardInput.ForWidget(days.map(::bounds), widget.id) to
-                        numbersOf(minutes, days.toList(), hidden)
+                        numbersOf(minutes, days.toList(), hidden, withSessions = days.singleOrNull() == today)
                 }
             }
         }
@@ -257,13 +290,27 @@ class DashboardPageTest {
         minutes: Int,
         days: List<LocalDate>,
         hidden: Int,
+        withSessions: Boolean = false,
     ) = DashboardNumbers(
         totalMinutes = minutes,
         sessionCount = 3,
         days = days.map { DayMinutes(it.toString(), if (it == days.last()) minutes else 0) },
         groups = listOf(GroupMinutes("app", minutes - 35, 0.6, 2), GroupMinutes("site", 35, 0.4, 1)),
         hiddenProjectCount = hidden,
+        sessionsByGroup =
+            if (withSessions) {
+                // The two sessions of the "app" row add up to it.
+                mapOf("app" to listOf(session("08:00", "08:40", 40), session("09:00", "09:20", minutes - 35 - 40)))
+            } else {
+                null
+            },
     )
+
+    private fun session(
+        start: String,
+        end: String,
+        minutes: Int,
+    ) = GroupSession("${today}T$start:00Z", "${today}T$end:00Z", minutes, "claude", "shop", "No ticket", "abcd1234")
 
     /** A day the way the computer counts it: its label, and its start and end in UTC minutes. */
     private fun bounds(date: LocalDate): DayBounds {

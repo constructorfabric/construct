@@ -58,6 +58,21 @@ data class GroupMinutes(
     val sessions: Int,
 )
 
+/**
+ * One session behind a group: when it first and last counted in the group (UTC), its share of the group in whole
+ * minutes, and what the computer shows of it. The shares of a group add up to the group. No text of a message.
+ */
+@Serializable
+data class GroupSession(
+    val start: String,
+    val end: String,
+    val minutes: Int,
+    val tool: String,
+    val project: String,
+    val ticket: String,
+    val session: String,
+)
+
 /** The numbers of a period. They hold no text of a message. */
 @Serializable
 data class DashboardNumbers(
@@ -67,6 +82,11 @@ data class DashboardNumbers(
     val groups: List<GroupMinutes>,
     /** How many projects with time in the days the person hides on the computer's dashboard. */
     val hiddenProjectCount: Int = 0,
+    /**
+     * The sessions behind each group, by the group's key, the earliest first; null when the computer has not sent
+     * them (an older computer, or a day older than it sends them for). They go and stay with these numbers.
+     */
+    val sessionsByGroup: Map<String, List<GroupSession>>? = null,
 )
 
 enum class WidgetKind { TOTAL, BARS_PER_DAY, TABLE, DAY_SUMMARY }

@@ -21,6 +21,7 @@ final class DashboardTests: ComputerTestCase {
         verifyEmptyBeforeTheFirstCopy()
         try pairAndCopy(fixture)
         try verifyTodayWithEveryWidgetKind()
+        verifyARowOpensItsSessions()
         verifyThePreviousDayAndWeek()
         verifyPickingADate()
         verifyADayAndAWeekTheComputerSentNothingFor()
@@ -84,6 +85,24 @@ final class DashboardTests: ComputerTestCase {
         app.swipeUp()
         shot("dashboard-today-lower")
         app.swipeDown()
+    }
+
+    /// A row of a table opens the sessions behind it, pushed on the page: as many as the row says, each with its own
+    /// minutes. Going back shows the page again.
+    private func verifyARowOpensItsSessions() {
+        let row = elements(startingWith: "dashboard-row-by-project-").first { $0.label.contains("45 min") }
+        XCTAssertNotNil(row, "no row of 45 min")
+        row?.tap()
+        XCTAssertTrue(element("dashboard-sessions").waitForExistence(timeout: 10), "the row opened nothing")
+        let total = element("dashboard-sessions-total").label
+        XCTAssertTrue(total.hasPrefix("45 min"), "the sessions page says \(total)")
+        let said = Int(total.components(separatedBy: " · ").last?.components(separatedBy: " ").first ?? "") ?? -1
+        let lines = elements(startingWith: "dashboard-session-")
+        XCTAssertEqual(lines.count, said, "the page lists \(lines.count) sessions and says \(said)")
+        XCTAssertFalse(element("dashboard-sessions-not-sent").exists, "the sessions are said not to be sent")
+        shot("dashboard-sessions")
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(element("dashboard-widget-by-project").waitForExistence(timeout: 10), "no way back to the page")
     }
 
     /// Moving back by a day, and by a week, shows the numbers the copy holds for that day and week.

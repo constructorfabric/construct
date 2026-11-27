@@ -184,6 +184,47 @@ class SyncEngineTest {
         }
 
     @Test
+    fun theSessionsBehindAGroupComeWithTheNumbersOfTheirDayAndAGroupInSeveralItemsIsPutTogether() =
+        runTest {
+            serveSomething()
+            computer.sessions =
+                listOf(
+                    sessionsItem(
+                        "total",
+                        "2026-11-01",
+                        "shop",
+                        listOf(Triple("2026-11-01T08:00:00Z", "2026-11-01T08:40:00Z", 40)),
+                    ),
+                    sessionsItem(
+                        "total",
+                        "2026-11-01",
+                        "shop",
+                        listOf(Triple("2026-11-01T09:00:00Z", "2026-11-01T09:20:00Z", 20)),
+                    ),
+                )
+
+            assertEquals(SyncResult.Done, engine.sync { })
+
+            val sent = copy.numbers(input("total", "2026-11-01"))?.sessionsByGroup
+            assertEquals(listOf(40, 20), sent?.get("shop")?.map { it.minutes })
+            assertEquals("claude", sent?.get("shop")?.first()?.tool)
+            // The numbers of a day the computer sent no sessions for keep none: the page says so.
+            assertNull(copy.numbers(input("total", "2026-11-02"))?.sessionsByGroup)
+        }
+
+    @Test
+    fun aComputerThatDoesNotKnowTheSessionsStillGivesTheNumbers() =
+        runTest {
+            serveSomething()
+            computer.knowsSessions = false
+
+            assertEquals(SyncResult.Done, engine.sync { })
+
+            assertEquals(60, copy.numbers(input("total", "2026-11-01"))?.totalMinutes)
+            assertNull(copy.numbers(input("total", "2026-11-01"))?.sessionsByGroup)
+        }
+
+    @Test
     fun numbersThatTheComputerNoLongerHasAreRemoved() =
         runTest {
             serveSomething()

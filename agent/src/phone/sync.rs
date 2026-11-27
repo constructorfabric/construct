@@ -30,6 +30,15 @@
 //! * `sync-dashboard`: each `numbers` item is the answer of `dashboard-numbers` to its `input` (a
 //!   widget and days with a label and a start and an end in UTC), for one day or one week
 //!   (Monday to Sunday) that has activity.
+//! * `sync-dashboard-sessions`: for the newest [`SESSION_DAYS`] days, each `sessions` item holds
+//!   the sessions behind one group of one `numbers` entry: its `input` (the same as the entry's),
+//!   the `group` key, and the `rows` (`start` and `end` in UTC, `minutes`, `tool`, `project`,
+//!   `ticket` and the first characters of the `session` id). The minutes of the rows of a group
+//!   add up to the group, and the rows hold no text of a message. A group with many sessions is
+//!   in several items. `after` is a position of its own: an entry and an item of it. It exists
+//!   so that a heavy week does not enlarge a page of `sync-dashboard`; an older phone never asks
+//!   for it, and an older computer answers a newer phone that it is no command, so either
+//!   copies the numbers without the sessions.
 //!
 //! Every command but the check and the document takes `after`, the `next` of the page before,
 //! and answers a page of about [`BUDGET`] bytes (and at least one item). `next` is a position in
@@ -63,6 +72,7 @@ use sha2::{Digest, Sha256};
 use crate::activity::rules::{REACH, SessionMinutes};
 use crate::activity::screen_time;
 use crate::dashboard::Source;
+use crate::dashboard_details::sessions_by_group;
 use crate::dashboard_numbers::{self, Data as Activity};
 
 /// The version of the format of the items.
@@ -73,6 +83,13 @@ pub const BUDGET: usize = 12 * 1024;
 pub const TEXT_LIMIT: usize = 4000;
 /// How long one page counts numbers before it answers what it has.
 pub const PAGE_TIME: Duration = Duration::from_secs(5);
+/// The sessions behind a group are sent for the entries that start in this many days before the
+/// newest one; older history has its numbers only.
+pub const SESSION_DAYS: i64 = 62;
+/// About how many bytes of rows one `sessions` item holds.
+const ROWS_BYTES: usize = 8 * 1024;
+/// The positions of one entry in `sync-dashboard-sessions`: `after` is `entry * ITEMS_PER_ENTRY + item`.
+const ITEMS_PER_ENTRY: usize = 1024;
 /// The most answers kept; past it the oldest are dropped by clearing the cache.
 const CACHE_LIMIT: usize = 50_000;
 
@@ -197,6 +214,7 @@ pub fn handles(command: &str) -> bool {
             | "sync-chat"
             | "sync-document"
             | "sync-dashboard"
+            | "sync-dashboard-sessions"
     )
 }
 
@@ -426,6 +444,10 @@ fn answer(token: &str, items: &[Value], next: Option<usize>) -> Value {
 /// `"changed": true`, so the phone starts that part again from its first page.
 fn changed(token: &str) -> Value {
     json!({"ok": true, "format": FORMAT, "changed": true, "token": token, "items": [], "next": null})
+}
+
+fn sessions_item(input: &Value, group: &str, rows: &[Value]) -> Value {
+    json!({ "kind": "sessions", "input": input, "group": group, "rows": rows })
 }
 
 /// One entry of the dashboard: a widget over a day or a week.
@@ -673,6 +695,7 @@ impl Engine {
             "sync-chat" if ask.id.is_some() => self.chat(&ask),
             "sync-document" if ask.id.is_none() && ask.after == 0 => self.document(),
             "sync-dashboard" if ask.id.is_none() => self.dashboard(&ask),
+            "sync-dashboard-sessions" if ask.id.is_none() => self.dashboard_sessions(&ask),
             _ => failure("invalid sync request"),
         };
         match (&ask.token, reply.get("token").and_then(Value::as_str)) {
@@ -907,6 +930,119 @@ impl Engine {
             "input": input,
             "answer": answer,
         })
+    }
+
+    /// The `sessions` items of an entry: the sessions behind each group of its numbers, a few
+    /// groups' worth of rows to an item. Empty for an entry the phone gets no sessions for.
+    fn sessions_items(&self, dash: &Dash, entry: &Entry, newest: NaiveDate) -> Vec<Value> {
+        if entry.start < newest - chrono::Duration::days(SESSION_DAYS) {
+            return Vec::new();
+        }
+        let key = format!(
+            "sessions|{}|{}|{}",
+            entry.widget,
+            if entry.week { "week" } else { "day" },
+            entry.start
+        );
+        {
+            let cache = crate::sync::lock(&self.cache);
+            if let Some((_, Value::Array(items))) =
+                cache.get(&key).filter(|(stamp, _)| *stamp == entry.stamp)
+            {
+                return items.clone();
+            }
+        }
+        let items = Self::counted_sessions(dash, entry);
+        let mut cache = crate::sync::lock(&self.cache);
+        if cache.len() >= CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(key, (entry.stamp.clone(), Value::Array(items.clone())));
+        items
+    }
+
+    fn counted_sessions(dash: &Dash, entry: &Entry) -> Vec<Value> {
+        let input = json!({ "widget": entry.widget, "days": entry.days });
+        let Ok(request) =
+            dashboard_numbers::read_request(&input.to_string(), dash.document.as_ref())
+        else {
+            return Vec::new();
+        };
+        let source = request.spec.source;
+        let Some((_, activity)) = dash.data.iter().find(|(s, _)| *s == source) else {
+            return Vec::new();
+        };
+        if source != Source::AiSessions || request.spec.grouping.is_none() {
+            return Vec::new();
+        }
+        let Ok(groups) = sessions_by_group(&activity.sessions, &request.days, &request.spec, 0)
+        else {
+            return Vec::new();
+        };
+        let mut items = Vec::new();
+        for (group, rows) in groups {
+            let mut chunk: Vec<Value> = Vec::new();
+            let mut size = 0;
+            for row in rows {
+                let row = json!({
+                    "start": row.start,
+                    "end": row.end,
+                    "minutes": row.minutes,
+                    "tool": row.tool,
+                    "project": row.project,
+                    "ticket": row.ticket,
+                    "session": row.session,
+                });
+                let length = row.to_string().len();
+                if !chunk.is_empty() && size + length > ROWS_BYTES {
+                    items.push(sessions_item(&input, &group, &std::mem::take(&mut chunk)));
+                    size = 0;
+                }
+                size += length;
+                chunk.push(row);
+            }
+            if !chunk.is_empty() {
+                items.push(sessions_item(&input, &group, &chunk));
+            }
+        }
+        items.truncate(ITEMS_PER_ENTRY - 1);
+        items
+    }
+
+    fn dashboard_sessions(&self, ask: &Ask) -> Value {
+        let Ok(dash) = self.plan() else {
+            return failure("dashboard unavailable");
+        };
+        if ask.token.as_deref().is_some_and(|t| t != dash.token) {
+            return changed(&dash.token);
+        }
+        let Some(newest) = dash.entries.iter().map(|e| e.start).max() else {
+            return answer(&dash.token, &[], None);
+        };
+        let began = Instant::now();
+        let mut items: Vec<Value> = Vec::new();
+        let mut size = 0;
+        let (mut at, mut part) = (ask.after / ITEMS_PER_ENTRY, ask.after % ITEMS_PER_ENTRY);
+        while let Some(entry) = dash.entries.get(at) {
+            if !items.is_empty() && began.elapsed() >= self.page_time {
+                break;
+            }
+            let list = self.sessions_items(&dash, entry, newest);
+            while let Some(item) = list.get(part) {
+                let length = item.to_string().len();
+                if !items.is_empty() && size + length > BUDGET {
+                    let next = at * ITEMS_PER_ENTRY + part;
+                    return answer(&dash.token, &items, Some(next));
+                }
+                size += length;
+                items.push(item.clone());
+                part += 1;
+            }
+            at += 1;
+            part = 0;
+        }
+        let next = (at < dash.entries.len()).then_some(at * ITEMS_PER_ENTRY);
+        answer(&dash.token, &items, next)
     }
 
     /// The dashboard document and the zone, on a page of their own: the document is not counted
