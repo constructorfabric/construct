@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -31,6 +32,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -66,7 +69,13 @@ class DashboardHolderTest {
         copy: Construct,
         record: () -> SyncRecord = { SyncRecord(zone = "Europe/Berlin", syncedAt = SYNCED_AT) },
         now: Instant = WEDNESDAY_NOON,
-    ) = DashboardHolder(copy, record, backgroundScope, { now }, UnconfinedTestDispatcher(testScheduler))
+    ) = holder(copy, record) { now }
+
+    private fun TestScope.holder(
+        copy: Construct,
+        record: () -> SyncRecord = { SyncRecord(zone = "Europe/Berlin", syncedAt = SYNCED_AT) },
+        now: () -> Instant,
+    ) = DashboardHolder(copy, record, backgroundScope, now, UnconfinedTestDispatcher(testScheduler))
 
     /** Berlin's day of a date in November 2026 (UTC+1): from the evening of the day before. */
     private fun berlin(day: Int): DayBounds {
@@ -422,6 +431,67 @@ class DashboardHolderTest {
             assertNull(state.failure)
             assertTrue(state.hasDashboard)
             assertTrue(state.nothingSent)
+        }
+
+    @Test
+    fun todayMovesWhenTheClockPassesMidnightWhileThePageIsOpen() =
+        runTest {
+            val copy = copy()
+            copy.hold(95, berlin(18))
+            copy.hold(40, berlin(19))
+            // 23:30 in Berlin on the 18th; the clock runs with the test's own time.
+            val start = Instant.parse("2026-11-18T22:30:00Z")
+            val holder = holder(copy) { start + testScheduler.currentTime.milliseconds }
+            runCurrent()
+            assertEquals(CalendarDay(2026, 11, 18), holder.state.value.today)
+            assertEquals(
+                95,
+                holder.state.value.widgets
+                    .first()
+                    .numbers
+                    ?.totalMinutes,
+            )
+
+            advanceTimeBy(29.minutes)
+            assertEquals(CalendarDay(2026, 11, 18), holder.state.value.today)
+
+            advanceTimeBy(2.minutes)
+            val state = holder.state.value
+            assertEquals(CalendarDay(2026, 11, 19), state.today)
+            assertEquals(CalendarDay(2026, 11, 19), state.day)
+            assertTrue(state.onToday)
+            assertEquals(
+                40,
+                state.widgets
+                    .first()
+                    .numbers
+                    ?.totalMinutes,
+            )
+        }
+
+    @Test
+    fun aDayThePersonPickedStaysWhenTheClockPassesMidnight() =
+        runTest {
+            val copy = copy()
+            copy.hold(95, berlin(17))
+            val start = Instant.parse("2026-11-18T22:30:00Z")
+            val holder = holder(copy) { start + testScheduler.currentTime.milliseconds }
+            runCurrent()
+            holder.pick(CalendarDay(2026, 11, 17))
+            runCurrent()
+
+            advanceTimeBy(31.minutes)
+            val state = holder.state.value
+            assertEquals(CalendarDay(2026, 11, 19), state.today)
+            assertEquals(CalendarDay(2026, 11, 17), state.day)
+            assertFalse(state.onToday)
+            assertEquals(
+                95,
+                state.widgets
+                    .first()
+                    .numbers
+                    ?.totalMinutes,
+            )
         }
 
     private companion object {
