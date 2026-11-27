@@ -8,6 +8,7 @@ import cf.construct.mobile.core.model.DashboardInput
 import cf.construct.mobile.core.model.DayBounds
 import cf.construct.mobile.core.model.Outcome
 import cf.construct.mobile.core.model.Source
+import cf.construct.mobile.core.model.Widget
 import cf.construct.mobile.core.model.WidgetKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -67,10 +68,15 @@ class DashboardHolder(
         scope: CoroutineScope,
     ) : this(construct, record, scope, { Clock.System.now() }, Dispatchers.Default)
 
-    /** What the person chose: how long a stretch, and which day (none: today, whenever today is). */
+    /**
+     * What the person chose: how long a stretch, which day (none: today, whenever today is), and what the widgets count
+     * (none: the first source the document has). A chosen source the document stops offering is not drawn, but it is
+     * kept: when the document offers it again, the page returns to it.
+     */
     private data class Choice(
         val span: DashboardSpan = DashboardSpan.DAY,
         val day: LocalDate? = null,
+        val source: Source? = null,
     )
 
     private val choice = MutableStateFlow(Choice())
@@ -102,6 +108,9 @@ class DashboardHolder(
 
     /** Counts days or weeks from now on, on the same day. */
     fun showSpan(span: DashboardSpan) = choice.update { it.copy(span = span) }
+
+    /** Draws the widgets that count [source]. Moving by day or week, or to a date, keeps it. */
+    fun showSource(source: Source) = choice.update { it.copy(source = source) }
 
     /** One day back, or one week back when the page counts weeks. No limit: the copy may hold nothing there. */
     fun previous() = move(-1)
@@ -160,7 +169,11 @@ class DashboardHolder(
         val zone = zoneOf(remembered.zone)
         val today = now().toLocalDateTime(zone).date
         val day = chosen.day?.let { minOf(it, today) } ?: today
-        when (val widgets = document?.let { widgetsOf(it, chosen.span, day, zone) } ?: Outcome.Ok(emptyList())) {
+        val sources = document?.let(::sourcesOf).orEmpty()
+        // A source the document no longer has (it changed on the computer) falls back to the first one it has.
+        val source = chosen.source?.takeIf { it in sources } ?: sources.firstOrNull() ?: Source.AI_SESSIONS
+        val read = document?.let { widgetsOf(it, source, chosen.span, day, zone) } ?: Outcome.Ok(emptyList())
+        when (val widgets = read) {
             is Outcome.Failed -> {
                 mutableState.fail(widgets.error)
             }
@@ -172,6 +185,8 @@ class DashboardHolder(
                         hasDashboard = document != null,
                         title = document?.title.orEmpty(),
                         span = chosen.span,
+                        source = source,
+                        sources = sources,
                         day = day.toCalendarDay(),
                         first = first(chosen.span, day).toCalendarDay(),
                         last = last(chosen.span, day).toCalendarDay(),
@@ -187,17 +202,19 @@ class DashboardHolder(
     }
 
     /**
-     * The widgets with their numbers, or why a read failed. A day the copy holds no numbers for gives a widget with
-     * null numbers.
+     * The widgets that count [source] with their numbers, or why a read failed. A day the copy holds no numbers for
+     * gives a widget with null numbers.
      */
     private suspend fun widgetsOf(
         document: DashboardDocument,
+        source: Source,
         span: DashboardSpan,
         day: LocalDate,
         zone: TimeZone,
     ): Outcome<List<WidgetState>> {
         val widgets = mutableListOf<WidgetState>()
-        for (widget in document.widgets.sortedWith(compareBy({ it.position.row }, { it.position.column }))) {
+        val drawn = document.widgets.filter { sourceOf(it, document) == source }
+        for (widget in drawn.sortedWith(compareBy({ it.position.row }, { it.position.column }))) {
             // The summary of a day counts one day, whatever the page counts.
             val widgetSpan = if (widget.kind == WidgetKind.DAY_SUMMARY) DashboardSpan.DAY else span
             val input = DashboardInput.ForWidget(daysOf(widgetSpan, day, zone), widget.id)
@@ -212,7 +229,7 @@ class DashboardHolder(
                         null
                     }
                 }
-            widgets += WidgetState(widget, widgetSpan, numbers, widget.source ?: document.source ?: Source.AI_SESSIONS)
+            widgets += WidgetState(widget, widgetSpan, numbers, sourceOf(widget, document))
         }
         return Outcome.Ok(widgets)
     }
@@ -221,6 +238,19 @@ class DashboardHolder(
         const val UNREADABLE = "the copy could not be read"
         const val DAYS_PER_WEEK = 7
         const val MIN_WAIT_MILLIS = 1_000L
+
+        /** What a widget counts the time of: its own source, the document's, or the AI sessions. */
+        fun sourceOf(
+            widget: Widget,
+            document: DashboardDocument,
+        ): Source = widget.source ?: document.source ?: Source.AI_SESSIONS
+
+        /** The sources the widgets of the document count, in the order of [Source]. */
+        fun sourcesOf(document: DashboardDocument): List<Source> =
+            document.widgets
+                .map { sourceOf(it, document) }
+                .distinct()
+                .sorted()
 
         fun length(span: DashboardSpan) = if (span == DashboardSpan.WEEK) DAYS_PER_WEEK else 1
 

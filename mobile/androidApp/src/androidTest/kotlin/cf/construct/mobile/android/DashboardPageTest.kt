@@ -31,6 +31,7 @@ import cf.construct.mobile.core.model.GroupBy
 import cf.construct.mobile.core.model.GroupMinutes
 import cf.construct.mobile.core.model.Period
 import cf.construct.mobile.core.model.Position
+import cf.construct.mobile.core.model.Source
 import cf.construct.mobile.core.model.Whose
 import cf.construct.mobile.core.model.Widget
 import cf.construct.mobile.core.model.WidgetKind
@@ -155,6 +156,32 @@ class DashboardPageTest {
     }
 
     @Test
+    fun theSwitchChangesTheWidgetsAndIsNotShownForADocumentOfOneSource() {
+        copyOf(todayMinutes = 95, hidden = 0)
+        show()
+        compose.waitUntil(WAIT_MS) { has("dashboard-value-total") }
+        compose.onAllNodesWithTag("dashboard-source").assertCountEquals(0)
+        store.deleteEverything()
+        compose.waitUntil(WAIT_MS) { has("dashboard-empty") }
+
+        copyOf(todayMinutes = 95, hidden = 0, onScreen = true)
+        compose.waitUntil(WAIT_MS) { has("dashboard-source") }
+        compose.onNodeWithTag("dashboard-value-total").assertTextIs("1 h 35 min")
+        compose.onAllNodesWithTag("dashboard-widget-by-app").assertCountEquals(0)
+
+        compose.onNodeWithTag("dashboard-source-on-screen").performClick()
+        compose.waitUntil(WAIT_MS) { has("dashboard-widget-by-app") }
+        compose.onAllNodesWithTag("dashboard-widget-total").assertCountEquals(0)
+
+        // The choice stays when the page moves a day: the copy holds no numbers for the on-screen table on yesterday.
+        compose.onNodeWithTag("dashboard-previous").performClick()
+        compose.waitUntil(WAIT_MS) { has("dashboard-not-sent") }
+        compose.onNodeWithTag("dashboard-source-on-screen").assertExists()
+        compose.onNodeWithTag("dashboard-source-ai-sessions").performClick()
+        compose.waitUntil(WAIT_MS) { has("dashboard-value-total") }
+    }
+
+    @Test
     fun theNextDayCannotBeReachedFromToday() {
         copyOf(todayMinutes = 95, hidden = 0)
         show()
@@ -196,7 +223,14 @@ class DashboardPageTest {
         val construct = PhoneConstruct(store, FakeModelSettingsStore(), Dispatchers.IO)
         val holder = DashboardHolder(construct, store::syncRecord, scope)
         val actions =
-            DashboardActions(holder::showSpan, holder::previous, holder::next, holder::showToday, holder::pick)
+            DashboardActions(
+                holder::showSpan,
+                holder::showSource,
+                holder::previous,
+                holder::next,
+                holder::showToday,
+                holder::pick,
+            )
         compose.setContent {
             ConstructTheme {
                 val state by holder.state.collectAsState()
@@ -214,13 +248,21 @@ class DashboardPageTest {
     private fun copyOf(
         todayMinutes: Int,
         hidden: Int,
+        onScreen: Boolean = false,
     ) {
         val widgets =
-            listOf(
+            listOfNotNull(
                 Widget("total", WidgetKind.TOTAL, Position(0, 0, 12, 2)),
                 Widget("per-day", WidgetKind.BARS_PER_DAY, Position(0, 2, 12, 4)),
                 Widget("by-project", WidgetKind.TABLE, Position(0, 6, 12, 5), groupBy = GroupBy.PROJECT),
                 Widget("end-of-day", WidgetKind.DAY_SUMMARY, Position(0, 11, 12, 3)),
+                Widget(
+                    "by-app",
+                    WidgetKind.TABLE,
+                    Position(0, 14, 12, 5),
+                    groupBy = GroupBy.APP,
+                    source = Source.ON_SCREEN,
+                ).takeIf { onScreen },
             )
         val document = DashboardDocument("Activity", Period.THIS_WEEK, Whose.OWN, widgets)
         val picked = monday.minusDays(5)
@@ -231,7 +273,9 @@ class DashboardPageTest {
             vararg days: LocalDate,
         ) {
             widgets.forEach { widget ->
-                if (widget.kind != WidgetKind.DAY_SUMMARY || days.size == 1) {
+                // The summary counts one day; the on-screen table is only held for today, so any other day is not sent.
+                val held = widget.kind != WidgetKind.DAY_SUMMARY || days.size == 1
+                if (held && (widget.source != Source.ON_SCREEN || days.singleOrNull() == today)) {
                     numbers +=
                         DashboardInput.ForWidget(days.map(::bounds), widget.id) to
                         numbersOf(minutes, days.toList(), hidden)

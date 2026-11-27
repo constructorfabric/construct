@@ -15,6 +15,7 @@ import cf.construct.mobile.core.model.GroupMinutes
 import cf.construct.mobile.core.model.Outcome
 import cf.construct.mobile.core.model.Period
 import cf.construct.mobile.core.model.Position
+import cf.construct.mobile.core.model.Source
 import cf.construct.mobile.core.model.Whose
 import cf.construct.mobile.core.model.Widget
 import cf.construct.mobile.core.model.WidgetKind
@@ -205,6 +206,139 @@ class DashboardHolderTest {
                     .numbers
                     ?.totalMinutes,
             )
+        }
+
+    /** The page draws the widgets of [source] and no others, and the switch shows [source] as chosen. */
+    private fun DashboardHolder.assertDrawn(source: Source) {
+        assertEquals(source, state.value.source)
+        assertTrue(state.value.widgets.isNotEmpty())
+        assertTrue(state.value.widgets.all { it.source == source })
+    }
+
+    @Test
+    fun theSwitchChangesTheWidgetsDrawnAndSurvivesMovingByDayByWeekAndToADate() =
+        runTest {
+            val copy = copy(bothSources)
+            copy.hold(95, berlin(18))
+            copy.hold(60, berlin(17))
+            copy.hold(300, *(16..22).map(::berlin).toTypedArray())
+            copy.hold(40, berlin(12))
+            val holder = holder(copy)
+            runCurrent()
+
+            val sessions = holder.state.value
+            assertTrue(sessions.canSwitchSource)
+            assertEquals(listOf(Source.AI_SESSIONS, Source.ON_SCREEN), sessions.sources)
+            assertEquals(listOf("total", "bars"), sessions.widgets.map { it.widget.id })
+            holder.assertDrawn(Source.AI_SESSIONS)
+
+            holder.showSource(Source.ON_SCREEN)
+            runCurrent()
+            holder.assertDrawn(Source.ON_SCREEN)
+            assertEquals(
+                listOf("apps", "summary"),
+                holder.state.value.widgets
+                    .map { it.widget.id },
+            )
+
+            holder.previous()
+            runCurrent()
+            holder.assertDrawn(Source.ON_SCREEN)
+            assertEquals(CalendarDay(2026, 11, 17), holder.state.value.day)
+
+            holder.showSpan(DashboardSpan.WEEK)
+            runCurrent()
+            holder.assertDrawn(Source.ON_SCREEN)
+            assertEquals(CalendarDay(2026, 11, 16), holder.state.value.first)
+            assertEquals(
+                300,
+                holder.state.value.widgets
+                    .first()
+                    .numbers
+                    ?.totalMinutes,
+            )
+
+            holder.pick(CalendarDay(2026, 11, 12))
+            runCurrent()
+            holder.assertDrawn(Source.ON_SCREEN)
+            assertEquals(CalendarDay(2026, 11, 12), holder.state.value.day)
+        }
+
+    @Test
+    fun theSwitchGoesBackToTheWidgetsOfTheFirstSource() =
+        runTest {
+            val holder = holder(copy(bothSources))
+            holder.showSource(Source.ON_SCREEN)
+            runCurrent()
+            holder.showSource(Source.AI_SESSIONS)
+            runCurrent()
+            assertEquals(
+                listOf("total", "bars"),
+                holder.state.value.widgets
+                    .map { it.widget.id },
+            )
+        }
+
+    @Test
+    fun theWidgetsOfTheOtherSourceAreNotSentWhenTheCopyHoldsNoNumbersForThem() =
+        runTest {
+            val copy = copy(bothSources)
+            copy.held[forWidget("total", berlin(18))] = numbers(95, DayMinutes("2026-11-18", 95))
+            val holder = holder(copy)
+            runCurrent()
+            assertFalse(holder.state.value.nothingSent)
+
+            holder.showSource(Source.ON_SCREEN)
+            runCurrent()
+
+            val state = holder.state.value
+            assertNull(state.failure)
+            assertTrue(state.widgets.all { it.numbers == null })
+            assertTrue(state.nothingSent)
+        }
+
+    @Test
+    fun theSwitchIsHiddenForADocumentOfOneSource() =
+        runTest {
+            val copy = copy()
+            copy.hold(95, berlin(18))
+            val holder = holder(copy)
+            runCurrent()
+
+            assertFalse(holder.state.value.canSwitchSource)
+            assertEquals(listOf(Source.AI_SESSIONS), holder.state.value.sources)
+            assertEquals(4, holder.state.value.widgets.size)
+
+            // A document that counts the screen only draws it, and shows no switch either.
+            copy.document = everyKind.copy(source = Source.ON_SCREEN)
+            copy.changed()
+            runCurrent()
+            assertFalse(holder.state.value.canSwitchSource)
+            assertEquals(Source.ON_SCREEN, holder.state.value.source)
+            assertEquals(4, holder.state.value.widgets.size)
+        }
+
+    @Test
+    fun aChoiceTheDocumentNoLongerOffersFallsBackToItsFirstSource() =
+        runTest {
+            val copy = copy(bothSources)
+            val holder = holder(copy)
+            holder.showSource(Source.ON_SCREEN)
+            runCurrent()
+            assertEquals(Source.ON_SCREEN, holder.state.value.source)
+
+            copy.document = everyKind
+            copy.changed()
+            runCurrent()
+
+            assertEquals(Source.AI_SESSIONS, holder.state.value.source)
+            assertEquals(4, holder.state.value.widgets.size)
+
+            // The choice is kept: when the document offers the source again, the page returns to it.
+            copy.document = bothSources
+            copy.changed()
+            runCurrent()
+            assertEquals(Source.ON_SCREEN, holder.state.value.source)
         }
 
     @Test
@@ -499,6 +633,27 @@ class DashboardHolderTest {
 
         /** Wednesday 18 November 2026, 11:30 in Berlin. */
         val WEDNESDAY_NOON: Instant = Instant.parse("2026-11-18T10:30:00Z")
+
+        /** The document of the computer with widgets of both sources: two count AI sessions, two the screen. */
+        val bothSources =
+            DashboardDocument(
+                title = "My day",
+                period = Period.TODAY,
+                sessions = Whose.ALL,
+                widgets =
+                    listOf(
+                        Widget("total", WidgetKind.TOTAL, Position(0, 0, 4, 4)),
+                        Widget("bars", WidgetKind.BARS_PER_DAY, Position(4, 0, 8, 4)),
+                        Widget(
+                            "apps",
+                            WidgetKind.TABLE,
+                            Position(0, 4, 12, 3),
+                            groupBy = GroupBy.APP,
+                            source = Source.ON_SCREEN,
+                        ),
+                        Widget("summary", WidgetKind.DAY_SUMMARY, Position(0, 7, 12, 3), source = Source.ON_SCREEN),
+                    ),
+            )
 
         val everyKind =
             DashboardDocument(

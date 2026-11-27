@@ -37,6 +37,10 @@ data class DashboardState(
     val hasDashboard: Boolean = false,
     val title: String = "",
     val span: DashboardSpan = DashboardSpan.DAY,
+    /** What the widgets drawn count the time of. */
+    val source: Source = Source.AI_SESSIONS,
+    /** The sources the widgets of the document count, so the page can offer a choice among them. */
+    val sources: List<Source> = emptyList(),
     /** The day the page stands on, in the computer's time zone: today until the person moves. */
     val day: CalendarDay? = null,
     /** The first and the last day of what the page counts: the same day, or Monday and Sunday. */
@@ -57,6 +61,9 @@ data class DashboardState(
 ) {
     /** Nothing in the copy: the page tells the person to connect a computer. */
     val isEmpty: Boolean get() = !loading && failure == null && !hasDashboard
+
+    /** Whether the page offers the switch: only when the document has widgets of more than one source. */
+    val canSwitchSource: Boolean get() = sources.size > 1
 
     /** The copy holds numbers for none of the widgets on this day or week. */
     val nothingSent: Boolean get() = widgets.isNotEmpty() && widgets.all { it.numbers == null }

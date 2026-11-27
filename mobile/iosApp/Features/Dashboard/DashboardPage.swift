@@ -23,6 +23,7 @@ struct DashboardPage: View {
 /// What the person can do on the page, so that the screen needs no state holder.
 struct DashboardActions {
     let showSpan: (DashboardSpan) -> Void
+    let showSource: (Source) -> Void
     let previous: () -> Void
     let next: () -> Void
     let showToday: () -> Void
@@ -44,6 +45,7 @@ final class DashboardModel: ObservableObject {
     var actions: DashboardActions {
         DashboardActions(
             showSpan: holder.showSpan,
+            showSource: holder.showSource,
             previous: holder.previous,
             next: holder.next,
             showToday: holder.showToday,

@@ -22,10 +22,12 @@ import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
@@ -137,21 +139,7 @@ private fun DashboardHeader(
     val weeks = state.span == DashboardSpan.WEEK
     var picking by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.M.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(DashboardSizes.rowGap)) {
-            Text(
-                state.title,
-                Modifier.semantics { heading() },
-                color = MaterialTheme.colorScheme.onBackground,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                DashboardText.updated(state.updatedAt),
-                Modifier.testTag("dashboard-updated"),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
+        DashboardTitle(state)
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             val spans = listOf(DashboardSpan.DAY to "Day", DashboardSpan.WEEK to "Week")
             spans.forEachIndexed { index, (span, label) ->
@@ -181,12 +169,56 @@ private fun DashboardHeader(
                 modifier = Modifier.testTag("dashboard-next"),
             ) { Text(if (weeks) "Next week" else "Next day") }
         }
+        if (state.canSwitchSource) {
+            DashboardSourceTabs(state, actions)
+        }
         if (!state.onToday) {
             TextButton(onClick = actions.onToday, modifier = Modifier.testTag("dashboard-today")) { Text("Today") }
         }
     }
     if (picking) {
         DashboardDatePicker(state, actions.onPick) { picking = false }
+    }
+}
+
+/** The title, and when the copy was last brought up to date. */
+@Composable
+private fun DashboardTitle(state: DashboardState) {
+    Column(verticalArrangement = Arrangement.spacedBy(DashboardSizes.rowGap)) {
+        Text(
+            state.title,
+            Modifier.semantics { heading() },
+            color = MaterialTheme.colorScheme.onBackground,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            DashboardText.updated(state.updatedAt),
+            Modifier.testTag("dashboard-updated"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
+
+/** The switch between the sources the document has: tabs of one page, as the mock-up draws them. */
+@Composable
+private fun DashboardSourceTabs(
+    state: DashboardState,
+    actions: DashboardActions,
+) {
+    PrimaryTabRow(
+        selectedTabIndex = state.sources.indexOf(state.source),
+        modifier = Modifier.fillMaxWidth().testTag("dashboard-source"),
+    ) {
+        state.sources.forEach { source ->
+            Tab(
+                selected = state.source == source,
+                onClick = { actions.onSource(source) },
+                modifier = Modifier.testTag("dashboard-source-${source.name.lowercase().replace('_', '-')}"),
+                text = { Text(DashboardText.sourceName(source)) },
+            )
+        }
     }
 }
 
