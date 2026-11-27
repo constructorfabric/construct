@@ -198,57 +198,97 @@ pub fn sessions_of(
     utc_offset_minutes: i32,
     (offset, limit): (usize, usize),
 ) -> Result<SessionsPage, String> {
+    let zone = offset_of(utc_offset_minutes)?;
+    let grouped = grouped_spans(sessions, days, spec)?;
+    let all = grouped.rows_of(group, zone);
+    Ok(SessionsPage {
+        total: all.len(),
+        offset,
+        limit,
+        rows: all.into_iter().skip(offset).take(limit).collect(),
+    })
+}
+
+/// The sessions behind every group of the numbers of `spec` over `days`, the earliest first, with
+/// times in the user's offset. The minutes of the sessions of a group add up to the group.
+///
+/// # Errors
+/// Fails when `spec` has no grouping, or the days or the offset are not usable.
+pub fn sessions_by_group(
+    sessions: &[SessionMinutes],
+    days: &[Day],
+    spec: &crate::dashboard_numbers::Spec,
+    utc_offset_minutes: i32,
+) -> Result<std::collections::BTreeMap<String, Vec<SessionRow>>, String> {
+    let zone = offset_of(utc_offset_minutes)?;
+    let grouped = grouped_spans(sessions, days, spec)?;
+    Ok(grouped
+        .spans
+        .keys()
+        .map(|group| (group.clone(), grouped.rows_of(group, zone)))
+        .collect())
+}
+
+/// The sessions kept by a request and the spans each group holds of them.
+struct Grouped {
+    selection: crate::dashboard_numbers::Selection,
+    spans: std::collections::BTreeMap<String, Vec<Span>>,
+}
+
+fn grouped_spans(
+    sessions: &[SessionMinutes],
+    days: &[Day],
+    spec: &crate::dashboard_numbers::Spec,
+) -> Result<Grouped, String> {
     let grouping = spec
         .grouping
         .ok_or("the request has nothing to group by, so it has no groups")?;
-    let zone = offset_of(utc_offset_minutes)?;
     let selection = select(sessions, days, spec);
     let kind = spec.kind.unwrap_or(Kind::Person);
     let (_, spans) = calculate_spans(&selection.kept, days, kind, grouping, &selection.shown)
         .map_err(|e| e.to_string())?;
-    let mut spans: Vec<Span> = spans.get(group).cloned().unwrap_or_default();
-    let kept = &selection.kept;
-    spans.sort_by(|a, b| {
-        (a.first, &kept[a.session].tool, &kept[a.session].session).cmp(&(
-            b.first,
-            &kept[b.session].tool,
-            &kept[b.session].session,
-        ))
-    });
-    let total = spans.len();
-    let shares = whole_shares(&spans);
-    let rows = spans
-        .into_iter()
-        .zip(shares)
-        .skip(offset)
-        .take(limit)
-        .map(|(span, minutes)| {
-            let session = &kept[span.session];
-            SessionRow {
-                start: clock(span.first, zone),
-                end: clock(span.last + 1, zone),
-                minutes,
-                tool: session.tool.clone(),
-                project: selection
-                    .shown
-                    .get(&session.project)
-                    .unwrap_or(&session.project)
-                    .clone(),
-                ticket: if session.ticket.is_empty() {
-                    crate::activity::assign::NO_TICKET.to_owned()
-                } else {
-                    session.ticket.clone()
-                },
-                session: session.session.chars().take(SHORT_ID).collect(),
-            }
-        })
-        .collect();
-    Ok(SessionsPage {
-        total,
-        offset,
-        limit,
-        rows,
-    })
+    Ok(Grouped { selection, spans })
+}
+
+impl Grouped {
+    /// The sessions of `group`, the earliest first.
+    fn rows_of(&self, group: &str, zone: UtcOffset) -> Vec<SessionRow> {
+        let kept = &self.selection.kept;
+        let mut spans: Vec<Span> = self.spans.get(group).cloned().unwrap_or_default();
+        spans.sort_by(|a, b| {
+            (a.first, &kept[a.session].tool, &kept[a.session].session).cmp(&(
+                b.first,
+                &kept[b.session].tool,
+                &kept[b.session].session,
+            ))
+        });
+        let shares = whole_shares(&spans);
+        spans
+            .into_iter()
+            .zip(shares)
+            .map(|(span, minutes)| {
+                let session = &kept[span.session];
+                SessionRow {
+                    start: clock(span.first, zone),
+                    end: clock(span.last + 1, zone),
+                    minutes,
+                    tool: session.tool.clone(),
+                    project: self
+                        .selection
+                        .shown
+                        .get(&session.project)
+                        .unwrap_or(&session.project)
+                        .clone(),
+                    ticket: if session.ticket.is_empty() {
+                        crate::activity::assign::NO_TICKET.to_owned()
+                    } else {
+                        session.ticket.clone()
+                    },
+                    session: session.session.chars().take(SHORT_ID).collect(),
+                }
+            })
+            .collect()
+    }
 }
 
 /// The whole minutes of each span, so that they add up to the whole minutes of the group. A

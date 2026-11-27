@@ -60,7 +60,7 @@ struct DashboardContent: View {
                 .accessibilityIdentifier("dashboard-not-sent")
         } else {
             ForEach(state.widgets, id: \.widget.id) { shown in
-                DashboardWidgetCard(shown: shown, state: state, calendar: calendar)
+                DashboardWidgetCard(shown: shown, state: state, calendar: calendar, actions: actions)
             }
         }
     }

@@ -2,6 +2,7 @@ package cf.construct.mobile.feature.dashboard
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -65,6 +66,7 @@ internal fun WidgetCard(
     shown: WidgetState,
     state: DashboardState,
     dates: DashboardDates,
+    onOpen: (GroupMinutes) -> Unit,
 ) {
     val id = shown.widget.id
     Card(
@@ -103,7 +105,7 @@ internal fun WidgetCard(
                 when (shown.widget.kind) {
                     WidgetKind.TOTAL -> TotalNumbers(id, numbers)
                     WidgetKind.BARS_PER_DAY -> Bars(id, numbers, dates)
-                    WidgetKind.TABLE -> Table(id, numbers)
+                    WidgetKind.TABLE -> Table(id, numbers, onOpen)
                     WidgetKind.DAY_SUMMARY -> Summary(id, numbers)
                 }
                 if (numbers.hiddenProjectCount > 0) {
@@ -216,6 +218,7 @@ private fun barHeight(
 private fun Table(
     id: String,
     numbers: DashboardNumbers,
+    onOpen: (GroupMinutes) -> Unit,
 ) {
     if (numbers.groups.isEmpty()) {
         Text(
@@ -225,7 +228,7 @@ private fun Table(
         )
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.M.dp)) {
-            numbers.groups.sortedByDescending { it.minutes }.forEach { GroupRow(id, it) }
+            numbers.groups.sortedByDescending { it.minutes }.forEach { GroupRow(id, it, onOpen) }
         }
     }
 }
@@ -235,11 +238,15 @@ private fun Table(
 private fun GroupRow(
     id: String,
     group: GroupMinutes,
+    onOpen: (GroupMinutes) -> Unit,
 ) {
     val share = group.share.coerceIn(0.0, 1.0)
     val fill = chartColor(ColorRole.CHART_1)
     Column(
-        Modifier.fillMaxWidth().testTag("dashboard-row-$id-${group.key}"),
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClickLabel = "Show the sessions") { onOpen(group) }
+            .testTag("dashboard-row-$id-${group.key}"),
         verticalArrangement = Arrangement.spacedBy(DashboardSizes.rowGap),
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Spacing.M.dp)) {

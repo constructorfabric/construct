@@ -6,6 +6,7 @@ import cf.construct.mobile.core.database.SyncRecord
 import cf.construct.mobile.core.model.DashboardDocument
 import cf.construct.mobile.core.model.DashboardInput
 import cf.construct.mobile.core.model.DayBounds
+import cf.construct.mobile.core.model.GroupMinutes
 import cf.construct.mobile.core.model.Outcome
 import cf.construct.mobile.core.model.Source
 import cf.construct.mobile.core.model.WidgetKind
@@ -99,6 +100,16 @@ class DashboardHolder(
                 }
             }
     }
+
+    /**
+     * The sessions behind [row] of [widget]'s table, as the copy holds them, with their times in the computer's time
+     * zone. The copy holds them with the numbers of the day or week, so a row of a day it holds none for says the
+     * computer has not sent them ([RowSessions.sent] is false).
+     */
+    fun sessionsOf(
+        widget: WidgetState,
+        row: GroupMinutes,
+    ): RowSessions = rowSessions(widget, row, zoneOf(mutableState.value.zoneName))
 
     /** Counts days or weeks from now on, on the same day. */
     fun showSpan(span: DashboardSpan) = choice.update { it.copy(span = span) }

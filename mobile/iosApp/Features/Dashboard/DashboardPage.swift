@@ -27,6 +27,8 @@ struct DashboardActions {
     let next: () -> Void
     let showToday: () -> Void
     let pick: (CalendarDay) -> Void
+    /// The sessions the copy holds behind a row of a table.
+    let sessionsOf: (WidgetState, GroupMinutes) -> RowSessions
 }
 
 /// Owns the holder and the scope its reads run in, and closes the scope with the page.
@@ -47,7 +49,8 @@ final class DashboardModel: ObservableObject {
             previous: holder.previous,
             next: holder.next,
             showToday: holder.showToday,
-            pick: holder.pick
+            pick: holder.pick,
+            sessionsOf: holder.sessionsOf
         )
     }
 

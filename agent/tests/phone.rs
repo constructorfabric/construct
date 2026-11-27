@@ -1458,6 +1458,7 @@ async fn the_local_socket_serves_the_phone_commands_and_answers_an_error_without
 // ---- Sync: the facts, the chats and the dashboard numbers ----
 
 mod sync {
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use connectors::{Author, Record, Role as ChatRole, ToolCall, ToolResult, Turn};
@@ -1999,6 +2000,131 @@ mod sync {
             .unwrap();
         assert_eq!(week["input"]["days"][6]["label"], "2026-10-25");
         assert_eq!(week["input"]["days"][6]["end"], "2026-10-25T23:00:00Z");
+    }
+
+    /// 300 sessions of one project on one day, each two minutes, three minutes apart; and one
+    /// session of a day far older than the others.
+    fn heavy_day() -> Vec<SessionMinutes> {
+        let first = minute_number("2026-11-02T08:00:00Z").unwrap();
+        let mut sessions: Vec<SessionMinutes> = (0..300)
+            .map(|i| {
+                let mut s = session(&format!("s{i:03}-private-words-of-a-message"), &[]);
+                s.project = "/w/shop".into();
+                s.minutes = vec![first + 3 * i, first + 3 * i + 1];
+                s
+            })
+            .collect();
+        sessions.push(session(
+            "old",
+            &["2026-01-10T09:00:00Z", "2026-01-10T09:01:00Z"],
+        ));
+        sessions
+    }
+
+    #[tokio::test]
+    async fn the_sessions_of_each_group_come_in_pages_with_no_text_and_add_up_to_the_group() {
+        let rig = rig().await;
+        rig.fake.change(|d| d.sessions = heavy_day());
+        let mut phone = rig.phone().await;
+        let (numbers, _) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        let (items, first) = pull(&mut phone, json!({"cmd": "sync-dashboard-sessions"})).await;
+
+        assert!(items.iter().all(|i| i["kind"] == "sessions"), "{items:?}");
+        // A heavy day does not fit one item, and no page is longer than a line of the channel
+        // (`pull` checks it).
+        assert!(items.len() > 3, "{}", items.len());
+        let bytes: usize = items.iter().map(|i| i.to_string().len()).sum();
+        eprintln!(
+            "heavy day and its week: 300 sessions, {} items, {bytes} bytes",
+            items.len()
+        );
+        assert!(!first["token"].is_null());
+        // No text of a message: a row has these fields and nothing else.
+        let fields: BTreeSet<&str> = [
+            "start", "end", "minutes", "tool", "project", "ticket", "session",
+        ]
+        .into_iter()
+        .collect();
+        let mut seen = 0;
+        for item in &items {
+            for row in item["rows"].as_array().unwrap() {
+                let keys: BTreeSet<&str> = row
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(keys, fields);
+                // Only the first characters of the id are sent, never the whole of it.
+                assert!(row["session"].as_str().unwrap().len() <= 8);
+                seen += 1;
+            }
+        }
+        // The 300 sessions are behind the day and behind the week that holds it.
+        assert_eq!(seen, 600);
+        assert!(
+            !items
+                .iter()
+                .any(|i| i.to_string().contains("private-words"))
+        );
+
+        // For the days of a numbers entry that have sessions, those of a group add up to it.
+        let mut checked = 0;
+        for entry in numbers.iter().filter(|n| n["widget"] == "by-project") {
+            for group in entry["answer"]["groups"].as_array().unwrap() {
+                let rows: Vec<&Value> = items
+                    .iter()
+                    .filter(|i| i["input"] == entry["input"] && i["group"] == group["key"])
+                    .flat_map(|i| i["rows"].as_array().unwrap())
+                    .collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                let sum: u64 = rows.iter().map(|r| r["minutes"].as_u64().unwrap()).sum();
+                assert_eq!(
+                    sum.to_string(),
+                    format!("{:.0}", group["minutes"].as_f64().unwrap()),
+                    "{entry}"
+                );
+                checked += 1;
+            }
+        }
+        // The day and the week of the heavy day.
+        assert_eq!(checked, 2);
+        // The numbers pages stay as they were: they hold no sessions.
+        assert!(numbers.iter().all(|n| n["kind"] == "numbers"));
+    }
+
+    #[tokio::test]
+    async fn the_sessions_are_not_sent_for_days_long_before_the_newest_and_a_changed_part_is_said()
+    {
+        let rig = rig().await;
+        rig.fake.change(|d| d.sessions = heavy_day());
+        let mut phone = rig.phone().await;
+        let (numbers, first) = pull(&mut phone, json!({"cmd": "sync-dashboard"})).await;
+        let (items, sessions_first) =
+            pull(&mut phone, json!({"cmd": "sync-dashboard-sessions"})).await;
+        let old: Vec<&Value> = numbers
+            .iter()
+            .filter(|n| {
+                n["input"]["days"][0]["label"] == "2026-01-05"
+                    || n["input"]["days"][0]["label"] == "2026-01-10"
+            })
+            .collect();
+        assert!(!old.is_empty());
+        assert!(
+            items
+                .iter()
+                .all(|i| old.iter().all(|o| o["input"] != i["input"]))
+        );
+
+        // The same token as the numbers; an older one is told it changed.
+        assert_eq!(sessions_first["token"], first["token"]);
+        phone
+            .send(&json!({"cmd": "sync-dashboard-sessions", "token": "stale"}))
+            .await;
+        let reply = phone.recv().await.unwrap();
+        assert_eq!(reply["changed"], true);
     }
 
     #[tokio::test]

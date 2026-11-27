@@ -232,10 +232,24 @@ class SyncEngine(
             channel.pages("sync-dashboard", token = document.token) {
                 progress(StepProgress(SyncStep.DASHBOARD, copied = it))
             }
-        val numbers = read.items.mapNotNull(::dashboardNumbers)
+        val numbers = withSessions(read.items.mapNotNull(::dashboardNumbers), sessions(channel, read.token))
         progress(StepProgress(SyncStep.DASHBOARD, numbers.size, numbers.size, done = true))
         return DashboardUpdate(read.token, document.zone, document.document?.let(::dashboardDocument), numbers)
     }
+
+    /**
+     * The sessions behind the groups, which a computer that does not know them refuses: the numbers are then kept
+     * without them. A part that changed meanwhile is read again, as the numbers are.
+     */
+    private fun sessions(
+        channel: ComputerChannel,
+        token: String,
+    ): List<SessionsItem> =
+        try {
+            channel.pages("sync-dashboard-sessions", token = token).items.mapNotNull(::sessionsItem)
+        } catch (_: PartUnavailable) {
+            emptyList()
+        }
 
     /** One transaction of the copy. A copy that moved on, or cannot be written, is a sync that is cut. */
     @Suppress("TooGenericExceptionCaught")

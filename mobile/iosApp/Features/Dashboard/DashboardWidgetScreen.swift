@@ -8,6 +8,7 @@ struct DashboardWidgetCard: View {
     let shown: WidgetState
     let state: DashboardState
     let calendar: DashboardCalendar
+    let actions: DashboardActions
 
     var body: some View {
         VStack(alignment: .leading, spacing: ConstructTheme.Space.medium) {
@@ -21,7 +22,7 @@ struct DashboardWidgetCard: View {
                     .foregroundColor(ConstructTheme.color(.mutedForeground))
             }
             if let numbers = shown.numbers {
-                DashboardNumbersView(kind: shown.widget.kind, id: shown.widget.id, numbers: numbers, calendar: calendar)
+                DashboardNumbersView(shown: shown, numbers: numbers, calendar: calendar, actions: actions)
                 if numbers.hiddenProjectCount > 0 {
                     Text(DashboardText.hiddenProjects(numbers.hiddenProjectCount))
                         .font(.system(size: ConstructTheme.TextSize.caption))
@@ -56,13 +57,15 @@ struct DashboardWidgetCard: View {
 
 /// The numbers of a widget, drawn as its kind asks.
 private struct DashboardNumbersView: View {
-    let kind: WidgetKind
-    let id: String
+    let shown: WidgetState
     let numbers: DashboardNumbers
     let calendar: DashboardCalendar
+    let actions: DashboardActions
+
+    private var id: String { shown.widget.id }
 
     var body: some View {
-        switch kind {
+        switch shown.widget.kind {
         case .total: total
         case .barsPerDay: bars
         case .table: table
@@ -118,7 +121,17 @@ private struct DashboardNumbersView: View {
         } else {
             VStack(alignment: .leading, spacing: ConstructTheme.Space.medium) {
                 ForEach(byTime, id: \.key) { group in
-                    GroupRow(group: group, id: id)
+                    NavigationLink {
+                        DashboardSessionsView(
+                            span: shown.span,
+                            row: group,
+                            sessions: actions.sessionsOf(shown, group)
+                        )
+                    } label: {
+                        GroupRow(group: group, id: id)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Shows the sessions")
                 }
             }
         }

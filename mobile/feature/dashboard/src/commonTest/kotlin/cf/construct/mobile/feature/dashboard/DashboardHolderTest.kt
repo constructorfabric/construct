@@ -12,6 +12,7 @@ import cf.construct.mobile.core.model.DayMinutes
 import cf.construct.mobile.core.model.DocumentState
 import cf.construct.mobile.core.model.GroupBy
 import cf.construct.mobile.core.model.GroupMinutes
+import cf.construct.mobile.core.model.GroupSession
 import cf.construct.mobile.core.model.Outcome
 import cf.construct.mobile.core.model.Period
 import cf.construct.mobile.core.model.Position
@@ -137,6 +138,82 @@ class DashboardHolderTest {
             )
             assertTrue(state.widgets.all { it.numbers?.totalMinutes == 95 })
             assertFalse(state.nothingSent)
+        }
+
+    private fun session(
+        start: String,
+        end: String,
+        minutes: Int,
+    ) = GroupSession(start, end, minutes, "claude", "shop", "No ticket", "abcd1234")
+
+    @Test
+    fun aRowGivesItsSessionsInTheComputersZoneAndTheyAddUpToTheRow() =
+        runTest {
+            val copy = copy()
+            copy.hold(95, berlin(18))
+            val table = copy.document!!.widgets.first { it.kind == WidgetKind.TABLE }
+            val key = forWidget(table.id, berlin(18))
+            copy.held[key] =
+                copy.held.getValue(key).copy(
+                    sessionsByGroup =
+                        mapOf(
+                            "app" to
+                                listOf(
+                                    session("2026-11-18T08:00:00Z", "2026-11-18T08:40:00Z", 40),
+                                    session("2026-11-18T09:00:00Z", "2026-11-18T09:20:00Z", 20),
+                                ),
+                        ),
+                )
+            val holder = holder(copy)
+            runCurrent()
+
+            val shown =
+                holder.state.value.widgets
+                    .first { it.widget.id == table.id }
+            val row = shown.numbers!!.groups.first { it.key == "app" }
+            val sessions = holder.sessionsOf(shown, row)
+
+            assertTrue(sessions.sent)
+            assertEquals(listOf("09:00", "10:00"), sessions.lines.map { it.start })
+            assertEquals(listOf("09:40", "10:20"), sessions.lines.map { it.end })
+            assertEquals(row.minutes, sessions.sessionMinutes)
+            assertFalse(sessions.sharedMinutes)
+        }
+
+    @Test
+    fun sessionsThatOverlapAreSaidToShareTheirMinutesAndARowOfADayWithNoSessionsSaysThemNotSent() =
+        runTest {
+            val copy = copy()
+            copy.hold(95, berlin(18))
+            copy.hold(95, berlin(17))
+            val table = copy.document!!.widgets.first { it.kind == WidgetKind.TABLE }
+            val key = forWidget(table.id, berlin(18))
+            copy.held[key] =
+                copy.held.getValue(key).copy(
+                    sessionsByGroup =
+                        mapOf(
+                            "app" to
+                                listOf(
+                                    session("2026-11-18T08:00:00Z", "2026-11-18T08:30:00Z", 30),
+                                    session("2026-11-18T08:20:00Z", "2026-11-18T08:50:00Z", 30),
+                                ),
+                        ),
+                )
+            val holder = holder(copy)
+            runCurrent()
+            val today =
+                holder.state.value.widgets
+                    .first { it.widget.id == table.id }
+            assertTrue(holder.sessionsOf(today, today.numbers!!.groups.first { it.key == "app" }).sharedMinutes)
+
+            holder.previous()
+            runCurrent()
+            val yesterday =
+                holder.state.value.widgets
+                    .first { it.widget.id == table.id }
+            val none = holder.sessionsOf(yesterday, yesterday.numbers!!.groups.first { it.key == "app" })
+            assertFalse(none.sent)
+            assertEquals(emptyList(), none.lines)
         }
 
     @Test

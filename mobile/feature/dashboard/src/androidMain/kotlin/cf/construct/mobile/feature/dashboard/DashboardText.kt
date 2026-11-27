@@ -79,6 +79,14 @@ internal object DashboardText {
             "${value / MINUTES_PER_HOUR} h ${value % MINUTES_PER_HOUR} min"
         }
 
+    const val NO_SESSIONS_SENT = "Your computer has not sent the sessions for this day."
+    const val NO_SESSIONS_SENT_WEEK = "Your computer has not sent the sessions for this week."
+    const val SHARED_MINUTES =
+        "Sessions that overlap share their minutes: each shows its own part, and the parts add up to the row."
+
+    fun sessionsNotSent(span: DashboardSpan) =
+        if (span == DashboardSpan.WEEK) NO_SESSIONS_SENT_WEEK else NO_SESSIONS_SENT
+
     fun sessions(count: Int) = if (count == 1) "1 session" else "$count sessions"
 
     fun hiddenProjects(count: Int) =

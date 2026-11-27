@@ -10,6 +10,7 @@ import cf.construct.mobile.core.model.DashboardNumbers
 import cf.construct.mobile.core.model.DayBounds
 import cf.construct.mobile.core.model.DocumentState
 import cf.construct.mobile.core.model.EntityKind
+import cf.construct.mobile.core.model.GroupSession
 import cf.construct.mobile.core.model.MemoryFact
 import cf.construct.mobile.core.model.MemoryFacts
 import cf.construct.mobile.core.model.Outcome
@@ -114,6 +115,44 @@ class CopySyncTest {
         assertNull(store.numbers(input))
         assertEquals(listOf("phone"), store.conversations().map { it.id })
         assertEquals(listOf("phone record"), store.chatRecords("phone"))
+    }
+
+    @Test
+    fun theSessionsAreKeptWithTheNumbersOfTheirDayAndGoWithThemAlsoOnDeleteEverything() {
+        val session =
+            GroupSession("2026-11-01T08:00:00Z", "2026-11-01T08:40:00Z", 40, "claude", "shop", "No ticket", "abcd1234")
+        val withSessions = numbers.copy(sessionsByGroup = mapOf("shop" to listOf(session)))
+        store.adoptComputer("A")
+        store.applySync(
+            update(
+                dashboard =
+                    DashboardUpdate(
+                        "td1",
+                        "Europe/Berlin",
+                        document,
+                        listOf(input to withSessions),
+                    ),
+            ),
+        )
+        assertEquals(listOf(session), store.numbers(input)?.sessionsByGroup?.get("shop"))
+
+        // A sync that brings the numbers without the sessions replaces what was kept.
+        store.applySync(update(dashboard = DashboardUpdate("td2", "Europe/Berlin", document, listOf(input to numbers))))
+        assertNull(store.numbers(input)?.sessionsByGroup)
+
+        store.applySync(
+            update(
+                dashboard =
+                    DashboardUpdate(
+                        "td3",
+                        "Europe/Berlin",
+                        document,
+                        listOf(input to withSessions),
+                    ),
+            ),
+        )
+        store.deleteEverything()
+        assertNull(store.numbers(input))
     }
 
     @Test

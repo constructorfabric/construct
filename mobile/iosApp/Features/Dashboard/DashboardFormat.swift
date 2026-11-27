@@ -8,6 +8,15 @@ enum DashboardText {
         value < 60 ? "\(value) min" : "\(value / 60) h \(value % 60) min"
     }
 
+    static let sharedMinutes =
+        "Sessions that overlap share their minutes: each shows its own part, and the parts add up to the row."
+
+    static func sessionsNotSent(_ span: DashboardSpan) -> String {
+        span == .week
+            ? "Your computer has not sent the sessions for this week."
+            : "Your computer has not sent the sessions for this day."
+    }
+
     static func sessions(_ count: Int32) -> String {
         count == 1 ? "1 session" : "\(count) sessions"
     }
