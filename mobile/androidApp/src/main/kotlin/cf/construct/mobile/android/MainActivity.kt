@@ -279,6 +279,7 @@ internal class DashboardViewModel(
     val actions =
         DashboardActions(
             onSpan = holder::showSpan,
+            onSource = holder::showSource,
             onPrevious = holder::previous,
             onNext = holder::next,
             onToday = holder::showToday,

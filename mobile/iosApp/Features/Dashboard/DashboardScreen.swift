@@ -88,6 +88,38 @@ private struct DashboardEmpty: View {
     }
 }
 
+/// The switch between the sources the document has, as the mock-up draws it: a row of capsules, the chosen one filled
+/// and in semibold, the others plain muted text. The row scrolls sideways, so a longer name or more sources fit.
+private struct DashboardSourceChips: View {
+    let state: DashboardState
+    let actions: DashboardActions
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: ConstructTheme.Space.small) {
+                ForEach(state.sources, id: \.self) { source in
+                    chip(source)
+                }
+            }
+        }
+        .accessibilityIdentifier("dashboard-source")
+    }
+
+    private func chip(_ source: Source) -> some View {
+        let chosen = source == state.source
+        return Button { actions.showSource(source) } label: {
+            Text(DashboardText.sourceName(source))
+                .font(.system(size: ConstructTheme.TextSize.body, weight: chosen ? .semibold : .regular))
+                .foregroundColor(ConstructTheme.color(chosen ? .foreground : .mutedForeground))
+                .padding(.horizontal, ConstructTheme.Space.large)
+                .frame(minHeight: ConstructTheme.ControlSize.touch)
+                .background(chosen ? ConstructTheme.color(.selectionSubtle) : Color.clear, in: Capsule())
+        }
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+        .accessibilityIdentifier("dashboard-source-\(source.name.lowercased().replacingOccurrences(of: "_", with: "-"))")
+    }
+}
+
 /// The title with the time of the last update, and the controls that move the page: day or week, back, forward, a date.
 private struct DashboardHeader: View {
     let state: DashboardState
@@ -132,6 +164,9 @@ private struct DashboardHeader: View {
                      enabled: state.canGoNext) {
                     actions.next()
                 }
+            }
+            if state.canSwitchSource {
+                DashboardSourceChips(state: state, actions: actions)
             }
             if !state.onToday {
                 Button("Today", action: actions.showToday)
